@@ -1,0 +1,24 @@
+opencv-python>=4.9
+numpy>=1.26
+pydantic>=2.6
+pyyaml>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+
+# Not yet needed by the mock-site baseline, add once Deliverable 4/5
+# picks a real embedding model / VIO framework:
+# torch, torchvision, faiss-cpu, transformers
+
+# --- Deliverable 4/5 benchmarking (scripts/benchmark_embedders.py,
+# scripts/benchmark_verifiers.py) -- optional, install only what you're
+# benchmarking; each embedder/verifier is skipped with a message if its
+# deps are missing, so partial installs are fine.
+# torch, torchvision                          # DINOv2, NetVLAD, LightGlue, LoFTR, SuperGlue
+# open_clip_torch                             # CLIP variants
+# transformers                                # DINOv2
+# scikit-learn                                # NetVLAD cluster fitting
+# kornia                                      # LoFTR
+# lightglue @ git+https://github.com/cvg/LightGlue.git   # SuperPoint+LightGlue
+# SuperGlue itself needs a separate git clone, not pip -- see
+# src/fmc/vpr/verifiers/superglue_verifier.py for the exact command.

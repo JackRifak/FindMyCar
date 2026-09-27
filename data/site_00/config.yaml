@@ -1,0 +1,63 @@
+site_id: site_00
+floors:
+- floor: 1
+  zones: []
+  walkable_segments:
+  - x1: 5.797
+    y1: -25.238
+    x2: 5.874
+    y2: -3.803
+  - x1: 5.95
+    y1: -3.88
+    x2: -17.636
+    y2: -3.909
+  landmarks: []
+  vehicle_slots:
+  - slot_id: 87-04C
+    zone: zone_00
+    x: -1.809
+    y: -10.187
+  - slot_id: 87-04B
+    zone: zone_00
+    x: -4.345
+    y: -10.181
+  - slot_id: 87-04A
+    zone: zone_00
+    x: -7.033
+    y: -10.176
+  - slot_id: 87-03C
+    zone: zone_00
+    x: -10.798
+    y: -10.091
+  - slot_id: 87-03B
+    zone: zone_00
+    x: -13.256
+    y: -10.086
+  - slot_id: 87-03A
+    zone: zone_00
+    x: -15.869
+    y: -10.081
+  - slot_id: 86-03C
+    zone: zone_00
+    x: -15.945
+    y: 2.102
+  - slot_id: 86-03B
+    zone: zone_00
+    x: -13.256
+    y: 2.02
+  - slot_id: 86-03A
+    zone: zone_00
+    x: -10.568
+    y: 2.014
+  - slot_id: 86-04C
+    zone: zone_00
+    x: -7.11
+    y: 2.007
+  - slot_id: 86-04B
+    zone: zone_00
+    x: -4.498
+    y: 1.924
+  - slot_id: 86-04A
+    zone: zone_00
+    x: -1.732
+    y: 1.919

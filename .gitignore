@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+*.pem
+
+# LibreOffice / editor lock files
+.~lock.*#
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# --- data/ -----------------------------------------------------------
+# Split deliberately: script-regenerable OUTPUT is ignored, but hand-done
+# SURVEY/CALIBRATION WORK is tracked, because re-clicking control points,
+# re-fitting a transform, and re-transcribing compass headings for every
+# floor of every site is real, non-trivial manual effort — losing those
+# files would mean redoing survey work, not just re-running a script.
+
+# Ignored: regenerable from photos + the tracked files below, or just large
+data/*/raw/
+data/*/processed/
+data/*/index/dataset.jsonl
+data/*/index/embeddings.npz
+data/*/floorplan/floorplan.png
+data/*/floorplan/source.pdf
+
+# Tracked (do NOT ignore): irreplaceable manual work, all small text files
+#   data/*/config.yaml                       -- coordinate system, walkable segments, vehicle slots
+#   data/*/floorplan/control_points.csv      -- clicked georeferencing points + real-world coords
+#   data/*/floorplan/transform.json          -- fitted pixel->meters transform
+#   data/*/floorplan/*headings*.csv          -- transcribed compass headings
+#   data/*/index/locations.csv               -- computed capture-location coordinates
+#   data/mock_site/**                        -- synthetic, but tiny and useful as a working example
+
+site/

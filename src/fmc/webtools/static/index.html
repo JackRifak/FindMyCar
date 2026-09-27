@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Find My Car — Floor Plan Editor</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">⌖</span>
+    <div><strong>Find My Car</strong><span>Floor plan editor</span></div>
+  </div>
+
+  <div class="topbar-actions">
+    <div class="topbar-group">
+      <span class="group-label">Location</span>
+      <label>Site <select id="siteSelect" aria-label="Current site"></select></label>
+      <input id="newSiteId" type="text" placeholder="New site ID" aria-label="New site ID">
+      <button id="createSiteBtn" class="secondary-btn">Create site</button>
+      <label>Floor <select id="floorSelect" aria-label="Current floor"></select></label>
+      <input id="newFloorNum" type="number" placeholder="#" aria-label="New floor number">
+      <button id="createFloorBtn" class="secondary-btn">Add floor</button>
+    </div>
+
+    <div class="topbar-group import-group">
+      <span class="group-label">Floor plan</span>
+      <label class="file-label">PDF <input id="pdfFile" type="file" accept="application/pdf"></label>
+      <label>Page <input id="pdfPage" type="number" value="0"></label>
+      <label>DPI <input id="pdfDpi" type="number" value="200"></label>
+      <button id="uploadPdfBtn">Render plan</button>
+    </div>
+  </div>
+</header>
+
+<nav id="modebar">
+  <div class="mode-tabs" aria-label="Editor mode">
+    <button class="mode-btn active" data-mode="view">Overview</button>
+    <button class="mode-btn" data-mode="control_points">1. Calibrate</button>
+    <button class="mode-btn" data-mode="segments">2. Paths</button>
+    <button class="mode-btn" data-mode="slots">3. Slots</button>
+    <button class="mode-btn" data-mode="capture_locations">4. Locations</button>
+    <button class="mode-btn" data-mode="query">5. Test</button>
+  </div>
+  <span id="statusMsg" role="status" aria-live="polite"></span>
+</nav>
+
+<main>
+  <section id="workspace" aria-label="Floor plan workspace">
+    <div class="workspace-heading">
+      <div><span class="eyebrow">Workspace</span><strong>Floor plan canvas</strong></div>
+      <span class="canvas-help">Scroll to zoom · right-drag to pan</span>
+    </div>
+    <div id="canvasWrap">
+    <canvas id="mapCanvas" width="900" height="700"></canvas>
+    <div id="canvasHint">Load a site and render a floor plan to begin. Scroll to zoom, right-drag to pan.</div>
+    </div>
+  </section>
+
+  <aside id="sidepanel" aria-label="Editor tools">
+
+    <section id="panel-view" class="panel">
+      <p class="panel-kicker">Overview</p>
+      <h3>Map layers</h3>
+      <label><input type="checkbox" id="toggleLocations" checked> Ingested capture locations</label>
+      <label><input type="checkbox" id="toggleSegments" checked> Walkable paths</label>
+      <label><input type="checkbox" id="toggleSlots" checked> Parking slots</label>
+      <p class="hint">Choose a numbered mode above to calibrate the plan or add parking data.</p>
+    </section>
+
+    <section id="panel-control_points" class="panel" style="display:none">
+      <p class="panel-kicker">Step 1 · Calibrate</p><h3>Control points</h3>
+      <p class="hint">Click 2 points on a marked/dimensioned feature. Enter the REAL-WORLD coordinates
+      (in METERS) for each. Need 3+ non-collinear points, ideally 4+.</p>
+      <div id="controlPointsList"></div>
+      <button id="saveControlPointsBtn">Save points</button>
+      <button id="fitTransformBtn">Fit &amp; Check</button>
+      <div id="fitResult"></div>
+      <button id="saveTransformBtn" disabled>Save Transform</button>
+    </section>
+
+    <section id="panel-segments" class="panel" style="display:none">
+      <p class="panel-kicker">Step 2 · Map</p><h3>Walkable paths</h3>
+      <p class="hint">Click pairs of points along each corridor centerline (click one end, then the
+      other). Click connected pairs so segments share corners — small gaps (&lt;0.3m) auto-merge.</p>
+      <div id="segmentsList"></div>
+      <button id="undoSegmentBtn">Undo last</button>
+      <button id="saveSegmentsBtn">Save segments</button>
+    </section>
+
+    <section id="panel-slots" class="panel" style="display:none">
+      <p class="panel-kicker">Step 3 · Mark</p><h3>Parking slots</h3>
+      <p class="hint">Click a slot location, then fill in its ID and zone.</p>
+      <div id="slotsList"></div>
+      <button id="saveSlotsBtn">Save slots</button>
+    </section>
+
+    <section id="panel-capture_locations" class="panel" style="display:none">
+      <p class="panel-kicker">Step 4 · Survey</p><h3>Capture locations &amp; photos</h3>
+      <p class="hint">Click an existing marker to select it, or click empty space to create a new
+      capture location. Each location holds multiple reference photos, each with its own heading
+      (0-360°, clockwise from facility north).</p>
+
+      <div id="newLocationForm" style="display:none">
+        <p class="hint" style="margin-top:0">New location at the point you clicked:</p>
+        <label>ID <input type="text" id="newLocationId" placeholder="e.g. loc_05"></label>
+        <label>Zone <input type="text" id="newLocationZone" placeholder="e.g. Zone_A"></label>
+        <button id="createLocationBtn">Create</button>
+        <button id="cancelNewLocationBtn" class="secondary-btn">Cancel</button>
+      </div>
+
+      <div id="selectedLocationPanel" style="display:none">
+        <div class="selected-location-header">
+          <strong id="selectedLocationId"></strong>
+          <span id="selectedLocationZone" class="hint"></span>
+          <button id="deleteLocationBtn" class="danger-btn" title="Delete this location and all its photos">Delete location</button>
+        </div>
+
+        <div id="photoGrid"></div>
+
+        <label class="file-label">+ Add photo(s)
+          <input type="file" id="addPhotoInput" accept="image/jpeg,image/png" multiple>
+        </label>
+        <div id="photoUploadStatus" class="hint"></div>
+      </div>
+    </section>
+
+    <section id="panel-query" class="panel" style="display:none">
+      <p class="panel-kicker">Step 5 · Verify</p><h3>Test query</h3>
+      <p class="hint">Upload a real photo to see where VPR thinks it is.</p>
+      <input type="file" id="queryFile" accept="image/*">
+      <button id="runQueryBtn">Localize</button>
+      <div id="queryResult"></div>
+
+      <h4>Route to slot</h4>
+      <select id="routeSlotSelect"></select>
+      <button id="runRouteBtn" disabled>Show route</button>
+      <div id="routeResult"></div>
+    </section>
+
+  </aside>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

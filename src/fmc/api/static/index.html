@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Find My Car — Hybrid VPR + PDR Live Position</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-content">
+      <h1>Find My Car <span class="badge-tag">Hybrid VPR + PDR</span></h1>
+      <p class="hint">
+        Continuous dead reckoning carries the gaps between periodic VPR fixes.
+        VPR corrects position &amp; calibrates heading; PDR keeps position continuous.
+      </p>
+    </div>
+  </header>
+
+  <!-- Live Status & Mode Badge Bar -->
+  <div class="status-card">
+    <div class="status-header">
+      <div class="status-mode" id="statusModeBadge">
+        <span class="status-dot"></span>
+        <span id="statusModeText">STANDBY</span>
+      </div>
+      <div class="status-meta">
+        <span id="stepCounterBadge" class="pill-badge">0 steps</span>
+        <span id="driftBadge" class="pill-badge">Drift: —</span>
+      </div>
+    </div>
+
+    <!-- Real-time Position Dashboard -->
+    <div class="kpi-grid">
+      <div class="kpi-item">
+        <span class="kpi-label">Floor</span>
+        <span class="kpi-val" id="valFloor">—</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">Position (X, Y)</span>
+        <span class="kpi-val" id="valCoords">0.00, 0.00 m</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">Heading</span>
+        <span class="kpi-val" id="valHeading">0°</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">Confidence</span>
+        <span class="kpi-val" id="valConfidence">—</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">Steps (Fix / Total)</span>
+        <span class="kpi-val" id="valSteps">0 / 0</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">Walked Distance</span>
+        <span class="kpi-val" id="valDistance">0.0 m</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">VPR Match Rate</span>
+        <span class="kpi-val" id="valMatchRate">—</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">VPR Latency</span>
+        <span class="kpi-val" id="valLatency">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Real-time 2D Trajectory Canvas Map -->
+  <div class="card map-card">
+    <div class="card-header">
+      <h3>Live Trajectory Map</h3>
+      <div class="map-controls">
+        <button id="recenterBtn" class="btn-xs" title="Recenter view on current position">Center</button>
+        <button id="clearTrackBtn" class="btn-xs" title="Clear trajectory trail">Clear</button>
+      </div>
+    </div>
+    <div class="canvas-wrapper">
+      <canvas id="trailCanvas" width="460" height="300"></canvas>
+      <div class="map-legend">
+        <span class="legend-item"><span class="dot dot-vpr"></span> VPR Fix</span>
+        <span class="legend-item"><span class="dot dot-miss"></span> VPR Miss</span>
+        <span class="legend-item"><span class="dot dot-pdr"></span> PDR Step</span>
+        <span class="legend-item"><span class="dot dot-current"></span> You</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pre-Session Sensor Calibration -->
+  <div class="card calibration-card">
+    <div class="card-header">
+      <h3>Sensor Calibration</h3>
+      <button id="calibrateBtn" class="btn-xs">Run Calibration</button>
+    </div>
+    <p class="hint">Run once before Start Session: hold still, rotate in a figure-8, then walk 5 steps straight.</p>
+    <div id="calibStatus" class="calib-status">Not calibrated yet.</div>
+    <button id="calibWalkDoneBtn" class="btn-primary" style="display:none; margin-top:8px;">Done Walking</button>
+    <div id="calibResults" class="calib-results" style="display:none;">
+      <div class="kpi-item">
+        <span class="kpi-label">Gyro Bias</span>
+        <span class="kpi-val" id="calGyroBias">—</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">Gravity</span>
+        <span class="kpi-val" id="calGravity">—</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">Magnetometer</span>
+        <span class="kpi-val" id="calMag">—</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">Walk Steps</span>
+        <span class="kpi-val" id="calSteps">—</span>
+      </div>
+      <div class="kpi-item">
+        <span class="kpi-label">Stride Scale</span>
+        <span class="kpi-val" id="calStride">×1.00</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Camera Stream & Controls -->
+  <div class="card camera-card">
+    <div class="card-header">
+      <h3>Camera Preview</h3>
+      <span id="camFps" class="text-muted">640px adaptive</span>
+    </div>
+    <div class="video-container">
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas" style="display:none"></canvas>
+    </div>
+
+    <div id="controls" class="btn-row">
+      <button id="startBtn" class="btn-primary">Start Session</button>
+      <button id="stopBtn" class="btn-secondary" disabled>Stop</button>
+      <button id="stepSimBtn" class="btn-outline" title="Simulate a forward step for testing">Sim Step</button>
+      <button id="downloadBtn" class="btn-outline" disabled>Export CSV</button>
+    </div>
+  </div>
+
+  <!-- Settings Accordion -->
+  <details class="card settings-card" open>
+    <summary class="settings-summary">
+      <strong>Settings &amp; PDR Tuning</strong>
+    </summary>
+    
+    <div class="settings-section">
+      <h4>PDR (Pedestrian Dead Reckoning)</h4>
+      <div class="settings-grid">
+        <label class="toggle-label">
+          <input id="pdrEnabled" type="checkbox" checked>
+          <span>Enable PDR (Carry Gaps)</span>
+        </label>
+        <label class="toggle-label">
+          <input id="adaptiveStride" type="checkbox" checked>
+          <span>Adaptive Stride (Weinberg)</span>
+        </label>
+        <label>
+          Base Step Length (m)
+          <input id="stepLength" type="number" value="0.70" step="0.02" min="0.3" max="1.5">
+        </label>
+        <label>
+          Step Sensitivity (m/s²)
+          <input id="stepThreshold" type="number" value="1.2" step="0.1" min="0.4" max="4.0">
+        </label>
+        <label>
+          Compass Mode
+          <select id="compassMode">
+            <option value="vpr_calibrated" selected>VPR-Calibrated Compass</option>
+            <option value="raw_compass">Raw Device Compass</option>
+            <option value="relative_gyro">Relative Gyro Yaw</option>
+            <option value="device_calibrated">Device-Calibrated (Mag+Accel, experimental)</option>
+          </select>
+        </label>
+        <label>
+          Manual Heading Offset (°)
+          <input id="manualHeadingOffset" type="number" value="0" step="5" min="-180" max="180">
+        </label>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h4>VPR Capture &amp; Upload</h4>
+      <div class="settings-grid">
+        <label>
+          Min Interval (ms)
+          <input id="minInterval" type="number" value="300" step="50">
+        </label>
+        <label>
+          Max Interval (ms)
+          <input id="maxInterval" type="number" value="2000" step="100">
+        </label>
+        <label>
+          Motion Threshold
+          <input id="motionThreshold" type="number" value="1.5" step="0.1">
+        </label>
+        <label>
+          Max Dimension (px)
+          <input id="maxDimension" type="number" value="640" step="80">
+        </label>
+      </div>
+    </div>
+  </details>
+
+  <!-- Raw Output Readout (compatible with test protocol) -->
+  <div class="card">
+    <div class="card-header">
+      <h3>Diagnostics Readout</h3>
+      <button id="setOriginBtn" class="btn-xs">Set Origin (0,0)</button>
+    </div>
+    <pre id="posOut">Not started. Click "Start Session" to begin.</pre>
+  </div>
+
+  <!-- Session Log Table -->
+  <div class="card">
+    <div class="card-header">
+      <h3>Session Log (Last 30 Events)</h3>
+      <span class="text-muted" id="logCountLabel">0 events</span>
+    </div>
+    <div id="logTable" class="table-container"></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
