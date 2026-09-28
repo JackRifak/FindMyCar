@@ -105,8 +105,8 @@ def build_pairs(site, records: list[ReferenceImage], top_k: int) -> list[Pair]:
     return pairs
 
 
-def evaluate_verifier(name: str, image_cache: dict[str, np.ndarray], pairs: list[Pair]) -> dict:
-    verifier = get_benchmark_verifier(name)
+def evaluate_verifier(name: str, image_cache: dict[str, np.ndarray], pairs: list[Pair], device: str = "cpu") -> dict:
+    verifier = get_benchmark_verifier(name, device=device)
 
     rows = []  # (is_true, inlier_ratio, latency_ms, texture_bucket, accepted)
     for pair in pairs:
@@ -199,6 +199,11 @@ def main():
     )
     parser.add_argument("--top-k", type=int, default=max(TOP_K_CANDIDATES, 8))
     parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Torch device for loaded models (e.g. cpu, cuda, cuda:0)",
+    )
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
 
@@ -241,7 +246,7 @@ def main():
     for name in verifier_names:
         print(f"\n=== Benchmarking verifier: {name} ===")
         try:
-            report = evaluate_verifier(name, image_cache, pairs)
+            report = evaluate_verifier(name, image_cache, pairs, device=args.device)
         except ImportError as e:
             print(f"  SKIPPED ({e})")
             continue

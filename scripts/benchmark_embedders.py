@@ -82,8 +82,8 @@ def load_images(site, records: list[ReferenceImage]) -> dict[str, np.ndarray]:
     return images
 
 
-def evaluate_embedder(name: str, records: list[ReferenceImage], images: dict[str, np.ndarray]) -> dict:
-    embedder = get_benchmark_embedder(name)
+def evaluate_embedder(name: str, records: list[ReferenceImage], images: dict[str, np.ndarray], device: str = "cpu") -> dict:
+    embedder = get_benchmark_embedder(name, device=device)
 
     # NetVLAD needs cluster centers fit on this site's own data before it can
     # embed anything -- do this ONCE on a fixed sample, not per query. This
@@ -185,6 +185,11 @@ def main():
         help="Embedder names to benchmark (default: all registered)",
     )
     parser.add_argument("--out", default=None, help="Optional path to write the full JSON report")
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Torch device for loaded models (e.g. cpu, cuda, cuda:0)",
+    )
     parser.add_argument("--list", action="store_true", help="List available embedder names and exit")
     args = parser.parse_args()
 
@@ -210,7 +215,7 @@ def main():
     for name in embedder_names:
         print(f"\n=== Benchmarking embedder: {name} ===")
         try:
-            report = evaluate_embedder(name, records, images)
+            report = evaluate_embedder(name, records, images, device=args.device)
         except ImportError as e:
             print(f"  SKIPPED ({e})")
             continue

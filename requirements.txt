@@ -19,6 +19,7 @@ python-multipart>=0.0.9
 # transformers                                # DINOv2
 # scikit-learn                                # NetVLAD cluster fitting
 # kornia                                      # LoFTR
+# certifi                                      # LoFTR checkpoint download on Windows with broken CA stores
 # lightglue @ git+https://github.com/cvg/LightGlue.git   # SuperPoint+LightGlue
 # SuperGlue itself needs a separate git clone, not pip -- see
 # src/fmc/vpr/verifiers/superglue_verifier.py for the exact command.

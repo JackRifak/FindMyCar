@@ -11,6 +11,7 @@ Requires: pip install kornia torch
 """
 from __future__ import annotations
 
+import ssl
 import time
 
 import cv2
@@ -19,7 +20,32 @@ import numpy as np
 from fmc.config import RANSAC_REPROJ_THRESHOLD
 from fmc.vpr.verifiers.base import BenchmarkVerificationResult, BenchmarkVerifier
 
+try:
+    import certifi
+except ImportError:  # pragma: no cover - optional dependency; degrade gracefully
+    certifi = None
+
 _MODEL_CACHE: dict[str, object] = {}
+
+
+def _ensure_certifi_https_context() -> None:
+    """Patch urllib's default HTTPS context to use certifi's CA bundle.
+
+    Some Windows environments ship with a broken or incomplete certificate
+    store; `torch.hub.load_state_dict_from_url()` hits that path when it tries
+    to download the LoFTR checkpoint. Using certifi avoids the SSL failure
+    without requiring the user to manually fix their OS trust store.
+    """
+    if certifi is None:
+        return
+
+    cafile = certifi.where()
+
+    def _patched_create_default_https_context(*args, **kwargs):
+        ctx = ssl.create_default_context(*args, cafile=cafile, **kwargs)
+        return ctx
+
+    ssl._create_default_https_context = _patched_create_default_https_context
 
 
 class LoFTRVerifier(BenchmarkVerifier):
@@ -48,6 +74,8 @@ class LoFTRVerifier(BenchmarkVerifier):
         # two weight sets kornia ships for a parking garage; "outdoor" is
         # also available if you want that comparison too.
         self.name = f"loftr_{pretrained}"
+
+        _ensure_certifi_https_context()
 
         cache_key = f"{pretrained}:{device}"
         if cache_key not in _MODEL_CACHE:

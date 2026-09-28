@@ -11,8 +11,9 @@ from fmc.vpr.verifiers.base import BenchmarkVerificationResult, BenchmarkVerifie
 
 
 class ORBVerifier(BenchmarkVerifier):
-    def __init__(self):
+    def __init__(self, device: str | None = None):
         self.name = "orb_ransac"
+        self.device = device
 
     def verify(self, query_image: np.ndarray, candidate_image: np.ndarray) -> BenchmarkVerificationResult:
         t0 = time.perf_counter()

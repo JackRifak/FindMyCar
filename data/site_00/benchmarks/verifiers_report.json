@@ -1,0 +1,404 @@
+[
+  {
+    "verifier": "orb_ransac",
+    "num_pairs": 280,
+    "num_true_match_pairs": 80,
+    "num_hard_negative_pairs": 200,
+    "at_configured_threshold": {
+      "true_positive_rate": 0.6375,
+      "false_positive_rate": 0.19,
+      "precision": 0.5730337078651685
+    },
+    "genuine_inlier_ratio_mean": 0.4326585068566737,
+    "impostor_inlier_ratio_mean": 0.10920087322200914,
+    "best_threshold_by_f1": {
+      "threshold": 0.4,
+      "precision": 0.6805555555555556,
+      "recall": 0.6125
+    },
+    "threshold_sweep": [
+      {
+        "threshold": 0.0,
+        "precision": 0.2857142857142857,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.05,
+        "precision": 0.49107142857142855,
+        "recall": 0.6875
+      },
+      {
+        "threshold": 0.1,
+        "precision": 0.49107142857142855,
+        "recall": 0.6875
+      },
+      {
+        "threshold": 0.15,
+        "precision": 0.49107142857142855,
+        "recall": 0.6875
+      },
+      {
+        "threshold": 0.2,
+        "precision": 0.4864864864864865,
+        "recall": 0.675
+      },
+      {
+        "threshold": 0.25,
+        "precision": 0.4909090909090909,
+        "recall": 0.675
+      },
+      {
+        "threshold": 0.3,
+        "precision": 0.5148514851485149,
+        "recall": 0.65
+      },
+      {
+        "threshold": 0.35,
+        "precision": 0.5730337078651685,
+        "recall": 0.6375
+      },
+      {
+        "threshold": 0.4,
+        "precision": 0.6805555555555556,
+        "recall": 0.6125
+      },
+      {
+        "threshold": 0.45,
+        "precision": 0.7636363636363637,
+        "recall": 0.525
+      },
+      {
+        "threshold": 0.5,
+        "precision": 0.8571428571428571,
+        "recall": 0.45
+      },
+      {
+        "threshold": 0.55,
+        "precision": 0.9428571428571428,
+        "recall": 0.4125
+      },
+      {
+        "threshold": 0.6,
+        "precision": 1.0,
+        "recall": 0.375
+      },
+      {
+        "threshold": 0.65,
+        "precision": 1.0,
+        "recall": 0.3375
+      },
+      {
+        "threshold": 0.7,
+        "precision": 1.0,
+        "recall": 0.275
+      },
+      {
+        "threshold": 0.75,
+        "precision": 1.0,
+        "recall": 0.225
+      },
+      {
+        "threshold": 0.8,
+        "precision": 1.0,
+        "recall": 0.1875
+      },
+      {
+        "threshold": 0.85,
+        "precision": 1.0,
+        "recall": 0.15
+      },
+      {
+        "threshold": 0.9,
+        "precision": 1.0,
+        "recall": 0.0625
+      },
+      {
+        "threshold": 0.95,
+        "precision": 1.0,
+        "recall": 0.025
+      },
+      {
+        "threshold": 1.0,
+        "precision": null,
+        "recall": 0.0
+      }
+    ],
+    "by_texture_bucket": {
+      "high_texture": {
+        "n": 280,
+        "true_positive_rate": 0.6375,
+        "false_positive_rate": 0.19
+      }
+    },
+    "latency_ms_mean": 21.62774034409917,
+    "latency_ms_p95": 27.942880243062977
+  },
+  {
+    "verifier": "superpoint_lightglue",
+    "num_pairs": 280,
+    "num_true_match_pairs": 80,
+    "num_hard_negative_pairs": 200,
+    "at_configured_threshold": {
+      "true_positive_rate": 0.5125,
+      "false_positive_rate": 0.08,
+      "precision": 0.7192982456140351
+    },
+    "genuine_inlier_ratio_mean": 0.3973047649851524,
+    "impostor_inlier_ratio_mean": 0.21386893009149976,
+    "best_threshold_by_f1": {
+      "threshold": 0.3,
+      "precision": 0.6233766233766234,
+      "recall": 0.6
+    },
+    "threshold_sweep": [
+      {
+        "threshold": 0.0,
+        "precision": 0.2857142857142857,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.05,
+        "precision": 0.2888086642599278,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.1,
+        "precision": 0.291970802919708,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.15,
+        "precision": 0.3305084745762712,
+        "recall": 0.975
+      },
+      {
+        "threshold": 0.2,
+        "precision": 0.40350877192982454,
+        "recall": 0.8625
+      },
+      {
+        "threshold": 0.25,
+        "precision": 0.5272727272727272,
+        "recall": 0.725
+      },
+      {
+        "threshold": 0.3,
+        "precision": 0.6233766233766234,
+        "recall": 0.6
+      },
+      {
+        "threshold": 0.35,
+        "precision": 0.7192982456140351,
+        "recall": 0.5125
+      },
+      {
+        "threshold": 0.4,
+        "precision": 0.7906976744186046,
+        "recall": 0.425
+      },
+      {
+        "threshold": 0.45,
+        "precision": 0.8333333333333334,
+        "recall": 0.3125
+      },
+      {
+        "threshold": 0.5,
+        "precision": 0.9090909090909091,
+        "recall": 0.25
+      },
+      {
+        "threshold": 0.55,
+        "precision": 1.0,
+        "recall": 0.1875
+      },
+      {
+        "threshold": 0.6,
+        "precision": 1.0,
+        "recall": 0.1625
+      },
+      {
+        "threshold": 0.65,
+        "precision": 1.0,
+        "recall": 0.125
+      },
+      {
+        "threshold": 0.7,
+        "precision": 1.0,
+        "recall": 0.125
+      },
+      {
+        "threshold": 0.75,
+        "precision": 1.0,
+        "recall": 0.1
+      },
+      {
+        "threshold": 0.8,
+        "precision": 1.0,
+        "recall": 0.075
+      },
+      {
+        "threshold": 0.85,
+        "precision": 1.0,
+        "recall": 0.025
+      },
+      {
+        "threshold": 0.9,
+        "precision": null,
+        "recall": 0.0
+      },
+      {
+        "threshold": 0.95,
+        "precision": null,
+        "recall": 0.0
+      },
+      {
+        "threshold": 1.0,
+        "precision": null,
+        "recall": 0.0
+      }
+    ],
+    "by_texture_bucket": {
+      "high_texture": {
+        "n": 280,
+        "true_positive_rate": 0.5125,
+        "false_positive_rate": 0.08
+      }
+    },
+    "latency_ms_mean": 93.50024962664715,
+    "latency_ms_p95": 120.12959001585841
+  },
+  {
+    "verifier": "loftr",
+    "num_pairs": 280,
+    "num_true_match_pairs": 80,
+    "num_hard_negative_pairs": 200,
+    "at_configured_threshold": {
+      "true_positive_rate": 0.3,
+      "false_positive_rate": 0.0,
+      "precision": 1.0
+    },
+    "genuine_inlier_ratio_mean": 0.26621282360532345,
+    "impostor_inlier_ratio_mean": 0.0,
+    "best_threshold_by_f1": {
+      "threshold": 0.05,
+      "precision": 1.0,
+      "recall": 0.3
+    },
+    "threshold_sweep": [
+      {
+        "threshold": 0.0,
+        "precision": 0.2857142857142857,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.05,
+        "precision": 1.0,
+        "recall": 0.3
+      },
+      {
+        "threshold": 0.1,
+        "precision": 1.0,
+        "recall": 0.3
+      },
+      {
+        "threshold": 0.15,
+        "precision": 1.0,
+        "recall": 0.3
+      },
+      {
+        "threshold": 0.2,
+        "precision": 1.0,
+        "recall": 0.3
+      },
+      {
+        "threshold": 0.25,
+        "precision": 1.0,
+        "recall": 0.3
+      },
+      {
+        "threshold": 0.3,
+        "precision": 1.0,
+        "recall": 0.3
+      },
+      {
+        "threshold": 0.35,
+        "precision": 1.0,
+        "recall": 0.3
+      },
+      {
+        "threshold": 0.4,
+        "precision": 1.0,
+        "recall": 0.3
+      },
+      {
+        "threshold": 0.45,
+        "precision": 1.0,
+        "recall": 0.2875
+      },
+      {
+        "threshold": 0.5,
+        "precision": 1.0,
+        "recall": 0.275
+      },
+      {
+        "threshold": 0.55,
+        "precision": 1.0,
+        "recall": 0.275
+      },
+      {
+        "threshold": 0.6,
+        "precision": 1.0,
+        "recall": 0.275
+      },
+      {
+        "threshold": 0.65,
+        "precision": 1.0,
+        "recall": 0.275
+      },
+      {
+        "threshold": 0.7,
+        "precision": 1.0,
+        "recall": 0.275
+      },
+      {
+        "threshold": 0.75,
+        "precision": 1.0,
+        "recall": 0.2625
+      },
+      {
+        "threshold": 0.8,
+        "precision": 1.0,
+        "recall": 0.2375
+      },
+      {
+        "threshold": 0.85,
+        "precision": 1.0,
+        "recall": 0.225
+      },
+      {
+        "threshold": 0.9,
+        "precision": 1.0,
+        "recall": 0.2
+      },
+      {
+        "threshold": 0.95,
+        "precision": 1.0,
+        "recall": 0.125
+      },
+      {
+        "threshold": 1.0,
+        "precision": 1.0,
+        "recall": 0.075
+      }
+    ],
+    "by_texture_bucket": {
+      "high_texture": {
+        "n": 280,
+        "true_positive_rate": 0.3,
+        "false_positive_rate": 0.0
+      }
+    },
+    "latency_ms_mean": 68.82414214446077,
+    "latency_ms_p95": 80.99574984516948
+  }
+]

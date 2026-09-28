@@ -10,10 +10,11 @@ from fmc.vpr.embedders.base import BenchmarkEmbedder
 
 
 class ColorHistogramBenchmarkEmbedder(BenchmarkEmbedder):
-    def __init__(self, bins: tuple[int, int, int] = (8, 4, 2)):
+    def __init__(self, bins: tuple[int, int, int] = (8, 4, 2), device: str | None = None):
         self._impl = ColorHistogramEmbedder(bins=bins)
         self.name = "color_histogram"
         self._dim = bins[0] * bins[1] * bins[2]
+        self.device = device
 
     @property
     def dim(self) -> int:
