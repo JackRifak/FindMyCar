@@ -21,11 +21,11 @@ python scripts/benchmark_embedders.py --site site_00 \
 
 Reports Recall@1/@5, mAP, genuine/impostor score separation, heading-
 bucketed Recall@1 (viewpoint robustness), and embedding latency, per
-embedder. Registered embedders: `color_histogram` (current production
-baseline), `clip_vit_b32`, `clip_vit_l14`, `dinov2_small`, `dinov2_base`,
-`netvlad_resnet18`. `dinov2_*` uses DINOv2 patch-token GeM pooling
-(rather than the weaker CLS-token embedding), which is the fairer
-AnyLoc-style dense-feature baseline for this benchmark. See
+embedder. Registered embedders: `color_histogram` (baseline),
+`clip_vit_b32`, `clip_vit_l14`, `dinov2_small`, `dinov2_base`,
+`netvlad_resnet18`. `dinov2_*` extracts DINOv2 patch descriptors and
+aggregates them with site-fitted, hard-assignment VLAD, following the
+AnyLoc-style DINOv2 + VLAD approach (not CLS pooling or GeM). See
 `src/fmc/vpr/embedders/` for implementations and
 `src/fmc/vpr/embedders/netvlad_embedder.py` for an important caveat: this
 NetVLAD is cluster-fit on the site's own data, not the original paper's

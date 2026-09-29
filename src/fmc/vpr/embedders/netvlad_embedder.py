@@ -29,6 +29,43 @@ from fmc.vpr.embedders.base import BenchmarkEmbedder
 _BACKBONE_CACHE: dict[str, object] = {}
 
 
+def fit_vlad_centroids(
+    descriptor_batches: list[np.ndarray],
+    num_clusters: int,
+    random_state: int = 0,
+) -> np.ndarray:
+    """Fit hard-assignment VLAD centers over a collection of descriptors."""
+    from sklearn.cluster import KMeans
+
+    descriptors = np.concatenate(descriptor_batches, axis=0)
+    if not np.isfinite(descriptors).all():
+        raise ValueError("Cannot fit VLAD centers from non-finite descriptors")
+    if len(descriptors) < num_clusters:
+        raise ValueError(
+            f"Need at least {num_clusters} descriptors to fit VLAD, got {len(descriptors)}"
+        )
+    kmeans = KMeans(n_clusters=num_clusters, n_init=4, random_state=random_state).fit(descriptors)
+    return kmeans.cluster_centers_.astype(np.float32)
+
+
+def aggregate_vlad(descriptors, centroids):
+    """Aggregate (N, D) descriptors against (K, D) centers into a VLAD vector."""
+    import torch
+
+    descriptors = torch.nn.functional.normalize(descriptors, dim=1)
+    assignments = torch.cdist(descriptors, centroids).argmin(dim=1)
+
+    vlad = torch.zeros_like(centroids)
+    for cluster_id in range(centroids.shape[0]):
+        mask = assignments == cluster_id
+        if mask.any():
+            vlad[cluster_id] = (descriptors[mask] - centroids[cluster_id]).sum(dim=0)
+
+    vlad = torch.nn.functional.normalize(vlad, dim=1)
+    vlad = torch.nn.functional.normalize(vlad.flatten(), dim=0)
+    return vlad
+
+
 class NetVLADEmbedder(BenchmarkEmbedder):
     def __init__(
         self,
@@ -81,17 +118,14 @@ class NetVLADEmbedder(BenchmarkEmbedder):
         subset of the site's own reference photos) to initialize VLAD
         cluster centers when no pretrained checkpoint is supplied.
         Call once, before embed()."""
-        from sklearn.cluster import KMeans
-
         descriptors = []
         with self._torch.no_grad():
             for img in sample_images:
                 feat_map = self._extract_feature_map(img)  # (C, H, W)
                 c, h, w = feat_map.shape
                 descriptors.append(feat_map.reshape(c, h * w).T.cpu().numpy())
-        descriptors = np.concatenate(descriptors, axis=0)
-        km = KMeans(n_clusters=self.num_clusters, n_init=4, random_state=0).fit(descriptors)
-        self._centroids = self._torch.tensor(km.cluster_centers_, dtype=self._torch.float32, device=self.device)
+        centers = fit_vlad_centroids(descriptors, self.num_clusters)
+        self._centroids = self._torch.tensor(centers, dtype=self._torch.float32, device=self.device)
 
     def _extract_feature_map(self, image: np.ndarray):
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -111,19 +145,6 @@ class NetVLADEmbedder(BenchmarkEmbedder):
             feat_map = self._extract_feature_map(image)  # (C, H, W)
             c, h, w = feat_map.shape
             descriptors = feat_map.reshape(c, h * w).T  # (H*W, C)
-            descriptors = self._torch.nn.functional.normalize(descriptors, dim=1)
-
-            dists = self._torch.cdist(descriptors, self._centroids)  # (H*W, K)
-            assignment = dists.argmin(dim=1)  # hard assignment to nearest centroid
-
-            vlad = self._torch.zeros(self.num_clusters, c, device=self.device)
-            for k in range(self.num_clusters):
-                mask = assignment == k
-                if mask.any():
-                    residuals = descriptors[mask] - self._centroids[k]
-                    vlad[k] = residuals.sum(dim=0)
-
-            vlad = self._torch.nn.functional.normalize(vlad, dim=1)  # intra-normalization
-            vlad = vlad.flatten()
-            vlad = self._torch.nn.functional.normalize(vlad, dim=0)  # global L2 norm
+            descriptors = descriptors.reshape(h * w, c)
+            vlad = aggregate_vlad(descriptors, self._centroids)
         return vlad.cpu().numpy().astype(np.float32)
