@@ -2,117 +2,117 @@
   {
     "embedder": "color_histogram",
     "dim": 64,
-    "num_queries_scored": 35,
-    "recall_at_1": 0.4857142857142857,
-    "recall_at_5": 0.8571428571428571,
-    "mAP": 0.36815229615572725,
-    "genuine_score_mean": 0.8804793514474465,
-    "genuine_score_std": 0.07165206254456202,
-    "impostor_score_mean": 0.8673420156063472,
-    "impostor_score_std": 0.08283059853691459,
-    "score_separation": 0.013137335841099329,
+    "num_queries_scored": 65,
+    "recall_at_1": 0.4307692307692308,
+    "recall_at_5": 0.8,
+    "mAP": 0.3131714315512009,
+    "genuine_score_mean": 0.8059919163702972,
+    "genuine_score_std": 0.13216507893460633,
+    "impostor_score_mean": 0.7981650928687777,
+    "impostor_score_std": 0.1361693439164859,
+    "score_separation": 0.007826823501519531,
     "heading_robustness": {
       "0-45": {
-        "recall_at_1": 0.6666666666666666,
-        "n": 12
+        "recall_at_1": 0.5555555555555556,
+        "n": 18
+      },
+      "45-90": {
+        "recall_at_1": 0.5,
+        "n": 14
+      },
+      "90-180": {
+        "recall_at_1": 0.3333333333333333,
+        "n": 33
+      }
+    },
+    "embed_latency_ms_mean": 2.1158476926547545,
+    "embed_latency_ms_p95": 4.414459996041839
+  },
+  {
+    "embedder": "clip_vit_b32",
+    "dim": 512,
+    "num_queries_scored": 65,
+    "recall_at_1": 0.36923076923076925,
+    "recall_at_5": 0.8615384615384616,
+    "mAP": 0.3159448324861085,
+    "genuine_score_mean": 0.8595971391787605,
+    "genuine_score_std": 0.056169342408783164,
+    "impostor_score_mean": 0.8550109805038133,
+    "impostor_score_std": 0.05648058719674817,
+    "score_separation": 0.0045861586749471606,
+    "heading_robustness": {
+      "0-45": {
+        "recall_at_1": 0.48484848484848486,
+        "n": 33
+      },
+      "45-90": {
+        "recall_at_1": 0.3125,
+        "n": 16
+      },
+      "90-180": {
+        "recall_at_1": 0.1875,
+        "n": 16
+      }
+    },
+    "embed_latency_ms_mean": 19.842269230754866,
+    "embed_latency_ms_p95": 21.57080000033602
+  },
+  {
+    "embedder": "dinov2_base",
+    "dim": 49152,
+    "num_queries_scored": 65,
+    "recall_at_1": 0.6153846153846154,
+    "recall_at_5": 0.9076923076923077,
+    "mAP": 0.3702215118760216,
+    "genuine_score_mean": 0.03899227538585408,
+    "genuine_score_std": 0.10755207296777931,
+    "impostor_score_mean": 0.013347268317338049,
+    "impostor_score_std": 0.08878681982258821,
+    "score_separation": 0.02564500706851603,
+    "heading_robustness": {
+      "0-45": {
+        "recall_at_1": 0.6739130434782609,
+        "n": 46
+      },
+      "45-90": {
+        "recall_at_1": 0.5,
+        "n": 8
+      },
+      "90-180": {
+        "recall_at_1": 0.45454545454545453,
+        "n": 11
+      }
+    },
+    "embed_latency_ms_mean": 34.97126461465646,
+    "embed_latency_ms_p95": 38.459239997609984
+  },
+  {
+    "embedder": "netvlad_resnet18",
+    "dim": 32768,
+    "num_queries_scored": 65,
+    "recall_at_1": 0.6153846153846154,
+    "recall_at_5": 0.9538461538461539,
+    "mAP": 0.33286419551352736,
+    "genuine_score_mean": 0.9988882559395972,
+    "genuine_score_std": 0.00032207058222067514,
+    "impostor_score_mean": 0.9988546674399812,
+    "impostor_score_std": 0.00031008385295086706,
+    "score_separation": 3.358849961598853e-05,
+    "heading_robustness": {
+      "0-45": {
+        "recall_at_1": 0.725,
+        "n": 40
       },
       "45-90": {
         "recall_at_1": 0.7142857142857143,
         "n": 7
       },
       "90-180": {
-        "recall_at_1": 0.25,
-        "n": 16
+        "recall_at_1": 0.3333333333333333,
+        "n": 18
       }
     },
-    "embed_latency_ms_mean": 3.0182971426776413,
-    "embed_latency_ms_p95": 6.822120000651911
-  },
-  {
-    "embedder": "clip_vit_b32",
-    "dim": 512,
-    "num_queries_scored": 35,
-    "recall_at_1": 0.34285714285714286,
-    "recall_at_5": 0.7714285714285715,
-    "mAP": 0.321283134210536,
-    "genuine_score_mean": 0.8812763277631607,
-    "genuine_score_std": 0.04638563756927379,
-    "impostor_score_mean": 0.8802255770785319,
-    "impostor_score_std": 0.04453979286531272,
-    "score_separation": 0.0010507506846287873,
-    "heading_robustness": {
-      "0-45": {
-        "recall_at_1": 0.4666666666666667,
-        "n": 15
-      },
-      "45-90": {
-        "recall_at_1": 0.5,
-        "n": 8
-      },
-      "90-180": {
-        "recall_at_1": 0.08333333333333333,
-        "n": 12
-      }
-    },
-    "embed_latency_ms_mean": 23.077088571361465,
-    "embed_latency_ms_p95": 21.880600002259598
-  },
-  {
-    "embedder": "dinov2_base",
-    "dim": 49152,
-    "num_queries_scored": 35,
-    "recall_at_1": 0.5142857142857142,
-    "recall_at_5": 0.9142857142857143,
-    "mAP": 0.4201869280811378,
-    "genuine_score_mean": 0.01228779252452001,
-    "genuine_score_std": 0.09377305037358859,
-    "impostor_score_mean": -0.024262810083784572,
-    "impostor_score_std": 0.06414668777090395,
-    "score_separation": 0.03655060260830458,
-    "heading_robustness": {
-      "0-45": {
-        "recall_at_1": 0.5238095238095238,
-        "n": 21
-      },
-      "45-90": {
-        "recall_at_1": 0.5,
-        "n": 8
-      },
-      "90-180": {
-        "recall_at_1": 0.5,
-        "n": 6
-      }
-    },
-    "embed_latency_ms_mean": 38.36338285743425,
-    "embed_latency_ms_p95": 43.74227000007522
-  },
-  {
-    "embedder": "netvlad_resnet18",
-    "dim": 32768,
-    "num_queries_scored": 35,
-    "recall_at_1": 0.7428571428571429,
-    "recall_at_5": 1.0,
-    "mAP": 0.4169700181664662,
-    "genuine_score_mean": 0.9991096758494412,
-    "genuine_score_std": 0.00027297128784961404,
-    "impostor_score_mean": 0.9990691692287745,
-    "impostor_score_std": 0.00024997433216878236,
-    "score_separation": 4.0506620666680426e-05,
-    "heading_robustness": {
-      "0-45": {
-        "recall_at_1": 0.8333333333333334,
-        "n": 24
-      },
-      "45-90": {
-        "recall_at_1": 1.0,
-        "n": 4
-      },
-      "90-180": {
-        "recall_at_1": 0.2857142857142857,
-        "n": 7
-      }
-    },
-    "embed_latency_ms_mean": 11.494217142691403,
-    "embed_latency_ms_p95": 15.797979997296352
+    "embed_latency_ms_mean": 26.86628923088742,
+    "embed_latency_ms_p95": 34.19776000082493
   }
 ]

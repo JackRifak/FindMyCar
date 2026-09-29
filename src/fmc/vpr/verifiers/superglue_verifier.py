@@ -31,10 +31,11 @@ _MODEL_CACHE: dict[str, object] = {}
 class SuperGlueVerifier(BenchmarkVerifier):
     def __init__(
         self,
-        min_match_count: int = 15,
+        min_match_count: int = 8,
         inlier_ratio_threshold: float = 0.35,
         weights: str = "indoor",
         device: str = "cpu",
+        max_keypoints: int = 512,
     ):
         repo_path = PROJECT_ROOT / "third_party" / "SuperGluePretrainedNetwork"
         if not repo_path.exists():
@@ -57,14 +58,15 @@ class SuperGlueVerifier(BenchmarkVerifier):
         self.device = device
         self.min_match_count = min_match_count
         self.inlier_ratio_threshold = inlier_ratio_threshold
+        self.max_keypoints = max_keypoints
         # "indoor" weights suit this project's parking-garage use case far
         # better than the "outdoor" weights SuperGlue also ships.
         self.name = f"superpoint_superglue_{weights}"
 
-        cache_key = f"{weights}:{device}"
+        cache_key = f"{weights}:{device}:{max_keypoints}"
         if cache_key not in _MODEL_CACHE:
             config = {
-                "superpoint": {"max_keypoints": 1024},
+                "superpoint": {"max_keypoints": max_keypoints},
                 "superglue": {"weights": weights},
             }
             _MODEL_CACHE[cache_key] = Matching(config).eval().to(device)

@@ -46,7 +46,7 @@ matches and reject confusions.
 ```
 python scripts/benchmark_verifiers.py --list
 python scripts/benchmark_verifiers.py --site site_00 \
-    --verifiers orb_ransac superpoint_lightglue loftr \
+    --verifiers orb_ransac superpoint_lightglue superpoint_superglue loftr \
     --out data/site_00/benchmarks/verifiers_report.json
 ```
 
@@ -56,8 +56,16 @@ site rather than trusting a default), accuracy split by texture richness
 (low/medium/high, via ORB keypoint count as a proxy -- the split most
 relevant to blank walls / repetitive garage flooring), and per-pair
 latency. Registered verifiers: `orb_ransac` (current production baseline),
-`superpoint_lightglue`, `superpoint_superglue` (needs a separate git clone,
-see `src/fmc/vpr/verifiers/superglue_verifier.py`), `loftr`.
+`superpoint_lightglue`, `superpoint_superglue` (original SuperGlue; requires
+the official repository cloned to `third_party/SuperGluePretrainedNetwork`),
+`loftr`. To enable SuperGlue, from the project root run:
+
+```
+git clone https://github.com/magicleap/SuperGluePretrainedNetwork third_party/SuperGluePretrainedNetwork
+```
+
+Then include `superpoint_superglue` in `--verifiers`. If the clone or Torch
+dependency is missing, the benchmark reports it as skipped and continues.
 
 ## Installing dependencies
 

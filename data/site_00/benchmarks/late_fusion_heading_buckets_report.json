@@ -1,0 +1,90 @@
+[
+  {
+    "embedder": "netvlad_resnet18",
+    "dim": 32768,
+    "num_queries_scored": 65,
+    "recall_at_1": 0.6153846153846154,
+    "recall_at_5": 0.9538461538461539,
+    "mAP": 0.3328646355874968,
+    "genuine_score_mean": 0.9988882489620693,
+    "genuine_score_std": 0.00032206653758814043,
+    "impostor_score_mean": 0.9988546591195359,
+    "impostor_score_std": 0.00031007603476810273,
+    "score_separation": 3.3589842533432446e-05,
+    "heading_robustness": {
+      "0-45": {
+        "recall_at_1": 0.725,
+        "n": 40
+      },
+      "45-90": {
+        "recall_at_1": 0.7142857142857143,
+        "n": 7
+      },
+      "90-180": {
+        "recall_at_1": 0.3333333333333333,
+        "n": 18
+      }
+    },
+    "embed_latency_ms_mean": 24.94548153794872,
+    "embed_latency_ms_p95": 35.40226000186521
+  },
+  {
+    "embedder": "dinov2_base",
+    "dim": 49152,
+    "num_queries_scored": 65,
+    "recall_at_1": 0.6153846153846154,
+    "recall_at_5": 0.9076923076923077,
+    "mAP": 0.3702215118760216,
+    "genuine_score_mean": 0.0389922758530745,
+    "genuine_score_std": 0.10755207429296378,
+    "impostor_score_mean": 0.013347268470779501,
+    "impostor_score_std": 0.08878681974956647,
+    "score_separation": 0.025645007382295,
+    "heading_robustness": {
+      "0-45": {
+        "recall_at_1": 0.6739130434782609,
+        "n": 46
+      },
+      "45-90": {
+        "recall_at_1": 0.5,
+        "n": 8
+      },
+      "90-180": {
+        "recall_at_1": 0.45454545454545453,
+        "n": 11
+      }
+    },
+    "embed_latency_ms_mean": 36.11131692349982,
+    "embed_latency_ms_p95": 37.909339999896474
+  },
+  {
+    "embedder": "late_fusion_zscore_netvlad_dinov2_base",
+    "dim": 81920,
+    "fusion": "per-query z-score; mean of NetVLAD and DINOv2-VLAD scores",
+    "num_queries_scored": 65,
+    "recall_at_1": 0.6153846153846154,
+    "recall_at_5": 0.9230769230769231,
+    "mAP": 0.36645239270336705,
+    "genuine_score_mean": 0.16203070892700466,
+    "genuine_score_std": 0.9352549659721814,
+    "impostor_score_mean": -0.05181692722031114,
+    "impostor_score_std": 0.7596473170348571,
+    "score_separation": 0.2138476361473158,
+    "heading_robustness": {
+      "0-45": {
+        "recall_at_1": 0.6590909090909091,
+        "n": 44
+      },
+      "45-90": {
+        "recall_at_1": 0.5555555555555556,
+        "n": 9
+      },
+      "90-180": {
+        "recall_at_1": 0.5,
+        "n": 12
+      }
+    },
+    "embed_latency_ms_mean": 49.014186154258475,
+    "embed_latency_ms_p95": 54.95634000253631
+  }
+]
