@@ -77,3 +77,10 @@ def _fusion_netvlad_dinov2_base(**kwargs):
     from fmc.vpr.embedders.fusion_embedder import FusionEmbedder
 
     return FusionEmbedder(**kwargs)
+
+
+@register("late_fusion_zscore_netvlad_dinov2_base")
+def _late_fusion_zscore_netvlad_dinov2_base(**kwargs):
+    from fmc.vpr.embedders.late_fusion_embedder import LateFusionEmbedder
+
+    return LateFusionEmbedder(**kwargs)

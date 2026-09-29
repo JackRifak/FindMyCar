@@ -1,0 +1,90 @@
+[
+  {
+    "embedder": "netvlad_resnet18",
+    "dim": 32768,
+    "num_queries_scored": 35,
+    "recall_at_1": 0.7428571428571429,
+    "recall_at_5": 1.0,
+    "mAP": 0.4169700181664662,
+    "genuine_score_mean": 0.9991096784598636,
+    "genuine_score_std": 0.0002729707185942945,
+    "impostor_score_mean": 0.9990691726124443,
+    "impostor_score_std": 0.0002499749219708479,
+    "score_separation": 4.050584741932539e-05,
+    "heading_robustness": {
+      "0-45": {
+        "recall_at_1": 0.8333333333333334,
+        "n": 24
+      },
+      "45-90": {
+        "recall_at_1": 1.0,
+        "n": 4
+      },
+      "90-180": {
+        "recall_at_1": 0.2857142857142857,
+        "n": 7
+      }
+    },
+    "embed_latency_ms_mean": 25.153382857180468,
+    "embed_latency_ms_p95": 27.701049999086536
+  },
+  {
+    "embedder": "dinov2_base",
+    "dim": 49152,
+    "num_queries_scored": 35,
+    "recall_at_1": 0.5142857142857142,
+    "recall_at_5": 0.9142857142857143,
+    "mAP": 0.4201869280811378,
+    "genuine_score_mean": 0.01228779141475059,
+    "genuine_score_std": 0.09377305029753528,
+    "impostor_score_mean": -0.024262810336091907,
+    "impostor_score_std": 0.06414668661042355,
+    "score_separation": 0.0365506017508425,
+    "heading_robustness": {
+      "0-45": {
+        "recall_at_1": 0.5238095238095238,
+        "n": 21
+      },
+      "45-90": {
+        "recall_at_1": 0.5,
+        "n": 8
+      },
+      "90-180": {
+        "recall_at_1": 0.5,
+        "n": 6
+      }
+    },
+    "embed_latency_ms_mean": 71.15545428563824,
+    "embed_latency_ms_p95": 184.72238999893293
+  },
+  {
+    "embedder": "late_fusion_zscore_netvlad_dinov2_base",
+    "dim": 81920,
+    "fusion": "per-query z-score; mean of NetVLAD and DINOv2-VLAD scores",
+    "num_queries_scored": 35,
+    "recall_at_1": 0.6285714285714286,
+    "recall_at_5": 0.9714285714285714,
+    "mAP": 0.43236155172941815,
+    "genuine_score_mean": 0.2601747553948047,
+    "genuine_score_std": 0.9666005626992064,
+    "impostor_score_mean": -0.07782519975783513,
+    "impostor_score_std": 0.7260753166281724,
+    "score_separation": 0.33799995515263986,
+    "heading_robustness": {
+      "0-45": {
+        "recall_at_1": 0.625,
+        "n": 24
+      },
+      "45-90": {
+        "recall_at_1": 0.6666666666666666,
+        "n": 6
+      },
+      "90-180": {
+        "recall_at_1": 0.6,
+        "n": 5
+      }
+    },
+    "embed_latency_ms_mean": 90.40853714291838,
+    "embed_latency_ms_p95": 220.5731099984405
+  }
+]

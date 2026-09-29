@@ -98,17 +98,21 @@ def evaluate_embedder(name: str, records: list[ReferenceImage], images: dict[str
     ids = [r.image_id for r in records if r.image_id in images]
     records_by_id = {r.image_id: r for r in records}
 
-    embeddings = []
-    embed_latencies = []
-    for image_id in ids:
-        t0 = time.perf_counter()
-        emb = embedder.embed(images[image_id])
-        embed_latencies.append((time.perf_counter() - t0) * 1000)
-        embeddings.append(emb)
-    embeddings = np.stack(embeddings).astype(np.float32)
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    norms[norms == 0] = 1e-8
-    normalized = embeddings / norms
+    if hasattr(embedder, "score_matrix"):
+        similarities, embed_latencies = embedder.score_matrix([images[image_id] for image_id in ids])
+    else:
+        embeddings = []
+        embed_latencies = []
+        for image_id in ids:
+            t0 = time.perf_counter()
+            emb = embedder.embed(images[image_id])
+            embed_latencies.append((time.perf_counter() - t0) * 1000)
+            embeddings.append(emb)
+        embeddings = np.stack(embeddings).astype(np.float32)
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-8
+        normalized = embeddings / norms
+        similarities = normalized @ normalized.T
 
     n = len(ids)
     ranks = []
@@ -119,8 +123,8 @@ def evaluate_embedder(name: str, records: list[ReferenceImage], images: dict[str
 
     for i, query_id in enumerate(ids):
         query_record = records_by_id[query_id]
-        sims = normalized @ normalized[i]
-        sims[i] = -1.0  # exclude self
+        sims = similarities[i].copy()
+        sims[i] = -np.inf  # exclude self
 
         relevant = np.zeros(n, dtype=bool)
         for j, cand_id in enumerate(ids):
@@ -155,6 +159,7 @@ def evaluate_embedder(name: str, records: list[ReferenceImage], images: dict[str
     return {
         "embedder": name,
         "dim": embedder.dim,
+        **({"fusion": "per-query z-score; mean of NetVLAD and DINOv2-VLAD scores"} if hasattr(embedder, "score_matrix") else {}),
         "num_queries_scored": int(len(ranks)),
         "recall_at_1": float(np.mean(ranks_arr <= 1)) if len(ranks_arr) else 0.0,
         "recall_at_5": float(np.mean(ranks_arr <= 5)) if len(ranks_arr) else 0.0,

@@ -23,9 +23,12 @@ Reports Recall@1/@5, mAP, genuine/impostor score separation, heading-
 bucketed Recall@1 (viewpoint robustness), and embedding latency, per
 embedder. Registered embedders: `color_histogram` (baseline),
 `clip_vit_b32`, `clip_vit_l14`, `dinov2_small`, `dinov2_base`,
-`netvlad_resnet18`, `fusion_netvlad_dinov2_base`. The fusion embedder
+`netvlad_resnet18`, `fusion_netvlad_dinov2_base`, and
+`late_fusion_zscore_netvlad_dinov2_base`. The feature-level fusion embedder
 concatenates separately L2-normalized NetVLAD and DINOv2-VLAD vectors with
-equal total weight, then normalizes the combined descriptor. `dinov2_*` extracts DINOv2 patch descriptors and
+equal total weight. The late-fusion benchmark instead computes each model's
+cosine scores independently, z-scores each query's candidate scores, then
+averages the two score sets. `dinov2_*` extracts DINOv2 patch descriptors and
 aggregates them with site-fitted, hard-assignment VLAD, following the
 AnyLoc-style DINOv2 + VLAD approach (not CLS pooling or GeM). See
 `src/fmc/vpr/embedders/` for implementations and

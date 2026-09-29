@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from fmc.vpr.embedders.fusion_embedder import combine_descriptors
+from fmc.vpr.embedders.late_fusion_embedder import zscore_similarity_rows
 
 
 def test_combine_descriptors_normalizes_each_component_and_full_vector():
@@ -27,3 +28,25 @@ def test_combine_descriptors_normalizes_each_component_and_full_vector():
 def test_combine_descriptors_rejects_invalid_inputs(first, second):
     with pytest.raises(ValueError):
         combine_descriptors(first, second)
+
+
+def test_zscore_similarity_rows_excludes_diagonal_and_normalizes_candidates():
+    scores = np.array(
+        [[1.0, 0.8, 0.4], [0.8, 1.0, 0.6], [0.4, 0.6, 1.0]],
+        dtype=np.float64,
+    )
+
+    standardized = zscore_similarity_rows(scores)
+
+    assert np.isneginf(np.diag(standardized)).all()
+    for row_index in range(len(scores)):
+        candidate_scores = np.delete(standardized[row_index], row_index)
+        assert candidate_scores.mean() == pytest.approx(0.0)
+        assert candidate_scores.std() == pytest.approx(1.0)
+
+
+def test_zscore_similarity_rows_handles_constant_similarity():
+    standardized = zscore_similarity_rows(np.ones((3, 3), dtype=np.float64))
+
+    assert np.isneginf(np.diag(standardized)).all()
+    assert np.all(standardized[~np.eye(3, dtype=bool)] == 0.0)
