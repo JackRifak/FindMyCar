@@ -5,9 +5,9 @@
     "num_true_match_pairs": 80,
     "num_hard_negative_pairs": 200,
     "at_configured_threshold": {
-      "true_positive_rate": 0.6375,
-      "false_positive_rate": 0.19,
-      "precision": 0.5730337078651685
+      "true_positive_rate": 0.6125,
+      "false_positive_rate": 0.115,
+      "precision": 0.6805555555555556
     },
     "genuine_inlier_ratio_mean": 0.4326585068566737,
     "impostor_inlier_ratio_mean": 0.10920087322200914,
@@ -126,12 +126,12 @@
     "by_texture_bucket": {
       "high_texture": {
         "n": 280,
-        "true_positive_rate": 0.6375,
-        "false_positive_rate": 0.19
+        "true_positive_rate": 0.6125,
+        "false_positive_rate": 0.115
       }
     },
-    "latency_ms_mean": 21.62774034409917,
-    "latency_ms_p95": 27.942880243062977
+    "latency_ms_mean": 21.618124993983656,
+    "latency_ms_p95": 29.07386529259384
   },
   {
     "verifier": "superpoint_lightglue",
@@ -264,8 +264,8 @@
         "false_positive_rate": 0.08
       }
     },
-    "latency_ms_mean": 93.50024962664715,
-    "latency_ms_p95": 120.12959001585841
+    "latency_ms_mean": 89.95562035623672,
+    "latency_ms_p95": 116.56072018668056
   },
   {
     "verifier": "loftr",
@@ -398,7 +398,7 @@
         "false_positive_rate": 0.0
       }
     },
-    "latency_ms_mean": 68.82414214446077,
-    "latency_ms_p95": 80.99574984516948
+    "latency_ms_mean": 68.25311069509813,
+    "latency_ms_p95": 75.78099525999278
   }
 ]

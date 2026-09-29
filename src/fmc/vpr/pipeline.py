@@ -33,7 +33,7 @@ class VPRResult:
 class VPRPipeline:
     def __init__(self, site: SiteConfig):
         self.site = site
-        self.embedder = get_embedder()
+        self.embedder = get_embedder(site)
         self.index = VectorIndex.load(site)
         logger.info(f"VPRPipeline initialized with {len(self.index.ids)} index records")
 

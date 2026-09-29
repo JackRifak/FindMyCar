@@ -1,0 +1,23 @@
+[
+  {
+    "embedder": "dinov2_base",
+    "dim": 768,
+    "num_queries_scored": 35,
+    "recall_at_1": 0.0,
+    "recall_at_5": 0.2857142857142857,
+    "mAP": 0.3578537733825281,
+    "genuine_score_mean": NaN,
+    "genuine_score_std": NaN,
+    "impostor_score_mean": NaN,
+    "impostor_score_std": NaN,
+    "score_separation": NaN,
+    "heading_robustness": {
+      "0-45": {
+        "recall_at_1": 0.0,
+        "n": 35
+      }
+    },
+    "embed_latency_ms_mean": 28.105405704783543,
+    "embed_latency_ms_p95": 24.343799985945225
+  }
+]

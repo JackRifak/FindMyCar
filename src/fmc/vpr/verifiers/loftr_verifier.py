@@ -52,7 +52,7 @@ class LoFTRVerifier(BenchmarkVerifier):
     def __init__(
         self,
         pretrained: str = "indoor_new",
-        min_match_count: int = 15,
+        min_match_count: int = 8,
         inlier_ratio_threshold: float = 0.35,
         confidence_threshold: float = 0.5,
         device: str = "cpu",

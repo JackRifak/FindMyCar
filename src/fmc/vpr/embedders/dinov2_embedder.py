@@ -1,9 +1,10 @@
-"""DINOv2 global-image embedder (HuggingFace transformers), CLS-token pooled.
+"""DINOv2 global-image embedder (HuggingFace transformers), patch-token GeM pooled.
 
-Self-supervised on fine-grained visual detail rather than semantic/caption
-alignment -- generally the strongest of the general-purpose options for
-instance-level place matching (telling two similar-looking bays apart),
-which is exactly what CLIP tends to be weak at.
+This is the fairer DINOv2 baseline for place recognition: instead of relying
+on the single CLS token, it pools the patch-token features in an AnyLoc-style
+fashion, which better reflects the dense local visual evidence learned by
+DINOv2 and makes the comparison against other retrieval backbones much more
+honest.
 
 Requires: pip install transformers torch pillow
 """
@@ -18,7 +19,7 @@ _MODEL_CACHE: dict[str, tuple] = {}
 
 
 class DINOv2Embedder(BenchmarkEmbedder):
-    def __init__(self, model_name: str = "facebook/dinov2-small", device: str = "cpu"):
+    def __init__(self, model_name: str = "facebook/dinov2-small", device: str = "cpu", pool_p: float = 3.0):
         try:
             import torch
             from transformers import AutoImageProcessor, AutoModel
@@ -30,6 +31,7 @@ class DINOv2Embedder(BenchmarkEmbedder):
 
         self._torch = torch
         self.device = device
+        self.pool_p = float(pool_p)
         self.name = f"dinov2_{model_name.split('/')[-1]}"
 
         if model_name not in _MODEL_CACHE:
@@ -51,6 +53,11 @@ class DINOv2Embedder(BenchmarkEmbedder):
         inputs = self._processor(images=pil_img, return_tensors="pt").to(self.device)
         with self._torch.no_grad():
             outputs = self._model(**inputs)
-            cls_embedding = outputs.last_hidden_state[:, 0, :]
-            cls_embedding = cls_embedding / cls_embedding.norm(dim=-1, keepdim=True)
-        return cls_embedding.squeeze(0).cpu().numpy().astype(np.float32)
+            tokens = outputs.last_hidden_state
+            if tokens.shape[1] > 1:
+                # DINOv2 includes the CLS token at index 0; for dense patch-token
+                # pooling, ignore the CLS and aggregate the remaining patch tokens.
+                tokens = tokens[:, 1:, :]
+            gem = tokens.pow(self.pool_p).mean(dim=1).pow(1.0 / self.pool_p)
+            gem = gem / gem.norm(dim=-1, keepdim=True)
+        return gem.squeeze(0).cpu().numpy().astype(np.float32)

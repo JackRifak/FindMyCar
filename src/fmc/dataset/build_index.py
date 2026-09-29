@@ -29,7 +29,7 @@ def build_index(site: SiteConfig) -> None:
     if not records:
         raise RuntimeError(f"No dataset records found at {site.dataset_jsonl_path}")
 
-    embedder = get_embedder()
+    embedder = get_embedder(site)
     ids: list[str] = []
     vectors: list[np.ndarray] = []
 

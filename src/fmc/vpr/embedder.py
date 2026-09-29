@@ -1,14 +1,10 @@
 """Image embedding model interface.
 
-PLACEHOLDER IMPLEMENTATION — this is intentionally a cheap, dependency-light
-baseline (color histogram) that exists ONLY to make the end-to-end pipeline
-runnable now, before Deliverable 4 (embedding model benchmark) picks a real
-model. Do not use this for real-world accuracy evaluation.
-
-Deliverable 4 candidates to benchmark against this baseline: CLIP variants,
-DINOv2, NetVLAD, and other place-recognition-specific embedding models —
-evaluated on Top-1/Top-5 retrieval accuracy, robustness to lighting/occlusion,
-embedding size, and on-device vs. backend inference cost.
+Production embedder selection: this project now uses a NetVLAD-style
+place-recognition backbone rather than the placeholder color histogram.
+The site-specific VLAD cluster centers are fit on the site's own reference
+images before use so the model matches this environment instead of relying
+on a generic pretrained setting.
 """
 from __future__ import annotations
 
@@ -51,6 +47,29 @@ class ColorHistogramEmbedder(Embedder):
         return hist.astype(np.float32)
 
 
-def get_embedder() -> Embedder:
-    """Factory — swap the returned implementation once a real model is chosen."""
-    return ColorHistogramEmbedder()
+def _fit_netvlad_on_site(netvlad_embedder, site) -> None:
+    from fmc.dataset.schema import load_records
+
+    records = load_records(site.dataset_jsonl_path)
+    sample_images = []
+    max_samples = min(len(records), 40)
+    for record in records[:max_samples]:
+        img_path = site.processed_dir / record.processed_path
+        image = cv2.imread(str(img_path))
+        if image is not None:
+            sample_images.append(image)
+
+    if not sample_images:
+        raise RuntimeError(f"No valid processed images found to fit NetVLAD on site '{site.site_id}'")
+
+    netvlad_embedder.fit_clusters(sample_images)
+
+
+def get_embedder(site=None) -> Embedder:
+    """Return the production NetVLAD embedder, optionally fitting on the site."""
+    from fmc.vpr.embedders.netvlad_embedder import NetVLADEmbedder
+
+    embedder = NetVLADEmbedder(backbone="resnet18")
+    if site is not None:
+        _fit_netvlad_on_site(embedder, site)
+    return embedder
