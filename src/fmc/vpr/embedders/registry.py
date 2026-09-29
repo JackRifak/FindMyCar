@@ -70,3 +70,10 @@ def _netvlad_resnet18(**kwargs):
     from fmc.vpr.embedders.netvlad_embedder import NetVLADEmbedder
 
     return NetVLADEmbedder(backbone="resnet18", **kwargs)
+
+
+@register("fusion_netvlad_dinov2_base")
+def _fusion_netvlad_dinov2_base(**kwargs):
+    from fmc.vpr.embedders.fusion_embedder import FusionEmbedder
+
+    return FusionEmbedder(**kwargs)
