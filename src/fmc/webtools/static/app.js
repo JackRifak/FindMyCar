@@ -671,6 +671,26 @@ document.getElementById("cancelNewLocationBtn").addEventListener("click", () => 
   draw();
 });
 
+document.getElementById("buildIndexBtn").addEventListener("click", async () => {
+  if (!state.siteId) {
+    setStatus("Select a site before building embeddings", true);
+    return;
+  }
+  const button = document.getElementById("buildIndexBtn");
+  const status = document.getElementById("buildIndexStatus");
+  button.disabled = true;
+  status.textContent = "Building site embedding index... This may take a while.";
+  try {
+    const result = await api("POST", `/api/sites/${state.siteId}/embeddings/build`);
+    status.textContent = `Index built: ${result.indexed_images} photos, ${result.embedding_dim}-dimensional embeddings.`;
+  } catch (error) {
+    status.textContent = error.message;
+    setStatus(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
 async function selectCaptureLocation(locationId) {
   state.selectedLocationId = locationId;
   state.pendingNewLocationPoint = null;
@@ -728,7 +748,7 @@ function renderPhotoGrid() {
         const updated = await api("PATCH", `/api/sites/${state.siteId}/capture-locations/${state.selectedLocationId}/photos/${imageId}`, { heading_degrees: heading });
         const photoIdx = state.selectedLocationPhotos.findIndex((p) => p.image_id === imageId);
         if (photoIdx >= 0) state.selectedLocationPhotos[photoIdx] = updated;
-        e.target.closest(".photo-card-controls").querySelector(".unsaved-badge").style.display = "none";
+        await loadLocationPhotos(); // heading edits may change the ID suffix and filename
         draw();
       } catch (err) { setStatus(err.message, true); }
     });

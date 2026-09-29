@@ -103,6 +103,12 @@
       capture location. Each location holds multiple reference photos, each with its own heading
       (0-360°, clockwise from facility north).</p>
 
+      <div class="embedding-build-panel">
+        <p class="hint">Build or refresh the site-wide search index after adding or removing reference photos.</p>
+        <button id="buildIndexBtn">Build embeddings</button>
+        <div id="buildIndexStatus" class="hint" role="status" aria-live="polite"></div>
+      </div>
+
       <div id="newLocationForm" style="display:none">
         <p class="hint" style="margin-top:0">New location at the point you clicked:</p>
         <label>ID <input type="text" id="newLocationId" placeholder="e.g. loc_05"></label>

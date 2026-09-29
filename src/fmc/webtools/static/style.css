@@ -178,6 +178,15 @@ button:disabled { background: #aab; cursor: not-allowed; }
 #queryResult, #routeResult { margin-top: 10px; font-size: 12px; white-space: pre-wrap; }
 
 /* Capture locations + photos */
+.embedding-build-panel {
+  padding: 10px;
+  margin: 12px 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f9fc;
+}
+.embedding-build-panel .hint { margin-bottom: 6px; }
+.embedding-build-panel #buildIndexStatus { margin-top: 8px; overflow-wrap: anywhere; }
 .danger-btn { background: #d94f4f; }
 .danger-btn:hover { background: #c23e3e; }
 

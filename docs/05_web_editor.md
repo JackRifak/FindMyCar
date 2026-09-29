@@ -58,7 +58,9 @@ or click empty space to create a new one (prompts for an ID and zone).
 Selecting a location shows its reference photos as a grid: each photo has
 a heading input (0-360°) with a "Save"-on-blur pattern and an explicit
 **unsaved** badge while a typed value hasn't been committed yet, plus a
-delete button. "+ Add photo(s)" accepts multiple JPEG/PNG files at once
+delete button. The last three digits of each photo ID and processed
+filename track its saved heading; editing the heading updates both.
+"+ Add photo(s)" accepts multiple JPEG/PNG files at once
 (non-image files are rejected client- and server-side); newly added photos
 default to heading 0 and can be adjusted afterward. The selected location's
 photos are drawn as small directional arrows on the floor plan, computed
@@ -71,7 +73,9 @@ required leaving the browser entirely for `pick_floorplan_points.py` +
 `compute_location_coords.py` + manually organizing photo folders +
 `ingest_survey_locations.py` — now it's all here, and both paths remain
 fully interchangeable (a location created via CLI shows up in the browser
-and vice versa).
+and vice versa). Use **Build embeddings** to rebuild the site's VPR index
+from all ingested photos after adding or removing reference images; the
+button reports the indexed image count and embedding dimension when done.
 
 **5. Test** — upload a real survey photo, see where VPR thinks it is
 (magenta star) directly on the map, and preview a route to a chosen slot.

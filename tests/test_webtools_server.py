@@ -11,6 +11,7 @@ import io
 from pathlib import Path
 
 import fitz
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -231,6 +232,12 @@ def test_capture_location_and_photo_lifecycle(client: TestClient):
     )
     assert patch_res.status_code == 200
     assert patch_res.json()["heading_degrees"] == 180
+    updated_image_id = patch_res.json()["image_id"]
+    assert updated_image_id.endswith("_180")
+    assert updated_image_id != image_id_2
+    assert client.get(f"/api/sites/site_00/photos/{updated_image_id}").status_code == 200
+    assert client.get(f"/api/sites/site_00/photos/{image_id_2}").status_code == 404
+    image_id_2 = updated_image_id
 
     # Reject an out-of-range heading
     bad_res = client.patch(
@@ -275,6 +282,52 @@ def test_photo_upload_requires_existing_location(client: TestClient):
         files={"file": ("p1.jpg", _tiny_jpeg_bytes(), "image/jpeg")},
     )
     assert res.status_code == 404
+
+
+def test_build_embeddings_endpoint_calls_site_index_builder(client: TestClient, monkeypatch):
+    _calibrated_site(client)
+    client.post(
+        "/api/sites/site_00/floors/1/capture-locations",
+        json={"location_id": "loc_01", "zone": "Zone_A", "px": 100, "py": 100},
+    )
+    upload = client.post(
+        "/api/sites/site_00/capture-locations/loc_01/photos",
+        data={"heading_degrees": "90"},
+        files={"file": ("p1.jpg", _tiny_jpeg_bytes(), "image/jpeg")},
+    )
+    assert upload.status_code == 200
+
+    calls = []
+
+    def fake_build_index(site):
+        calls.append(site.site_id)
+        records = server_module.load_records(site.dataset_jsonl_path)
+        np.savez(
+            site.embeddings_path,
+            ids=np.array([record.image_id for record in records]),
+            embeddings=np.zeros((len(records), 4), dtype=np.float32),
+            dataset_version=np.array("test-version"),
+        )
+
+    monkeypatch.setattr(server_module, "build_index", fake_build_index)
+    response = client.post("/api/sites/site_00/embeddings/build")
+
+    assert response.status_code == 200
+    assert calls == ["site_00"]
+    assert response.json() == {
+        "indexed_images": 1,
+        "embedding_dim": 4,
+        "dataset_version": "test-version",
+    }
+
+
+def test_build_embeddings_endpoint_rejects_empty_site(client: TestClient):
+    client.post("/api/sites/site_00")
+
+    response = client.post("/api/sites/site_00/embeddings/build")
+
+    assert response.status_code == 400
+    assert "No ingested photos" in response.json()["detail"]
 
 
 def test_capture_location_upsert_moves_existing_location(client: TestClient):

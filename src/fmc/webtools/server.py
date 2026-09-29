@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import math
+import re
 import shutil
 from pathlib import Path
 
@@ -33,9 +34,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from fmc.config import DATA_ROOT, SiteConfig, get_or_create_floor, load_site_config, save_site_config
+from fmc.dataset.build_index import build_index
 from fmc.dataset.capture import next_sequence_for_site, register_capture
 from fmc.dataset.locations import delete_location, get_location, load_locations_csv, upsert_location
-from fmc.dataset.schema import delete_record, load_records, records_for_location, update_record_heading
+from fmc.dataset.schema import delete_record, load_records, records_for_location, save_records
 from fmc.fusion.map_matching import snap_to_walkable
 from fmc.georeference import (
     ControlPoint,
@@ -54,6 +56,7 @@ app = FastAPI(title="Find My Car — Floor Plan Editor")
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_PHOTO_CONTENT_TYPES = {"image/jpeg", "image/png"}
+_IMAGE_ID_HEADING_SUFFIX = re.compile(r"^(F\d{2}_Z.+_\d{5})_\d{3}$")
 
 
 # ---------------------------------------------------------------- helpers
@@ -445,13 +448,44 @@ def update_location_photo(site_id: str, location_id: str, image_id: str, body: H
     site = get_site_or_404(site_id)
     if not (0 <= body.heading_degrees <= 360):
         raise HTTPException(400, "heading_degrees must be between 0 and 360")
+    heading = round(body.heading_degrees) % 360
+    records = load_records(site.dataset_jsonl_path)
+    record_index = next((i for i, record in enumerate(records) if record.image_id == image_id), None)
+    if record_index is None:
+        raise HTTPException(404, f"No record with image_id={image_id!r}")
+
+    old_record = records[record_index]
+    match = _IMAGE_ID_HEADING_SUFFIX.match(old_record.image_id)
+    updated_id = f"{match.group(1)}_{heading:03d}" if match else old_record.image_id
+    if any(record.image_id == updated_id and record.image_id != image_id for record in records):
+        raise HTTPException(409, f"An image with ID '{updated_id}' already exists")
+
+    old_path = site.processed_dir / old_record.processed_path
+    updated_rel_path = old_record.processed_path
+    new_path = old_path
+    if updated_id != old_record.image_id:
+        new_path = old_path.with_name(f"{updated_id}{old_path.suffix}")
+        updated_rel_path = str(new_path.relative_to(site.processed_dir))
+        if new_path.exists() and new_path != old_path:
+            raise HTTPException(409, f"Processed image already exists: {new_path.name}")
+
+    updated_record = old_record.model_copy(
+        update={"image_id": updated_id, "orientation": heading, "processed_path": updated_rel_path}
+    )
+    records[record_index] = updated_record
+
+    moved_file = old_path.exists() and new_path != old_path
+    if moved_file:
+        old_path.replace(new_path)
     try:
-        record = update_record_heading(site.dataset_jsonl_path, image_id, round(body.heading_degrees) % 360)
-    except ValueError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        save_records(site.dataset_jsonl_path, records)
+    except OSError:
+        if moved_file and new_path.exists():
+            new_path.replace(old_path)
+        raise
 
     transform = _load_transform_or_none(site)
-    return _photo_json(site_id, record, transform)
+    return _photo_json(site_id, updated_record, transform)
 
 
 @app.delete("/api/sites/{site_id}/capture-locations/{location_id}/photos/{image_id}")
@@ -465,6 +499,29 @@ def delete_location_photo(site_id: str, location_id: str, image_id: str):
     if photo_path.exists():
         photo_path.unlink()
     return {"deleted": image_id}
+
+
+@app.post("/api/sites/{site_id}/embeddings/build")
+def build_site_embedding_index(site_id: str):
+    """Build or rebuild the site's VPR embedding index from ingested photos."""
+    site = get_site_or_404(site_id)
+    records = load_records(site.dataset_jsonl_path)
+    if not records:
+        raise HTTPException(400, "No ingested photos available to build embeddings")
+
+    try:
+        build_index(site)
+    except ImportError as exc:
+        raise HTTPException(503, f"Embedding dependencies are unavailable: {exc}") from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(400, f"Could not build embedding index: {exc}") from exc
+
+    with np.load(site.embeddings_path, allow_pickle=True) as index_data:
+        return {
+            "indexed_images": int(len(index_data["ids"])),
+            "embedding_dim": int(index_data["embeddings"].shape[1]),
+            "dataset_version": str(index_data["dataset_version"].item()),
+        }
 
 
 @app.get("/api/sites/{site_id}/photos/{image_id}")
