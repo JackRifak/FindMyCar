@@ -80,7 +80,8 @@ def _save_match_visualization(
         f"QUERY {query_id}  ->  CANDIDATE {candidate_id}",
         f"rank={rank}  retrieval_score={similarity:.4f}  outcome={outcome}",
         f"ORB ratio-test matches={verification.num_matches}  RANSAC inliers={inlier_count}  "
-        f"inlier_ratio={verification.inlier_ratio:.3f}  (green=inlier, red=outlier)",
+        f"inlier_ratio={verification.inlier_ratio:.3f}  spread={verification.inlier_spread_fraction:.3f}  "
+        f"(green=inlier, red=outlier)",
     ]
     for line_index, text in enumerate(header_lines):
         cv2.putText(
@@ -134,6 +135,24 @@ def main():
     parser.add_argument("--out", type=Path, default=None, help="Optional JSON path for per-image results")
     parser.add_argument("--ransac-seed", type=int, default=0, help="Base seed for repeatable per-pair RANSAC")
     parser.add_argument(
+        "--min-inlier-spread-fraction",
+        type=float,
+        default=0.0,
+        help="Require RANSAC inliers to span at least this fraction of both image dimensions (0 disables)",
+    )
+    parser.add_argument(
+        "--orb-ratio-test",
+        type=float,
+        default=0.75,
+        help="Lowe ratio-test cutoff for ORB matching (default: 0.75)",
+    )
+    parser.add_argument(
+        "--min-match-count",
+        type=int,
+        default=ORB_MIN_MATCH_COUNT,
+        help=f"Minimum ratio-test matches required before RANSAC (default: {ORB_MIN_MATCH_COUNT})",
+    )
+    parser.add_argument(
         "--visualize-dir",
         type=Path,
         default=None,
@@ -156,6 +175,12 @@ def main():
              "leave-one-out removes the exact self-match)",
     )
     args = parser.parse_args()
+    if not 0.0 <= args.min_inlier_spread_fraction <= 1.0:
+        parser.error("--min-inlier-spread-fraction must be between 0 and 1")
+    if not 0.0 < args.orb_ratio_test <= 1.0:
+        parser.error("--orb-ratio-test must be greater than 0 and at most 1")
+    if args.min_match_count < 4:
+        parser.error("--min-match-count must be at least 4 for homography estimation")
 
     site = load_site_config(args.site)
     records = load_records(site.dataset_jsonl_path)
@@ -233,8 +258,28 @@ def main():
             should_visualize = args.visualize_dir is not None and (
                 not visualize_ids or query_id in visualize_ids
             )
-            details = verify_with_details(query_img, cand_img) if should_visualize else None
-            verification = details.result if details is not None else verify(query_img, cand_img)
+            details = (
+                verify_with_details(
+                    query_img,
+                    cand_img,
+                    min_inlier_spread_fraction=args.min_inlier_spread_fraction,
+                    ratio_test_threshold=args.orb_ratio_test,
+                    min_match_count=args.min_match_count,
+                )
+                if should_visualize
+                else None
+            )
+            verification = (
+                details.result
+                if details is not None
+                else verify(
+                    query_img,
+                    cand_img,
+                    min_inlier_spread_fraction=args.min_inlier_spread_fraction,
+                    ratio_test_threshold=args.orb_ratio_test,
+                    min_match_count=args.min_match_count,
+                )
+            )
             error = math.hypot(cand_record.x - query_record.x, cand_record.y - query_record.y)
             query_evidence.append((cand_id, error, verification, details, rank, float(query_similarities[cand_idx])))
         candidate_evidence.append((query_id, query_evidence))
@@ -245,8 +290,9 @@ def main():
             result = (query_id, "no_match", None, None, None)
             for candidate_id, error, verification, _details, _rank, _similarity in candidates:
                 if (
-                    verification.num_matches >= ORB_MIN_MATCH_COUNT
+                    verification.num_matches >= args.min_match_count
                     and verification.inlier_ratio >= threshold
+                    and verification.inlier_spread_fraction >= args.min_inlier_spread_fraction
                 ):
                     status = "correct" if error <= LOCATION_MATCH_TOLERANCE_M else "wrong_location"
                     result = (query_id, status, error, verification.inlier_ratio, candidate_id)
@@ -272,6 +318,60 @@ def main():
         print(
             f"\nInlier ratio for correct matches: mean={np.mean(correct_inliers):.3f}, "
             f"min={min(correct_inliers):.3f}, max={max(correct_inliers):.3f}"
+        )
+
+    genuine_ratios = [
+        verification.inlier_ratio
+        for _query_id, candidates in candidate_evidence
+        for _candidate_id, error, verification, _details, _rank, _similarity in candidates
+        if error <= LOCATION_MATCH_TOLERANCE_M
+    ]
+    impostor_ratios = [
+        verification.inlier_ratio
+        for _query_id, candidates in candidate_evidence
+        for _candidate_id, error, verification, _details, _rank, _similarity in candidates
+        if error > LOCATION_MATCH_TOLERANCE_M
+    ]
+    genuine_spreads = [
+        verification.inlier_spread_fraction
+        for _query_id, candidates in candidate_evidence
+        for _candidate_id, error, verification, _details, _rank, _similarity in candidates
+        if error <= LOCATION_MATCH_TOLERANCE_M
+    ]
+    impostor_spreads = [
+        verification.inlier_spread_fraction
+        for _query_id, candidates in candidate_evidence
+        for _candidate_id, error, verification, _details, _rank, _similarity in candidates
+        if error > LOCATION_MATCH_TOLERANCE_M
+    ]
+    verification_separation = {
+        "genuine_count": len(genuine_ratios),
+        "impostor_count": len(impostor_ratios),
+        "genuine_mean": float(np.mean(genuine_ratios)) if genuine_ratios else None,
+        "genuine_std": float(np.std(genuine_ratios)) if genuine_ratios else None,
+        "impostor_mean": float(np.mean(impostor_ratios)) if impostor_ratios else None,
+        "impostor_std": float(np.std(impostor_ratios)) if impostor_ratios else None,
+        "mean_gap": (
+            float(np.mean(genuine_ratios) - np.mean(impostor_ratios))
+            if genuine_ratios and impostor_ratios
+            else None
+        ),
+        "genuine_spread_mean": float(np.mean(genuine_spreads)) if genuine_spreads else None,
+        "genuine_spread_std": float(np.std(genuine_spreads)) if genuine_spreads else None,
+        "impostor_spread_mean": float(np.mean(impostor_spreads)) if impostor_spreads else None,
+        "impostor_spread_std": float(np.std(impostor_spreads)) if impostor_spreads else None,
+    }
+    if verification_separation["mean_gap"] is not None:
+        print(
+            "\nTop-K candidate inlier-ratio separation: "
+            f"genuine={verification_separation['genuine_mean']:.3f} "
+            f"(n={len(genuine_ratios)}), impostor={verification_separation['impostor_mean']:.3f} "
+            f"(n={len(impostor_ratios)}), gap={verification_separation['mean_gap']:.3f}"
+        )
+        print(
+            "Inlier spread (minimum x/y span fraction across both images): "
+            f"genuine={verification_separation['genuine_spread_mean']:.3f}, "
+            f"impostor={verification_separation['impostor_spread_mean']:.3f}"
         )
 
     if confusions:
@@ -398,6 +498,9 @@ def main():
                     "embedder": args.embedder,
                     "device": args.device,
                     "ransac_seed": args.ransac_seed,
+                    "min_inlier_spread_fraction": args.min_inlier_spread_fraction,
+                    "orb_ratio_test": args.orb_ratio_test,
+                    "min_match_count": args.min_match_count,
                     "embedding_dim": embedder_dim,
                     "top_k": args.top_k,
                     "total": total,
@@ -405,6 +508,7 @@ def main():
                     "wrong_location": wrong,
                     "no_match": no_match,
                     "default_inlier_ratio_threshold": GEOMETRIC_INLIER_RATIO_THRESHOLD,
+                    "top_k_inlier_ratio_separation": verification_separation,
                     "threshold_sweep": threshold_sweep,
                     "results": [
                         {

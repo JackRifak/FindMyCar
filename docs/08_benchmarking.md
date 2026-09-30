@@ -101,6 +101,19 @@ This sweep is a same-site exploratory retuning, not a held-out accuracy
 estimate. Keep a separate capture session for selecting thresholds before
 using them in production.
 
+The evaluator also accepts `--orb-ratio-test` (default `0.75`),
+`--min-match-count` (default `15`), and `--min-inlier-spread-fraction`
+(default `0`, disabled). The spread fraction is the smallest normalized
+inlier bounding-box span across x/y in both images. These options are for
+evaluation only; they do not change the production verifier defaults.
+For example, compare a stricter Lowe test and match-count floor with:
+
+```
+python scripts/evaluate_vpr_accuracy.py --site site_00 --embedder production \
+    --orb-ratio-test 0.70 --min-match-count 25 --threshold-sweep \
+    --ransac-seed 0 --out data/site_00/benchmarks/e2e_orb_strict.json
+```
+
 To inspect the actual ORB correspondences for selected queries, add
 `--visualize-dir` and optionally restrict export with `--visualize-ids`:
 
