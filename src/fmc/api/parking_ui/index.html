@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
     <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
-    <link rel="stylesheet" href="/parking-ui/styles.css" />
+    <link rel="stylesheet" href="/parking-ui/styles.css?v=20260930" />
   </head>
   <body>
     <div class="page-shell">
@@ -29,7 +29,7 @@
             <span class="pill accent">Live in-car guidance</span>
             <h2>Find your parking bay and navigate there without guesswork</h2>
             <p>
-              Start with a quick sensor calibration, then localize your phone and type in any slot ID to get a guided route.
+              Choose your parking slot, calibrate your phone, then localize to get a guided route.
             </p>
           </div>
           <div class="hero-status">
@@ -48,11 +48,50 @@
           </div>
         </section>
 
-        <section class="panel calibration-panel">
+        <nav class="workflow-progress" aria-label="Setup progress">
+          <button type="button" class="workflow-step is-active" data-workflow-step="destination" aria-current="step">
+            <span class="workflow-number">1</span>
+            <span class="workflow-label">Parking slot</span>
+          </button>
+          <span class="workflow-connector" aria-hidden="true"></span>
+          <button type="button" class="workflow-step" data-workflow-step="calibration" disabled>
+            <span class="workflow-number">2</span>
+            <span class="workflow-label">Calibration</span>
+          </button>
+          <span class="workflow-connector" aria-hidden="true"></span>
+          <button type="button" class="workflow-step" data-workflow-step="navigation" disabled>
+            <span class="workflow-number">3</span>
+            <span class="workflow-label">Navigation</span>
+          </button>
+        </nav>
+
+        <section class="panel workflow-panel destination-panel" data-workflow-panel="destination">
           <div class="panel-header">
             <div>
-              <p class="section-kicker">Step 1 of setup</p>
-              <h3>3-Step sensor calibration</h3>
+              <p class="section-kicker">Step 1 of 3</p>
+              <h3 tabindex="-1">Choose your parking slot</h3>
+            </div>
+          </div>
+
+          <div class="search-row">
+            <label class="field-label" for="slotInput">Slot ID</label>
+            <div class="input-wrap">
+              <input id="slotInput" list="slotSuggestions" placeholder="Type slot ID, e.g. 87-04C" />
+              <datalist id="slotSuggestions"></datalist>
+            </div>
+          </div>
+          <div id="slotSuggestionsMini" class="chip-list"></div>
+
+          <div class="workflow-actions workflow-actions-end">
+            <button id="destinationContinueBtn" type="button" class="primary-btn" disabled>Continue to calibration</button>
+          </div>
+        </section>
+
+        <section class="panel calibration-panel workflow-panel" data-workflow-panel="calibration" hidden>
+          <div class="panel-header">
+            <div>
+              <p class="section-kicker">Step 2 of 3</p>
+              <h3 tabindex="-1">Calibrate your phone</h3>
             </div>
             <button id="startCalibrationBtn" class="primary-btn">Start calibration</button>
           </div>
@@ -134,109 +173,116 @@
             Waiting for calibration to begin.
           </div>
           <p id="calibrationHint" class="calibration-hint">Hold the phone perfectly still to stabilize the sensors.</p>
+
+          <div class="workflow-actions">
+            <button id="calibrationBackBtn" type="button" class="secondary-btn">Back</button>
+            <button id="calibrationContinueBtn" type="button" class="primary-btn" disabled>Continue to navigation</button>
+          </div>
         </section>
 
-        <section class="panel controls-panel">
-          <div class="panel-header inline-header">
-            <div>
-              <p class="section-kicker">Navigation</p>
-              <h3>Locate a parking slot</h3>
-            </div>
-            <button id="localizeBtn" class="secondary-btn">Localize</button>
-          </div>
-
-          <div class="search-row">
-            <label class="field-label" for="slotInput">Slot ID</label>
-            <div class="input-wrap">
-              <input id="slotInput" list="slotSuggestions" placeholder="Type slot ID, e.g. 87-04C" />
-              <datalist id="slotSuggestions"></datalist>
-              <button id="routeBtn" class="primary-btn">Navigate</button>
-            </div>
-          </div>
-
-          <div id="slotSuggestionsMini" class="chip-list"></div>
-        </section>
-
-        <section class="content-grid">
-          <div class="panel camera-panel">
-            <div class="panel-header compact-header">
+        <section id="navigationPanel" class="workflow-panel navigation-panel" data-workflow-panel="navigation" hidden>
+          <section class="panel controls-panel">
+            <div class="panel-header inline-header">
               <div>
-                <p class="section-kicker">Live camera</p>
-                <h3>Positioning</h3>
+                <p class="section-kicker">Step 3 of 3</p>
+                <h3 tabindex="-1">Navigate to your car</h3>
               </div>
+              <button id="localizeBtn" class="secondary-btn">Localize</button>
             </div>
 
-            <div class="camera-wrap">
-              <video id="cameraView" playsinline muted autoplay></video>
-              <div class="camera-overlay">
-                <span>Live capture</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="panel metrics-panel">
-            <div class="panel-header compact-header">
+            <div class="navigation-destination">
               <div>
-                <p class="section-kicker">Live telemetry</p>
-                <h3>Drive status</h3>
+                <span class="field-label">Destination</span>
+                <strong id="selectedSlotSummary">No slot selected</strong>
+              </div>
+              <button id="routeBtn" type="button" class="primary-btn">Get route</button>
+            </div>
+            <div class="workflow-actions">
+              <button id="navigationBackBtn" type="button" class="secondary-btn">Back to calibration</button>
+            </div>
+          </section>
+
+          <section class="content-grid">
+            <div class="panel camera-panel">
+              <div class="panel-header compact-header">
+                <div>
+                  <p class="section-kicker">Live camera</p>
+                  <h3>Positioning</h3>
+                </div>
+              </div>
+
+              <div class="camera-wrap">
+                <video id="cameraView" playsinline muted autoplay></video>
+                <div class="camera-overlay">
+                  <span>Live capture</span>
+                </div>
               </div>
             </div>
 
-            <div class="metrics-grid">
-              <div class="metric-card">
-                <span>Floor</span>
-                <strong id="metricFloor">—</strong>
+            <div class="panel metrics-panel">
+              <div class="panel-header compact-header">
+                <div>
+                  <p class="section-kicker">Live telemetry</p>
+                  <h3>Drive status</h3>
+                </div>
               </div>
-              <div class="metric-card">
-                <span>Coordinates</span>
-                <strong id="metricCoords">—</strong>
-              </div>
-              <div class="metric-card">
-                <span>Heading</span>
-                <strong id="metricHeading">—</strong>
-              </div>
-              <div class="metric-card">
-                <span>Distance</span>
-                <strong id="metricDistance">—</strong>
-              </div>
-            </div>
-          </div>
-        </section>
 
-        <section class="panel route-panel">
-          <div class="panel-header inline-header">
-            <div>
-              <p class="section-kicker">Route guidance</p>
-              <h3>Navigation preview</h3>
+              <div class="metrics-grid">
+                <div class="metric-card">
+                  <span>Floor</span>
+                  <strong id="metricFloor">—</strong>
+                </div>
+                <div class="metric-card">
+                  <span>Coordinates</span>
+                  <strong id="metricCoords">—</strong>
+                </div>
+                <div class="metric-card">
+                  <span>Heading</span>
+                  <strong id="metricHeading">—</strong>
+                </div>
+                <div class="metric-card">
+                  <span>Distance</span>
+                  <strong id="metricDistance">—</strong>
+                </div>
+              </div>
             </div>
-            <span id="routeBadge" class="route-badge neutral">Awaiting route</span>
-          </div>
+          </section>
 
-          <div class="route-layout">
-            <div class="route-svg-wrap">
-              <svg id="routeSvg" viewBox="0 0 420 220" preserveAspectRatio="xMidYMid meet" aria-label="Route preview"></svg>
+          <section class="panel route-panel">
+            <div class="panel-header inline-header">
+              <div>
+                <p class="section-kicker">Route guidance</p>
+                <h3>Navigation preview</h3>
+              </div>
+              <span id="routeBadge" class="route-badge neutral">Awaiting route</span>
             </div>
-            <div class="route-details">
-              <div class="route-detail">
-                <span>Destination</span>
-                <strong id="routeDestination">No slot selected</strong>
+
+            <div class="route-layout">
+              <div class="route-svg-wrap">
+                <svg id="routeSvg" viewBox="0 0 420 220" preserveAspectRatio="xMidYMid meet" aria-label="Route preview"></svg>
               </div>
-              <div class="route-detail">
-                <span>Distance</span>
-                <strong id="routeDistance">0.0 m</strong>
-              </div>
-              <div class="route-detail">
-                <span>Route status</span>
-                <strong id="routeStatus">Waiting</strong>
+              <div class="route-details">
+                <div class="route-detail">
+                  <span>Destination</span>
+                  <strong id="routeDestination">No slot selected</strong>
+                </div>
+                <div class="route-detail">
+                  <span>Distance</span>
+                  <strong id="routeDistance">0.0 m</strong>
+                </div>
+                <div class="route-detail">
+                  <span>Route status</span>
+                  <strong id="routeStatus">Waiting</strong>
+                </div>
               </div>
             </div>
-          </div>
+          </section>
         </section>
       </main>
     </div>
 
     <footer class="footer-bar">Powered by Traffic Tech</footer>
 
-    <script src="/parking-ui/app.js"></script>
+    <script src="/parking-ui/app.js?v=20260930"></script>
   </body>
 </html>

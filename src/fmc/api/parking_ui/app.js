@@ -1,5 +1,6 @@
 const state = {
   deviceId: "parking-mobile-" + Math.random().toString(36).slice(2, 8),
+  workflowStep: "destination",
   slotList: [],
   position: { floor: 1, x: 0, y: 0, heading: 0, confidence: 0, tracking: false },
   calibration: {
@@ -31,6 +32,13 @@ const ui = {
   calibrationSteps: [...document.querySelectorAll(".cal-step")],
   calibrationButtons: [...document.querySelectorAll(".step-action")],
   startCalibrationBtn: document.getElementById("startCalibrationBtn"),
+  workflowPanels: [...document.querySelectorAll("[data-workflow-panel]")],
+  workflowSteps: [...document.querySelectorAll("[data-workflow-step]")],
+  destinationContinueBtn: document.getElementById("destinationContinueBtn"),
+  calibrationContinueBtn: document.getElementById("calibrationContinueBtn"),
+  calibrationBackBtn: document.getElementById("calibrationBackBtn"),
+  navigationBackBtn: document.getElementById("navigationBackBtn"),
+  selectedSlotSummary: document.getElementById("selectedSlotSummary"),
   localizeBtn: document.getElementById("localizeBtn"),
   routeBtn: document.getElementById("routeBtn"),
   slotInput: document.getElementById("slotInput"),
@@ -75,6 +83,49 @@ function updateCalibrationReadiness() {
   const allDone = Object.values(state.calibration.completed).every(Boolean);
   state.sessionReady = allDone;
   ui.sessionState.textContent = allDone ? "Calibrated" : "Ready";
+  updateWorkflowControls();
+}
+
+function canEnterWorkflowStep(step) {
+  if (step === "destination") return true;
+  if (step === "calibration") return Boolean(ui.slotInput.value.trim());
+  if (step === "navigation") return state.sessionReady;
+  return false;
+}
+
+function updateWorkflowControls() {
+  const hasDestination = Boolean(ui.slotInput.value.trim());
+  ui.destinationContinueBtn.disabled = !hasDestination;
+  ui.calibrationContinueBtn.disabled = !state.sessionReady;
+  ui.selectedSlotSummary.textContent = hasDestination ? ui.slotInput.value.trim() : "No slot selected";
+
+  ui.workflowSteps.forEach((button) => {
+    const step = button.dataset.workflowStep;
+    const isCurrent = step === state.workflowStep;
+    const isComplete = step === "destination" ? hasDestination : step === "calibration" && state.sessionReady;
+    button.disabled = !canEnterWorkflowStep(step);
+    button.classList.toggle("is-active", isCurrent);
+    button.classList.toggle("is-complete", isComplete);
+    if (isCurrent) button.setAttribute("aria-current", "step");
+    else button.removeAttribute("aria-current");
+  });
+}
+
+function setWorkflowStep(step, moveFocus = false) {
+  if (!canEnterWorkflowStep(step)) return;
+
+  state.workflowStep = step;
+  ui.workflowPanels.forEach((panel) => {
+    panel.hidden = panel.dataset.workflowPanel !== step;
+  });
+  updateWorkflowControls();
+
+  if (moveFocus) {
+    ui.workflowPanels
+      .find((panel) => panel.dataset.workflowPanel === step)
+      ?.querySelector("h3")
+      ?.focus({ preventScroll: true });
+  }
 }
 
 function setCalibrationStep(stepLabel, stepIndex = null, stepKey = null) {
@@ -310,6 +361,7 @@ async function initSlots() {
     ui.slotSuggestionsMini.querySelectorAll(".chip").forEach((button) => {
       button.addEventListener("click", () => {
         ui.slotInput.value = button.textContent.trim();
+        ui.slotInput.dispatchEvent(new Event("input", { bubbles: true }));
       });
     });
   } catch (error) {
@@ -319,6 +371,7 @@ async function initSlots() {
     ui.slotSuggestionsMini.querySelectorAll(".chip").forEach((button) => {
       button.addEventListener("click", () => {
         ui.slotInput.value = button.textContent.trim();
+        ui.slotInput.dispatchEvent(new Event("input", { bubbles: true }));
       });
     });
   }
@@ -559,15 +612,30 @@ ui.calibrationButtons.forEach((button) => {
   });
 });
 
+ui.workflowSteps.forEach((button) => {
+  button.addEventListener("click", () => {
+    setWorkflowStep(button.dataset.workflowStep, true);
+  });
+});
+
+ui.destinationContinueBtn.addEventListener("click", () => setWorkflowStep("calibration", true));
+ui.calibrationBackBtn.addEventListener("click", () => setWorkflowStep("destination", true));
+ui.calibrationContinueBtn.addEventListener("click", () => setWorkflowStep("navigation", true));
+ui.navigationBackBtn.addEventListener("click", () => setWorkflowStep("calibration", true));
+ui.slotInput.addEventListener("input", updateWorkflowControls);
 ui.localizeBtn.addEventListener("click", localizeParkingPosition);
 ui.routeBtn.addEventListener("click", navigateToSlot);
 ui.slotInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") navigateToSlot();
+  if (event.key === "Enter") {
+    event.preventDefault();
+    setWorkflowStep("calibration", true);
+  }
 });
 
 window.addEventListener("load", async () => {
   await initSlots();
   updateCalibrationReadiness();
+  setWorkflowStep("destination");
   setCalibrationStep("Waiting for calibration to begin.", 0, "stillness");
   updateRouteStatus();
   setInterval(refreshCurrentPosition, 2000);
