@@ -301,26 +301,6 @@ input {
   overflow: hidden;
 }
 
-.phone-shell {
-  position: relative;
-  z-index: 1;
-  width: 124px;
-  height: 170px;
-  border-radius: 28px;
-  background: linear-gradient(180deg, #1a1a1a 0%, #090909 100%);
-  border: 2px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 24px 40px rgba(0, 0, 0, 0.34);
-}
-
-.phone-shell::before {
-  content: "";
-  position: absolute;
-  inset: 14px 12px 12px;
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(253, 216, 53, 0.2), rgba(255, 255, 255, 0.04));
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-
 .visual-track {
   position: absolute;
   z-index: 0;
@@ -328,10 +308,6 @@ input {
   border-radius: inherit;
   opacity: 0;
   pointer-events: none;
-}
-
-.calibration-visual.step-stillness .phone-shell {
-  animation: none;
 }
 
 .calibration-visual.step-stillness .visual-track {
@@ -354,10 +330,6 @@ input {
 
 .calibration-visual.step-stillness .visual-track::after {
   animation-delay: 1.2s;
-}
-
-.calibration-visual.step-compass .phone-shell {
-  animation: compassTilt 3.2s ease-in-out infinite;
 }
 
 .calibration-visual.step-compass .visual-track {
@@ -383,10 +355,6 @@ input {
 .route-marker {
   fill: #fdd835;
   filter: drop-shadow(0 0 5px rgba(253, 216, 53, 0.7));
-}
-
-.calibration-visual.step-walk .phone-shell {
-  animation: walkStep 1.2s ease-in-out infinite;
 }
 
 .calibration-visual.step-walk .visual-track {
@@ -470,26 +438,6 @@ input {
   100% {
     opacity: 0;
     transform: translate(-50%, -50%) scale(1.3);
-  }
-}
-
-@keyframes compassTilt {
-  0%,
-  100% {
-    transform: rotate(-6deg);
-  }
-  50% {
-    transform: rotate(6deg);
-  }
-}
-
-@keyframes walkStep {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-5px);
   }
 }
 
