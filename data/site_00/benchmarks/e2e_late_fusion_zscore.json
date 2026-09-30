@@ -1,0 +1,468 @@
+{
+  "site": "site_00",
+  "embedder": "late_fusion_zscore_netvlad_dinov2_base",
+  "device": "cuda",
+  "embedding_dim": 81920,
+  "top_k": 8,
+  "total": 65,
+  "correct": 43,
+  "wrong_location": 9,
+  "no_match": 13,
+  "results": [
+    {
+      "image_id": "F01_ZB_00001_159",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7972027972027972,
+      "matched_image_id": "F01_ZB_00002_198"
+    },
+    {
+      "image_id": "F01_ZB_00002_198",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7702702702702703,
+      "matched_image_id": "F01_ZB_00001_159"
+    },
+    {
+      "image_id": "F01_ZB_00003_268",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.6951219512195121,
+      "matched_image_id": "F01_ZB_00010_294"
+    },
+    {
+      "image_id": "F01_ZB_00004_005",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.78125,
+      "matched_image_id": "F01_ZB_00041_329"
+    },
+    {
+      "image_id": "F01_ZB_00005_026",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7634408602150538,
+      "matched_image_id": "F01_ZB_00004_005"
+    },
+    {
+      "image_id": "F01_ZB_00006_052",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.8253012048192772,
+      "matched_image_id": "F01_ZB_00005_026"
+    },
+    {
+      "image_id": "F01_ZB_00007_079",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.4375,
+      "matched_image_id": "F01_ZB_00038_122"
+    },
+    {
+      "image_id": "F01_ZB_00008_202",
+      "status": "wrong_location",
+      "location_error_m": 17.56564355544596,
+      "inlier_ratio": 0.4117647058823529,
+      "matched_image_id": "F01_ZB_00016_209"
+    },
+    {
+      "image_id": "F01_ZB_00009_257",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.6571428571428571,
+      "matched_image_id": "F01_ZB_00002_198"
+    },
+    {
+      "image_id": "F01_ZB_00010_294",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7,
+      "matched_image_id": "F01_ZB_00003_268"
+    },
+    {
+      "image_id": "F01_ZB_00011_321",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.5447154471544715,
+      "matched_image_id": "F01_ZB_00018_264"
+    },
+    {
+      "image_id": "F01_ZB_00012_020",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7241379310344828,
+      "matched_image_id": "F01_ZB_00050_017"
+    },
+    {
+      "image_id": "F01_ZB_00013_062",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7857142857142857,
+      "matched_image_id": "F01_ZB_00049_067"
+    },
+    {
+      "image_id": "F01_ZB_00014_104",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00015_169",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00016_209",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.6912751677852349,
+      "matched_image_id": "F01_ZB_00017_241"
+    },
+    {
+      "image_id": "F01_ZB_00017_241",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.8726591760299626,
+      "matched_image_id": "F01_ZB_00018_264"
+    },
+    {
+      "image_id": "F01_ZB_00018_264",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.8701298701298701,
+      "matched_image_id": "F01_ZB_00017_241"
+    },
+    {
+      "image_id": "F01_ZB_00019_269",
+      "status": "wrong_location",
+      "location_error_m": 8.1753666924316,
+      "inlier_ratio": 0.43478260869565216,
+      "matched_image_id": "F01_ZB_00028_284"
+    },
+    {
+      "image_id": "F01_ZB_00020_332",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.6031746031746031,
+      "matched_image_id": "F01_ZB_00019_269"
+    },
+    {
+      "image_id": "F01_ZB_00021_011",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.6470588235294118,
+      "matched_image_id": "F01_ZB_00020_332"
+    },
+    {
+      "image_id": "F01_ZB_00022_046",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.5333333333333333,
+      "matched_image_id": "F01_ZB_00026_225"
+    },
+    {
+      "image_id": "F01_ZB_00023_086",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7032967032967034,
+      "matched_image_id": "F01_ZB_00022_046"
+    },
+    {
+      "image_id": "F01_ZB_00024_140",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.819047619047619,
+      "matched_image_id": "F01_ZB_00025_188"
+    },
+    {
+      "image_id": "F01_ZB_00025_188",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.4230769230769231,
+      "matched_image_id": "F01_ZB_00066_182"
+    },
+    {
+      "image_id": "F01_ZB_00026_225",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.4,
+      "matched_image_id": "F01_ZB_00023_086"
+    },
+    {
+      "image_id": "F01_ZB_00027_248",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.5925925925925926,
+      "matched_image_id": "F01_ZB_00064_243"
+    },
+    {
+      "image_id": "F01_ZB_00028_284",
+      "status": "wrong_location",
+      "location_error_m": 8.1753666924316,
+      "inlier_ratio": 0.48484848484848486,
+      "matched_image_id": "F01_ZB_00019_269"
+    },
+    {
+      "image_id": "F01_ZB_00029_326",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.9084507042253521,
+      "matched_image_id": "F01_ZB_00030_016"
+    },
+    {
+      "image_id": "F01_ZB_00030_016",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.5,
+      "matched_image_id": "F01_ZB_00034_212"
+    },
+    {
+      "image_id": "F01_ZB_00031_070",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.9607843137254902,
+      "matched_image_id": "F01_ZB_00032_096"
+    },
+    {
+      "image_id": "F01_ZB_00032_096",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.9390862944162437,
+      "matched_image_id": "F01_ZB_00031_070"
+    },
+    {
+      "image_id": "F01_ZB_00033_143",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7478260869565218,
+      "matched_image_id": "F01_ZB_00034_212"
+    },
+    {
+      "image_id": "F01_ZB_00034_212",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.8529411764705882,
+      "matched_image_id": "F01_ZB_00033_143"
+    },
+    {
+      "image_id": "F01_ZB_00035_229",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7784810126582279,
+      "matched_image_id": "F01_ZB_00027_248"
+    },
+    {
+      "image_id": "F01_ZB_00036_223",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.8969465648854962,
+      "matched_image_id": "F01_ZB_00043_236"
+    },
+    {
+      "image_id": "F01_ZB_00037_183",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00038_122",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00039_072",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00040_025",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.75,
+      "matched_image_id": "F01_ZB_00005_026"
+    },
+    {
+      "image_id": "F01_ZB_00041_329",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.8648648648648649,
+      "matched_image_id": "F01_ZB_00004_005"
+    },
+    {
+      "image_id": "F01_ZB_00042_276",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00043_236",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.8288590604026845,
+      "matched_image_id": "F01_ZB_00036_223"
+    },
+    {
+      "image_id": "F01_ZB_00044_311",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.9112903225806451,
+      "matched_image_id": "F01_ZB_00051_315"
+    },
+    {
+      "image_id": "F01_ZB_00045_260",
+      "status": "wrong_location",
+      "location_error_m": 10.565750846333733,
+      "inlier_ratio": 0.5833333333333334,
+      "matched_image_id": "F01_ZB_00053_110"
+    },
+    {
+      "image_id": "F01_ZB_00046_225",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00047_180",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00048_118",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00049_067",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7916666666666666,
+      "matched_image_id": "F01_ZB_00013_062"
+    },
+    {
+      "image_id": "F01_ZB_00050_017",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.7258064516129032,
+      "matched_image_id": "F01_ZB_00012_020"
+    },
+    {
+      "image_id": "F01_ZB_00051_315",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.931129476584022,
+      "matched_image_id": "F01_ZB_00044_311"
+    },
+    {
+      "image_id": "F01_ZB_00052_164",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.9558823529411765,
+      "matched_image_id": "F01_ZB_00066_182"
+    },
+    {
+      "image_id": "F01_ZB_00053_110",
+      "status": "wrong_location",
+      "location_error_m": 10.565750846333733,
+      "inlier_ratio": 0.5,
+      "matched_image_id": "F01_ZB_00045_260"
+    },
+    {
+      "image_id": "F01_ZB_00054_057",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.8950617283950617,
+      "matched_image_id": "F01_ZB_00022_046"
+    },
+    {
+      "image_id": "F01_ZB_00055_358",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00056_304",
+      "status": "wrong_location",
+      "location_error_m": 8.1753666924316,
+      "inlier_ratio": 0.7142857142857143,
+      "matched_image_id": "F01_ZB_00063_268"
+    },
+    {
+      "image_id": "F01_ZB_00057_256",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00059_166",
+      "status": "wrong_location",
+      "location_error_m": 8.1753666924316,
+      "inlier_ratio": 0.4444444444444444,
+      "matched_image_id": "F01_ZB_00066_182"
+    },
+    {
+      "image_id": "F01_ZB_00060_111",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00061_069",
+      "status": "wrong_location",
+      "location_error_m": 8.1753666924316,
+      "inlier_ratio": 0.47619047619047616,
+      "matched_image_id": "F01_ZB_00054_057"
+    },
+    {
+      "image_id": "F01_ZB_00062_322",
+      "status": "no_match",
+      "location_error_m": null,
+      "inlier_ratio": null,
+      "matched_image_id": null
+    },
+    {
+      "image_id": "F01_ZB_00063_268",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.9398496240601504,
+      "matched_image_id": "F01_ZB_00064_243"
+    },
+    {
+      "image_id": "F01_ZB_00064_243",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.647887323943662,
+      "matched_image_id": "F01_ZB_00027_248"
+    },
+    {
+      "image_id": "F01_ZB_00065_208",
+      "status": "wrong_location",
+      "location_error_m": 18.25266828829895,
+      "inlier_ratio": 0.4117647058823529,
+      "matched_image_id": "F01_ZB_00047_180"
+    },
+    {
+      "image_id": "F01_ZB_00066_182",
+      "status": "correct",
+      "location_error_m": 0.0,
+      "inlier_ratio": 0.8775510204081632,
+      "matched_image_id": "F01_ZB_00052_164"
+    }
+  ]
+}

@@ -130,8 +130,8 @@
         "false_positive_rate": 0.10140845070422536
       }
     },
-    "latency_ms_mean": 18.570159230638147,
-    "latency_ms_p95": 26.81061000184853
+    "latency_ms_mean": 18.153792884661996,
+    "latency_ms_p95": 25.48826499551068
   },
   {
     "verifier": "superpoint_superglue",
@@ -139,16 +139,16 @@
     "num_true_match_pairs": 165,
     "num_hard_negative_pairs": 355,
     "at_configured_threshold": {
-      "true_positive_rate": 0.4121212121212121,
-      "false_positive_rate": 0.09859154929577464,
-      "precision": 0.6601941747572816
+      "true_positive_rate": 0.46060606060606063,
+      "false_positive_rate": 0.27887323943661974,
+      "precision": 0.4342857142857143
     },
-    "genuine_inlier_ratio_mean": 0.32609128407403126,
-    "impostor_inlier_ratio_mean": 0.10584568927706318,
+    "genuine_inlier_ratio_mean": 0.35015442631899174,
+    "impostor_inlier_ratio_mean": 0.19874446499274032,
     "best_threshold_by_f1": {
       "threshold": 0.15,
-      "precision": 0.5296442687747036,
-      "recall": 0.8121212121212121
+      "precision": 0.4369230769230769,
+      "recall": 0.8606060606060606
     },
     "threshold_sweep": [
       {
@@ -158,113 +158,113 @@
       },
       {
         "threshold": 0.05,
-        "precision": 0.5230769230769231,
-        "recall": 0.8242424242424242
+        "precision": 0.43373493975903615,
+        "recall": 0.8727272727272727
       },
       {
         "threshold": 0.1,
-        "precision": 0.5230769230769231,
-        "recall": 0.8242424242424242
+        "precision": 0.43373493975903615,
+        "recall": 0.8727272727272727
       },
       {
         "threshold": 0.15,
-        "precision": 0.5296442687747036,
-        "recall": 0.8121212121212121
+        "precision": 0.4369230769230769,
+        "recall": 0.8606060606060606
       },
       {
         "threshold": 0.2,
-        "precision": 0.5511111111111111,
-        "recall": 0.7515151515151515
+        "precision": 0.4444444444444444,
+        "recall": 0.8
       },
       {
         "threshold": 0.25,
-        "precision": 0.5631578947368421,
-        "recall": 0.6484848484848484
+        "precision": 0.4389312977099237,
+        "recall": 0.696969696969697
       },
       {
         "threshold": 0.3,
-        "precision": 0.6267605633802817,
-        "recall": 0.5393939393939394
+        "precision": 0.4532710280373832,
+        "recall": 0.5878787878787879
       },
       {
         "threshold": 0.35,
-        "precision": 0.6601941747572816,
-        "recall": 0.4121212121212121
+        "precision": 0.4342857142857143,
+        "recall": 0.46060606060606063
       },
       {
         "threshold": 0.4,
-        "precision": 0.7571428571428571,
-        "recall": 0.3212121212121212
+        "precision": 0.45864661654135336,
+        "recall": 0.3696969696969697
       },
       {
         "threshold": 0.45,
-        "precision": 0.8333333333333334,
-        "recall": 0.2727272727272727
+        "precision": 0.4594594594594595,
+        "recall": 0.3090909090909091
       },
       {
         "threshold": 0.5,
-        "precision": 0.825,
-        "recall": 0.2
+        "precision": 0.4470588235294118,
+        "recall": 0.23030303030303031
       },
       {
         "threshold": 0.55,
-        "precision": 0.8125,
-        "recall": 0.15757575757575756
+        "precision": 0.5283018867924528,
+        "recall": 0.1696969696969697
       },
       {
         "threshold": 0.6,
-        "precision": 0.8,
+        "precision": 0.5555555555555556,
         "recall": 0.12121212121212122
       },
       {
         "threshold": 0.65,
-        "precision": 0.8947368421052632,
+        "precision": 0.7083333333333334,
         "recall": 0.10303030303030303
       },
       {
         "threshold": 0.7,
-        "precision": 0.8666666666666667,
+        "precision": 0.7647058823529411,
         "recall": 0.07878787878787878
       },
       {
         "threshold": 0.75,
-        "precision": 0.75,
+        "precision": 0.6,
         "recall": 0.03636363636363636
       },
       {
         "threshold": 0.8,
-        "precision": 0.6666666666666666,
+        "precision": 0.4,
         "recall": 0.012121212121212121
       },
       {
         "threshold": 0.85,
-        "precision": 1.0,
+        "precision": 0.3333333333333333,
         "recall": 0.006060606060606061
       },
       {
         "threshold": 0.9,
-        "precision": null,
+        "precision": 0.0,
         "recall": 0.0
       },
       {
         "threshold": 0.95,
-        "precision": null,
+        "precision": 0.0,
         "recall": 0.0
       },
       {
         "threshold": 1.0,
-        "precision": null,
+        "precision": 0.0,
         "recall": 0.0
       }
     ],
     "by_texture_bucket": {
       "high_texture": {
         "n": 520,
-        "true_positive_rate": 0.4121212121212121,
-        "false_positive_rate": 0.09859154929577464
+        "true_positive_rate": 0.46060606060606063,
+        "false_positive_rate": 0.27887323943661974
       }
     },
-    "latency_ms_mean": 150.2666276922285,
-    "latency_ms_p95": 194.82160999905318
+    "latency_ms_mean": 154.51354423075827,
+    "latency_ms_p95": 202.96159500467178
   }
 ]

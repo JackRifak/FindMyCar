@@ -85,3 +85,18 @@ and `fmc/vpr/geometric_verification.verify()` and re-run
 meters and end-to-end latency -- that's what determines whether the change
 actually fixes the field-test failures (P6's zero-match, the ~48% no-match
 rate) documented in the project's live-capture test notes.
+
+To check whether the geometric verifier's default inlier-ratio threshold is
+appropriate for a particular retrieval embedder, run the end-to-end threshold
+sweep. It reuses each query's ordered top-K candidates and their ORB/RANSAC
+evidence while reporting correct, false-match, and no-match counts per cutoff:
+
+```
+python scripts/evaluate_vpr_accuracy.py --site site_00 --embedder dinov2_base \
+    --device cuda --threshold-sweep --ransac-seed 0 \
+    --out data/site_00/benchmarks/e2e_dinov2_threshold_sweep.json
+```
+
+This sweep is a same-site exploratory retuning, not a held-out accuracy
+estimate. Keep a separate capture session for selecting thresholds before
+using them in production.
