@@ -103,6 +103,98 @@ input {
   gap: 18px;
 }
 
+.workflow-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px minmax(0, 1fr) 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(22, 22, 22, 0.96), rgba(10, 10, 10, 0.96));
+  box-shadow: var(--shadow);
+}
+
+.workflow-step {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.workflow-step:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text);
+}
+
+.workflow-step:focus-visible {
+  outline: 2px solid var(--yellow);
+  outline-offset: 2px;
+}
+
+.workflow-step:disabled {
+  color: #888;
+  cursor: not-allowed;
+}
+
+.workflow-step.is-active {
+  border-color: rgba(253, 216, 53, 0.38);
+  background: rgba(253, 216, 53, 0.09);
+  color: var(--yellow-3);
+}
+
+.workflow-step.is-complete:not(.is-active) {
+  color: var(--success);
+}
+
+.workflow-number {
+  display: grid;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.workflow-step.is-active .workflow-number {
+  border-color: var(--yellow);
+  background: var(--yellow);
+  color: #111;
+}
+
+.workflow-step.is-complete:not(.is-active) .workflow-number {
+  border-color: rgba(110, 231, 168, 0.5);
+  background: rgba(110, 231, 168, 0.1);
+  color: var(--success);
+}
+
+.workflow-step:disabled .workflow-number {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.workflow-connector {
+  height: 1px;
+  background: linear-gradient(90deg, rgba(253, 216, 53, 0.3), var(--line));
+}
+
 .panel {
   background: linear-gradient(180deg, rgba(22, 22, 22, 0.96), rgba(10, 10, 10, 0.96));
   border: 1px solid var(--line);
@@ -735,6 +827,26 @@ input {
   .calibration-steps,
   .content-grid {
     grid-template-columns: 1fr;
+  }
+
+  .workflow-progress {
+    grid-template-columns: minmax(0, 1fr) 12px minmax(0, 1fr) 12px minmax(0, 1fr);
+    gap: 3px;
+    padding: 6px;
+  }
+
+  .workflow-step {
+    flex-direction: column;
+    gap: 5px;
+    padding: 7px 2px;
+    font-size: 0.68rem;
+    text-align: center;
+  }
+
+  .workflow-number {
+    flex-basis: 30px;
+    width: 30px;
+    height: 30px;
   }
 
   .panel {
