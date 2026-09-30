@@ -37,10 +37,84 @@ from fmc.config import (
     load_site_config,
 )
 from fmc.dataset.schema import load_records
-from fmc.vpr.geometric_verification import verify
+from fmc.vpr.geometric_verification import verify, verify_with_details
 from fmc.vpr.embedders.registry import available_embedders, get_benchmark_embedder
 
 LOCATION_MATCH_TOLERANCE_M = 0.5
+
+
+def _save_match_visualization(
+    query_image: np.ndarray,
+    candidate_image: np.ndarray,
+    details,
+    output_path: Path,
+    query_id: str,
+    candidate_id: str,
+    rank: int,
+    similarity: float,
+    outcome: str,
+    max_matches: int = 160,
+) -> None:
+    query_h, query_w = query_image.shape[:2]
+    candidate_h, candidate_w = candidate_image.shape[:2]
+    scale = min(1.0, 1800 / (query_w + candidate_w), 1100 / max(query_h, candidate_h))
+    query_size = (max(1, round(query_w * scale)), max(1, round(query_h * scale)))
+    candidate_size = (max(1, round(candidate_w * scale)), max(1, round(candidate_h * scale)))
+    query_view = cv2.resize(query_image, query_size)
+    candidate_view = cv2.resize(candidate_image, candidate_size)
+
+    header_height = 86
+    canvas_height = header_height + max(query_size[1], candidate_size[1])
+    canvas_width = query_size[0] + candidate_size[0]
+    canvas = np.full((canvas_height, canvas_width, 3), 32, dtype=np.uint8)
+    canvas[header_height:header_height + query_size[1], :query_size[0]] = query_view
+    canvas[
+        header_height:header_height + candidate_size[1],
+        query_size[0]:query_size[0] + candidate_size[0],
+    ] = candidate_view
+
+    inlier_mask = details.inlier_mask
+    inlier_count = int(inlier_mask.sum()) if inlier_mask is not None else 0
+    verification = details.result
+    header_lines = [
+        f"QUERY {query_id}  ->  CANDIDATE {candidate_id}",
+        f"rank={rank}  retrieval_score={similarity:.4f}  outcome={outcome}",
+        f"ORB ratio-test matches={verification.num_matches}  RANSAC inliers={inlier_count}  "
+        f"inlier_ratio={verification.inlier_ratio:.3f}  (green=inlier, red=outlier)",
+    ]
+    for line_index, text in enumerate(header_lines):
+        cv2.putText(
+            canvas,
+            text,
+            (12, 22 + line_index * 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.58,
+            (240, 240, 240),
+            1,
+            cv2.LINE_AA,
+        )
+
+    inlier_indices = [i for i in range(len(details.matches)) if inlier_mask is not None and inlier_mask[i]]
+    outlier_indices = [i for i in range(len(details.matches)) if inlier_mask is None or not inlier_mask[i]]
+    selected_indices = (inlier_indices + outlier_indices)[:max_matches]
+    for match_index in selected_indices:
+        match = details.matches[match_index]
+        query_point = details.query_keypoints[match.queryIdx].pt
+        candidate_point = details.candidate_keypoints[match.trainIdx].pt
+        p1 = (round(query_point[0] * scale), round(query_point[1] * scale) + header_height)
+        p2 = (
+            round(candidate_point[0] * scale) + query_size[0],
+            round(candidate_point[1] * scale) + header_height,
+        )
+        is_inlier = inlier_mask is not None and bool(inlier_mask[match_index])
+        color = (40, 220, 80) if is_inlier else (40, 80, 240)
+        cv2.line(canvas, p1, p2, color, 1, cv2.LINE_AA)
+        cv2.circle(canvas, p1, 3, color, -1, cv2.LINE_AA)
+        cv2.circle(canvas, p2, 3, color, -1, cv2.LINE_AA)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output_path), canvas):
+        raise OSError(f"Could not write match visualization: {output_path}")
 
 
 def main():
@@ -59,6 +133,18 @@ def main():
     )
     parser.add_argument("--out", type=Path, default=None, help="Optional JSON path for per-image results")
     parser.add_argument("--ransac-seed", type=int, default=0, help="Base seed for repeatable per-pair RANSAC")
+    parser.add_argument(
+        "--visualize-dir",
+        type=Path,
+        default=None,
+        help="Save annotated ORB/RANSAC query-candidate images (defaults to all queries)",
+    )
+    parser.add_argument(
+        "--visualize-ids",
+        nargs="+",
+        default=None,
+        help="Limit visual export to these query image IDs; each shows its selected match or top-ranked rejected candidate",
+    )
     parser.add_argument(
         "--threshold-sweep",
         action="store_true",
@@ -115,6 +201,7 @@ def main():
 
     # (query_id, [(candidate_id, error_m, verification)])
     candidate_evidence = []
+    visualize_ids = set(args.visualize_ids or [])
 
     for query_idx, query_id in enumerate(ids):
         query_record = records_by_id.get(query_id)
@@ -131,7 +218,7 @@ def main():
         top_k_idx = np.argsort(-query_similarities)[: args.top_k]
 
         query_evidence = []
-        for cand_idx in top_k_idx:
+        for rank, cand_idx in enumerate(top_k_idx, start=1):
             cand_id = ids[cand_idx]
             cand_record = records_by_id.get(cand_id)
             if cand_record is None:
@@ -143,16 +230,20 @@ def main():
             seed_material = f"{args.ransac_seed}:{query_id}:{cand_id}".encode("utf-8")
             pair_seed = int.from_bytes(hashlib.blake2s(seed_material, digest_size=4).digest(), "little")
             cv2.setRNGSeed(pair_seed & 0x7FFFFFFF)
-            verification = verify(query_img, cand_img)
+            should_visualize = args.visualize_dir is not None and (
+                not visualize_ids or query_id in visualize_ids
+            )
+            details = verify_with_details(query_img, cand_img) if should_visualize else None
+            verification = details.result if details is not None else verify(query_img, cand_img)
             error = math.hypot(cand_record.x - query_record.x, cand_record.y - query_record.y)
-            query_evidence.append((cand_id, error, verification))
+            query_evidence.append((cand_id, error, verification, details, rank, float(query_similarities[cand_idx])))
         candidate_evidence.append((query_id, query_evidence))
 
     def resolve_at_threshold(threshold: float):
         resolved = []
         for query_id, candidates in candidate_evidence:
             result = (query_id, "no_match", None, None, None)
-            for candidate_id, error, verification in candidates:
+            for candidate_id, error, verification, _details, _rank, _similarity in candidates:
                 if (
                     verification.num_matches >= ORB_MIN_MATCH_COUNT
                     and verification.inlier_ratio >= threshold
@@ -260,6 +351,43 @@ def main():
                     f"  {image_id}: {status}; matched={matched_id}; "
                     f"location_error={error_text}; inlier_ratio={inlier_text}"
                 )
+
+    if args.visualize_dir:
+        results_by_query = {result[0]: result for result in results}
+        visualized = 0
+        for query_id, candidates in candidate_evidence:
+            if visualize_ids and query_id not in visualize_ids:
+                continue
+            if not candidates:
+                continue
+            query_result = results_by_query[query_id]
+            selected = next((candidate for candidate in candidates if candidate[0] == query_result[4]), None)
+            if selected is None:
+                selected = candidates[0]
+            candidate_id, _error, verification, details, rank, similarity = selected
+            if details is None:
+                continue
+            query_record = records_by_id[query_id]
+            candidate_record = records_by_id[candidate_id]
+            query_image = cv2.imread(str(site.processed_dir / query_record.processed_path))
+            candidate_image = cv2.imread(str(site.processed_dir / candidate_record.processed_path))
+            if query_image is None or candidate_image is None:
+                continue
+            outcome = query_result[1]
+            output_path = args.visualize_dir / f"{query_id}__rank{rank:02d}__{candidate_id}.jpg"
+            _save_match_visualization(
+                query_image,
+                candidate_image,
+                details,
+                output_path,
+                query_id,
+                candidate_id,
+                rank,
+                similarity,
+                outcome,
+            )
+            visualized += 1
+        print(f"Saved {visualized} match visualizations to {args.visualize_dir}")
 
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

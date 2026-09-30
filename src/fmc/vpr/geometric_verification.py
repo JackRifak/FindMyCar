@@ -31,33 +31,50 @@ class VerificationResult:
     num_inliers: int
 
 
-def verify(query_image: np.ndarray, candidate_image: np.ndarray) -> VerificationResult:
+@dataclass
+class VerificationDetails:
+    result: VerificationResult
+    query_keypoints: list
+    candidate_keypoints: list
+    matches: list
+    inlier_mask: np.ndarray | None
+
+
+def verify_with_details(query_image: np.ndarray, candidate_image: np.ndarray) -> VerificationDetails:
     kp1, des1 = _orb.detectAndCompute(query_image, None)
     kp2, des2 = _orb.detectAndCompute(candidate_image, None)
 
     if des1 is None or des2 is None or len(kp1) < ORB_MIN_MATCH_COUNT or len(kp2) < ORB_MIN_MATCH_COUNT:
-        return VerificationResult(is_match=False, inlier_ratio=0.0, num_matches=0, num_inliers=0)
+        result = VerificationResult(is_match=False, inlier_ratio=0.0, num_matches=0, num_inliers=0)
+        return VerificationDetails(result, kp1, kp2, [], None)
 
     raw_matches = _matcher.knnMatch(des1, des2, k=2)
     # Lowe's ratio test
     good = [m for m, n in raw_matches if m.distance < 0.75 * n.distance]
 
     if len(good) < ORB_MIN_MATCH_COUNT:
-        return VerificationResult(is_match=False, inlier_ratio=0.0, num_matches=len(good), num_inliers=0)
+        result = VerificationResult(is_match=False, inlier_ratio=0.0, num_matches=len(good), num_inliers=0)
+        return VerificationDetails(result, kp1, kp2, good, None)
 
     src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
     dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
 
     _, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, RANSAC_REPROJ_THRESHOLD)
     if mask is None:
-        return VerificationResult(is_match=False, inlier_ratio=0.0, num_matches=len(good), num_inliers=0)
+        result = VerificationResult(is_match=False, inlier_ratio=0.0, num_matches=len(good), num_inliers=0)
+        return VerificationDetails(result, kp1, kp2, good, None)
 
     num_inliers = int(mask.sum())
     inlier_ratio = num_inliers / len(good)
 
-    return VerificationResult(
+    result = VerificationResult(
         is_match=inlier_ratio >= GEOMETRIC_INLIER_RATIO_THRESHOLD,
         inlier_ratio=inlier_ratio,
         num_matches=len(good),
         num_inliers=num_inliers,
     )
+    return VerificationDetails(result, kp1, kp2, good, mask.ravel().astype(bool))
+
+
+def verify(query_image: np.ndarray, candidate_image: np.ndarray) -> VerificationResult:
+    return verify_with_details(query_image, candidate_image).result

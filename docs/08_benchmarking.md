@@ -100,3 +100,17 @@ python scripts/evaluate_vpr_accuracy.py --site site_00 --embedder dinov2_base \
 This sweep is a same-site exploratory retuning, not a held-out accuracy
 estimate. Keep a separate capture session for selecting thresholds before
 using them in production.
+
+To inspect the actual ORB correspondences for selected queries, add
+`--visualize-dir` and optionally restrict export with `--visualize-ids`:
+
+```
+python scripts/evaluate_vpr_accuracy.py --site site_00 --embedder production \
+    --visualize-dir data/site_00/benchmarks/orb_match_visuals \
+    --visualize-ids F01_ZB_00008_202 F01_ZB_00028_284
+```
+
+Each image shows the query beside its selected match (or top-ranked rejected
+candidate when no candidate passes), with ORB correspondences colored green
+for RANSAC inliers and red for outliers. The header includes retrieval rank,
+score, match count, inlier ratio, and localization outcome.
