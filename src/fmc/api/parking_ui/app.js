@@ -188,15 +188,57 @@ async function requestPermissions() {
   window.addEventListener("deviceorientationabsolute", onDeviceOrientation, true);
 }
 
-function onDeviceOrientation(event) {
-  let heading = 0;
+// Calculates true tilt-compensated compass heading from DeviceOrientation Euler angles (alpha, beta, gamma).
+// Handles the phone being held flat (facing up), tilted upright (VPR camera capture), or pitched/rolled.
+function computeEulerHeading(event) {
+  if (!event) return null;
+
+  // iOS Safari provides webkitCompassHeading directly (0-360 clockwise from North)
   if (typeof event.webkitCompassHeading === "number" && !Number.isNaN(event.webkitCompassHeading)) {
-    heading = event.webkitCompassHeading;
-  } else if (typeof event.alpha === "number" && !Number.isNaN(event.alpha)) {
-    heading = (360 - event.alpha) % 360;
+    return event.webkitCompassHeading;
   }
 
-  if (!Number.isFinite(heading)) return;
+  if (typeof event.alpha !== "number" || Number.isNaN(event.alpha)) {
+    return null;
+  }
+
+  const alpha = event.alpha;
+  const beta = event.beta;
+  const gamma = event.gamma;
+
+  // If beta/gamma aren't available, fall back to flat alpha
+  if (beta === null || beta === undefined || gamma === null || gamma === undefined) {
+    return (360 - alpha) % 360;
+  }
+
+  const degToRad = Math.PI / 180;
+  const _radAlpha = alpha * degToRad; // Z-axis rotation
+  const _radBeta = beta * degToRad;   // X-axis tilt [-180, 180]
+  const _radGamma = gamma * degToRad; // Y-axis roll [-90, 90]
+
+  const cA = Math.cos(_radAlpha);
+  const sA = Math.sin(_radAlpha);
+  const cB = Math.cos(_radBeta);
+  const sB = Math.sin(_radBeta);
+  const cG = Math.cos(_radGamma);
+  const sG = Math.sin(_radGamma);
+
+  // Unit vector pointing out along device's forward direction (+Y on screen, pointing towards phone top)
+  // Projected onto the horizontal world ground plane:
+  // Vx = -cos(alpha)*sin(gamma) - sin(alpha)*sin(beta)*cos(gamma)
+  // Vy = -sin(alpha)*sin(gamma) + cos(alpha)*sin(beta)*cos(gamma)
+  const vx = -cA * sG - sA * sB * cG;
+  const vy = -sA * sG + cA * sB * cG;
+
+  let heading = (Math.atan2(vx, vy) * 180) / Math.PI;
+  if (heading < 0) heading += 360;
+
+  return heading;
+}
+
+function onDeviceOrientation(event) {
+  const heading = computeEulerHeading(event);
+  if (heading === null || !Number.isFinite(heading)) return;
 
   state.lastCompassSample = heading;
   state.rawHeadingHistory.push(heading);
@@ -344,13 +386,8 @@ function calibrateCompass() {
 
     const headingSamples = [];
     const orientHandler = (event) => {
-      let heading = null;
-      if (typeof event.webkitCompassHeading === "number" && !Number.isNaN(event.webkitCompassHeading)) {
-        heading = event.webkitCompassHeading;
-      } else if (typeof event.alpha === "number") {
-        heading = (360 - event.alpha) % 360;
-      }
-      if (heading !== null) headingSamples.push(heading);
+      const heading = computeEulerHeading(event);
+      if (heading !== null && !Number.isNaN(heading)) headingSamples.push(heading);
     };
 
     window.addEventListener("deviceorientation", orientHandler, true);
