@@ -332,16 +332,31 @@ input {
   animation-delay: 1.2s;
 }
 
+.stillness-scene,
+.compass-route,
+.walking-scene {
+  position: relative;
+  z-index: 1;
+  display: none;
+  width: 100%;
+  height: 100%;
+}
+
+.calibration-visual.step-stillness .stillness-scene {
+  display: block;
+}
+
 .calibration-visual.step-compass .visual-track {
   opacity: 1;
 }
 
 .compass-route {
-  display: block;
-  width: 100%;
-  height: 100%;
   padding: 12px;
   box-sizing: border-box;
+}
+
+.calibration-visual.step-compass .compass-route {
+  display: block;
 }
 
 .compass-route path {
@@ -352,50 +367,79 @@ input {
   stroke-linecap: round;
 }
 
-.route-marker {
+.route-phone > rect:first-of-type {
   fill: #fdd835;
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 1.5;
   filter: drop-shadow(0 0 5px rgba(253, 216, 53, 0.7));
+}
+
+.route-phone-screen {
+  fill: #17201d;
+  stroke: none;
+}
+
+.route-phone circle {
+  fill: #17201d;
 }
 
 .calibration-visual.step-walk .visual-track {
   opacity: 1;
 }
 
-.walk-mark {
-  position: absolute;
-  bottom: 28px;
-  width: 14px;
-  height: 22px;
-  border-radius: 60% 60% 50% 50%;
-  background: rgba(110, 231, 168, 0.76);
-  opacity: 0;
-  animation: walkFootstep 1.2s ease-out infinite;
+.calibration-visual.step-walk .walking-scene {
+  display: block;
 }
 
-.walk-mark::before {
-  content: "";
-  position: absolute;
-  top: -3px;
-  left: 4px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: inherit;
+.walk-ground {
+  fill: none;
+  stroke: rgba(110, 231, 168, 0.45);
+  stroke-width: 2;
+  stroke-dasharray: 7 9;
+  animation: walkGround 0.7s linear infinite;
 }
 
-.walk-mark-left {
-  left: calc(50% - 104px);
-  transform: rotate(-18deg);
+.walk-arm,
+.walk-leg {
+  transform-box: view-box;
+  animation: walkSwing 0.8s ease-in-out infinite;
 }
 
-.walk-mark-right {
-  right: calc(50% - 104px);
-  transform: rotate(18deg);
-  animation-delay: 0.6s;
+.walk-arm path {
+  fill: none;
+  stroke: #f1c7a5;
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.calibration-visual.step-walk .walk-mark {
-  opacity: 1;
+.walk-leg path {
+  fill: none;
+  stroke: #c5d0ca;
+  stroke-width: 10;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.walk-arm-left {
+  transform-origin: 145px 61px;
+}
+
+.walk-arm-right,
+.walk-leg-left {
+  animation-delay: -0.4s;
+}
+
+.walk-arm-right {
+  transform-origin: 175px 61px;
+}
+
+.walk-leg-left {
+  transform-origin: 153px 103px;
+}
+
+.walk-leg-right {
+  transform-origin: 167px 103px;
 }
 
 .calibration-hint {
@@ -441,17 +485,19 @@ input {
   }
 }
 
-@keyframes walkFootstep {
-  0% {
-    opacity: 0;
-    margin-bottom: 0;
-  }
-  25% {
-    opacity: 0.9;
-  }
+@keyframes walkSwing {
+  0%,
   100% {
-    opacity: 0;
-    margin-bottom: 42px;
+    transform: rotate(-24deg);
+  }
+  50% {
+    transform: rotate(24deg);
+  }
+}
+
+@keyframes walkGround {
+  to {
+    stroke-dashoffset: -16;
   }
 }
 

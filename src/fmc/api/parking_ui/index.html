@@ -86,16 +86,47 @@
 
           <div class="calibration-visual step-stillness" id="calibrationVisual" aria-live="polite">
             <div class="visual-track" aria-hidden="true">
-              <svg class="compass-route" viewBox="0 0 320 140" preserveAspectRatio="xMidYMid meet">
-                <path id="figureEightRoute" d="M160 70 C160 20 45 20 45 70 C45 120 160 120 160 70 C160 20 275 20 275 70 C275 120 160 120 160 70" />
-                <circle class="route-marker" r="6">
+              <svg class="stillness-scene" viewBox="0 0 320 180">
+                <g class="stillness-person">
+                  <path d="M148 104 L143 151 M172 104 L177 151" fill="none" stroke="#c5d0ca" stroke-width="10" stroke-linecap="round" />
+                  <path d="M143 151 L137 161 M177 151 L183 161" fill="none" stroke="#f1c7a5" stroke-width="8" stroke-linecap="round" />
+                  <path d="M145 54 Q160 48 175 54 L181 108 Q160 115 139 108 Z" fill="#6ee7a8" />
+                  <path d="M145 62 L151 79 L156 84 M175 62 L169 79 L164 84" fill="none" stroke="#f1c7a5" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+                  <circle cx="160" cy="31" r="14" fill="#f1c7a5" />
+                  <path d="M148 28 Q151 14 162 16 Q173 17 174 30 Q165 24 148 28" fill="#263b36" />
+                  <rect x="154" y="77" width="12" height="23" rx="3" fill="#17201d" stroke="#f5f3e9" stroke-width="1.5" />
+                  <rect x="157" y="81" width="6" height="14" rx="1" fill="#9ed9c1" />
+                </g>
+              </svg>
+              <svg class="compass-route" viewBox="0 0 360 180" preserveAspectRatio="xMidYMid meet">
+                <path id="figureEightRoute" d="M180 90 C180 10 30 10 30 90 C30 170 180 170 180 90 C180 10 330 10 330 90 C330 170 180 170 180 90" />
+                <g class="route-phone">
                   <animateMotion dur="3.2s" repeatCount="indefinite" rotate="auto">
                     <mpath href="#figureEightRoute" />
                   </animateMotion>
-                </circle>
+                  <rect x="-8" y="-14" width="16" height="28" rx="3" />
+                  <rect class="route-phone-screen" x="-5" y="-9" width="10" height="18" rx="1.5" />
+                  <circle cx="0" cy="11" r="1" />
+                </g>
               </svg>
-              <span class="walk-mark walk-mark-left"></span>
-              <span class="walk-mark walk-mark-right"></span>
+              <svg class="walking-scene" viewBox="0 0 320 180">
+                <path class="walk-ground" d="M30 162 H290" />
+                <g class="walk-leg walk-leg-left">
+                  <path d="M153 103 L144 128 L138 154 L151 157" />
+                </g>
+                <g class="walk-leg walk-leg-right">
+                  <path d="M167 103 L176 128 L182 154 L169 157" />
+                </g>
+                <path d="M145 54 Q160 48 175 54 L181 107 Q160 114 139 107 Z" fill="#6ee7a8" />
+                <g class="walk-arm walk-arm-left">
+                  <path d="M145 61 L131 83 L142 101" />
+                </g>
+                <g class="walk-arm walk-arm-right">
+                  <path d="M175 61 L189 83 L178 101" />
+                </g>
+                <circle cx="160" cy="31" r="14" fill="#f1c7a5" />
+                <path d="M148 28 Q151 14 162 16 Q173 17 174 30 Q165 24 148 28" fill="#263b36" />
+              </svg>
             </div>
           </div>
 
