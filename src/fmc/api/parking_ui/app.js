@@ -31,7 +31,6 @@ const ui = {
   calibrationVisual: document.getElementById("calibrationVisual"),
   calibrationSteps: [...document.querySelectorAll(".cal-step")],
   calibrationButtons: [...document.querySelectorAll(".step-action")],
-  startCalibrationBtn: document.getElementById("startCalibrationBtn"),
   workflowPanels: [...document.querySelectorAll("[data-workflow-panel]")],
   workflowSteps: [...document.querySelectorAll("[data-workflow-step]")],
   destinationContinueBtn: document.getElementById("destinationContinueBtn"),
@@ -189,52 +188,12 @@ function onDeviceMotion(event) {
   }
 }
 
-async function runCalibrationWizard() {
-  ui.startCalibrationBtn.disabled = true;
-  state.calibration.status = "running";
-  ui.calibrationButtons.forEach((button) => {
-    button.disabled = true;
-  });
-
-  try {
-    await requestPermissions();
-  } catch (error) {
-    setCalibrationStep(`Calibration needs motion access: ${error.message}`);
-    ui.startCalibrationBtn.disabled = false;
-    ui.calibrationButtons.forEach((button) => {
-      button.disabled = false;
-    });
-    state.calibration.status = "idle";
-    return;
-  }
-
-  await calibrateStillness();
-  await calibrateCompass();
-  await calibrateWalk();
-
-  state.calibration.status = "done";
-  ui.startCalibrationBtn.textContent = "Re-run calibration";
-  ui.startCalibrationBtn.disabled = false;
-  ui.calibrationButtons.forEach((button) => {
-    button.disabled = false;
-  });
-  if (state.sessionReady) {
-    setCalibrationStep("Calibration complete. You are ready to localize and navigate.", 2, "walk");
-  } else {
-    const ordered = ["stillness", "compass", "walk"];
-    const nextIndex = ordered.findIndex((key) => !state.calibration.completed[key]);
-    state.calibration.step = nextIndex;
-    setCalibrationStep(`Step ${nextIndex + 1}/3 needs another check.`, nextIndex, ordered[nextIndex]);
-  }
-}
-
 async function runCalibrationStep(stepKey) {
   const ordered = ["stillness", "compass", "walk"];
   if (!ordered.includes(stepKey)) return;
 
   if (state.calibration.status === "running") return;
 
-  ui.startCalibrationBtn.disabled = true;
   state.calibration.status = "running";
   ui.calibrationButtons.forEach((button) => {
     button.disabled = true;
@@ -245,7 +204,6 @@ async function runCalibrationStep(stepKey) {
   } catch (error) {
     setCalibrationStep(`Calibration needs motion access: ${error.message}`);
     state.calibration.status = "idle";
-    ui.startCalibrationBtn.disabled = false;
     ui.calibrationButtons.forEach((button) => {
       button.disabled = false;
     });
@@ -273,7 +231,6 @@ async function runCalibrationStep(stepKey) {
     state.calibration.step = nextIndex;
     setCalibrationStep(prompts[nextIndex], nextIndex, nextKey);
   }
-  ui.startCalibrationBtn.disabled = false;
   ui.calibrationButtons.forEach((button) => {
     button.disabled = false;
   });
@@ -614,12 +571,6 @@ async function refreshCurrentPosition() {
     console.warn("Unable to refresh current position.", error);
   }
 }
-
-ui.startCalibrationBtn.addEventListener("click", () => {
-  runCalibrationWizard().catch((error) => {
-    setCalibrationStep(`Calibration error: ${error.message}`);
-  });
-});
 
 ui.calibrationButtons.forEach((button) => {
   button.addEventListener("click", () => {
