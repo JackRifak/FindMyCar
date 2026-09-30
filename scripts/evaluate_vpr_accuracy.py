@@ -135,6 +135,12 @@ def main():
     parser.add_argument("--out", type=Path, default=None, help="Optional JSON path for per-image results")
     parser.add_argument("--ransac-seed", type=int, default=0, help="Base seed for repeatable per-pair RANSAC")
     parser.add_argument(
+        "--inlier-ratio-threshold",
+        type=float,
+        default=GEOMETRIC_INLIER_RATIO_THRESHOLD,
+        help=f"Primary RANSAC inlier-ratio acceptance threshold (default: {GEOMETRIC_INLIER_RATIO_THRESHOLD})",
+    )
+    parser.add_argument(
         "--min-inlier-spread-fraction",
         type=float,
         default=0.0,
@@ -181,6 +187,8 @@ def main():
         parser.error("--orb-ratio-test must be greater than 0 and at most 1")
     if args.min_match_count < 4:
         parser.error("--min-match-count must be at least 4 for homography estimation")
+    if not 0.0 <= args.inlier_ratio_threshold <= 1.0:
+        parser.error("--inlier-ratio-threshold must be between 0 and 1")
 
     site = load_site_config(args.site)
     records = load_records(site.dataset_jsonl_path)
@@ -300,7 +308,7 @@ def main():
             resolved.append(result)
         return resolved
 
-    results = resolve_at_threshold(GEOMETRIC_INLIER_RATIO_THRESHOLD)
+    results = resolve_at_threshold(args.inlier_ratio_threshold)
     confusions = [(r[0], r[4], r[2]) for r in results if r[1] == "wrong_location"]
 
     total = len(results)
@@ -394,7 +402,10 @@ def main():
     threshold_sweep = []
     if args.threshold_sweep:
         print("\nEnd-to-end threshold sweep (same retrieval candidates; geometry scored once):")
-        thresholds = sorted(set(round(float(t), 2) for t in np.arange(0.10, 0.701, 0.05)) | {GEOMETRIC_INLIER_RATIO_THRESHOLD})
+        thresholds = sorted(
+            set(round(float(t), 2) for t in np.arange(0.10, 0.701, 0.05))
+            | {GEOMETRIC_INLIER_RATIO_THRESHOLD, args.inlier_ratio_threshold}
+        )
         for threshold in thresholds:
             threshold_results = resolve_at_threshold(threshold)
             threshold_correct = sum(r[1] == "correct" for r in threshold_results)
@@ -501,6 +512,7 @@ def main():
                     "min_inlier_spread_fraction": args.min_inlier_spread_fraction,
                     "orb_ratio_test": args.orb_ratio_test,
                     "min_match_count": args.min_match_count,
+                    "inlier_ratio_threshold": args.inlier_ratio_threshold,
                     "embedding_dim": embedder_dim,
                     "top_k": args.top_k,
                     "total": total,
