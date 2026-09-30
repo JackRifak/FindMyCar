@@ -218,7 +218,14 @@ async function runCalibrationWizard() {
   ui.calibrationButtons.forEach((button) => {
     button.disabled = false;
   });
-  setCalibrationStep("Calibration complete. You are ready to localize and navigate.", 2, "walk");
+  if (state.sessionReady) {
+    setCalibrationStep("Calibration complete. You are ready to localize and navigate.", 2, "walk");
+  } else {
+    const ordered = ["stillness", "compass", "walk"];
+    const nextIndex = ordered.findIndex((key) => !state.calibration.completed[key]);
+    state.calibration.step = nextIndex;
+    setCalibrationStep(`Step ${nextIndex + 1}/3 needs another check.`, nextIndex, ordered[nextIndex]);
+  }
 }
 
 async function runCalibrationStep(stepKey) {
@@ -255,6 +262,17 @@ async function runCalibrationStep(stepKey) {
 
   state.calibration.status = "idle";
   updateCalibrationReadiness();
+  const nextIndex = ordered.findIndex((key) => !state.calibration.completed[key]);
+  if (nextIndex !== -1) {
+    const nextKey = ordered[nextIndex];
+    const prompts = [
+      "Step 1/3 — Hold the phone still for 2.5 seconds…",
+      "Step 2/3 — Rotate the phone in a slow figure-8…",
+      "Step 3/3 — Walk 5 steps forward to tune stride.",
+    ];
+    state.calibration.step = nextIndex;
+    setCalibrationStep(prompts[nextIndex], nextIndex, nextKey);
+  }
   ui.startCalibrationBtn.disabled = false;
   ui.calibrationButtons.forEach((button) => {
     button.disabled = false;

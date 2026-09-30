@@ -223,13 +223,14 @@ input {
 
 .calibration-steps {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 620px;
   gap: 14px;
-  margin-bottom: 18px;
+  margin: 0 auto 18px;
 }
 
 .cal-step {
-  display: flex;
+  display: none;
   flex-direction: column;
   align-items: flex-start;
   gap: 12px;
@@ -241,6 +242,7 @@ input {
 }
 
 .cal-step.is-active {
+  display: flex;
   border-color: rgba(253, 216, 53, 0.7);
   background: rgba(253, 216, 53, 0.08);
   transform: translateY(-1px);
