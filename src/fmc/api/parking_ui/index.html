@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Find My Car | Parking Slot Locator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
+    <link rel="stylesheet" href="/parking-ui/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <div class="brand-mark">F</div>
+          <div>
+            <p class="eyebrow">Parking slot finder</p>
+            <h1>Find My Car</h1>
+          </div>
+        </div>
+        <div class="powered">Powered by Traffic Tech</div>
+      </header>
+
+      <main class="app-shell">
+        <section class="hero panel">
+          <div class="hero-copy">
+            <span class="pill accent">Live in-car guidance</span>
+            <h2>Find your parking bay and navigate there without guesswork</h2>
+            <p>
+              Start with a quick sensor calibration, then localize your phone and type in any slot ID to get a guided route.
+            </p>
+          </div>
+          <div class="hero-status">
+            <div class="status-item">
+              <span class="label">Session</span>
+              <strong id="sessionState">Ready</strong>
+            </div>
+            <div class="status-item">
+              <span class="label">Position</span>
+              <strong id="positionState">Not set</strong>
+            </div>
+            <div class="status-item">
+              <span class="label">Confidence</span>
+              <strong id="confidenceState">0.00</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel calibration-panel">
+          <div class="panel-header">
+            <div>
+              <p class="section-kicker">Step 1 of setup</p>
+              <h3>3-Step sensor calibration</h3>
+            </div>
+            <button id="startCalibrationBtn" class="primary-btn">Start calibration</button>
+          </div>
+
+          <div class="calibration-steps" id="calibrationSteps">
+            <article class="cal-step is-active" data-step="stillness">
+              <span class="step-number">1</span>
+              <div class="cal-step-copy">
+                <h4>Stillness check</h4>
+                <p>Hold the phone still to stabilize the motion sensor baseline.</p>
+              </div>
+              <button type="button" class="step-action" data-step-key="stillness">Start stillness</button>
+            </article>
+            <article class="cal-step" data-step="magnetometer">
+              <span class="step-number">2</span>
+              <div class="cal-step-copy">
+                <h4>Compass sweep</h4>
+                <p>Rotate in a gentle figure-8 to calibrate heading and direction.</p>
+              </div>
+              <button type="button" class="step-action" data-step-key="compass">Start compass</button>
+            </article>
+            <article class="cal-step" data-step="walk">
+              <span class="step-number">3</span>
+              <div class="cal-step-copy">
+                <h4>Walk calibration</h4>
+                <p>Take a few steps forward to tune stride and live navigation.</p>
+              </div>
+              <button type="button" class="step-action" data-step-key="walk">Start walk</button>
+            </article>
+          </div>
+
+          <div class="calibration-visual step-stillness" id="calibrationVisual" aria-live="polite">
+            <div class="phone-shell">
+              <div class="phone-screen"></div>
+            </div>
+            <div class="visual-track"></div>
+          </div>
+
+          <div id="calibrationStatus" class="calibration-status">
+            Waiting for calibration to begin.
+          </div>
+          <p id="calibrationHint" class="calibration-hint">Hold the phone perfectly still to stabilize the sensors.</p>
+        </section>
+
+        <section class="panel controls-panel">
+          <div class="panel-header inline-header">
+            <div>
+              <p class="section-kicker">Navigation</p>
+              <h3>Locate a parking slot</h3>
+            </div>
+            <button id="localizeBtn" class="secondary-btn">Localize</button>
+          </div>
+
+          <div class="search-row">
+            <label class="field-label" for="slotInput">Slot ID</label>
+            <div class="input-wrap">
+              <input id="slotInput" list="slotSuggestions" placeholder="Type slot ID, e.g. 87-04C" />
+              <datalist id="slotSuggestions"></datalist>
+              <button id="routeBtn" class="primary-btn">Navigate</button>
+            </div>
+          </div>
+
+          <div id="slotSuggestionsMini" class="chip-list"></div>
+        </section>
+
+        <section class="content-grid">
+          <div class="panel camera-panel">
+            <div class="panel-header compact-header">
+              <div>
+                <p class="section-kicker">Live camera</p>
+                <h3>Positioning</h3>
+              </div>
+            </div>
+
+            <div class="camera-wrap">
+              <video id="cameraView" playsinline muted autoplay></video>
+              <div class="camera-overlay">
+                <span>Live capture</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel metrics-panel">
+            <div class="panel-header compact-header">
+              <div>
+                <p class="section-kicker">Live telemetry</p>
+                <h3>Drive status</h3>
+              </div>
+            </div>
+
+            <div class="metrics-grid">
+              <div class="metric-card">
+                <span>Floor</span>
+                <strong id="metricFloor">—</strong>
+              </div>
+              <div class="metric-card">
+                <span>Coordinates</span>
+                <strong id="metricCoords">—</strong>
+              </div>
+              <div class="metric-card">
+                <span>Heading</span>
+                <strong id="metricHeading">—</strong>
+              </div>
+              <div class="metric-card">
+                <span>Distance</span>
+                <strong id="metricDistance">—</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel route-panel">
+          <div class="panel-header inline-header">
+            <div>
+              <p class="section-kicker">Route guidance</p>
+              <h3>Navigation preview</h3>
+            </div>
+            <span id="routeBadge" class="route-badge neutral">Awaiting route</span>
+          </div>
+
+          <div class="route-layout">
+            <div class="route-svg-wrap">
+              <svg id="routeSvg" viewBox="0 0 420 220" preserveAspectRatio="xMidYMid meet" aria-label="Route preview"></svg>
+            </div>
+            <div class="route-details">
+              <div class="route-detail">
+                <span>Destination</span>
+                <strong id="routeDestination">No slot selected</strong>
+              </div>
+              <div class="route-detail">
+                <span>Distance</span>
+                <strong id="routeDistance">0.0 m</strong>
+              </div>
+              <div class="route-detail">
+                <span>Route status</span>
+                <strong id="routeStatus">Waiting</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <footer class="footer-bar">Powered by Traffic Tech</footer>
+
+    <script src="/parking-ui/app.js"></script>
+  </body>
+</html>

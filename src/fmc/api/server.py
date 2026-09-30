@@ -26,6 +26,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -47,6 +48,7 @@ logger = logging.getLogger("fmc.api")
 app = FastAPI(title="Find My Car — Position API")
 
 STATIC_DIR = Path(__file__).parent / "static"
+PARKING_UI_DIR = Path(__file__).parent / "parking_ui"
 
 _SITE_ID = os.environ.get("FMC_SITE_ID")
 if not _SITE_ID:
@@ -211,7 +213,43 @@ def get_route(device_id: str, slot_id: str):
     return RouteResponse(floor=floor, waypoints=route.waypoints, total_distance=route.total_distance)
 
 
+@app.get("/slots")
+def get_available_slots():
+    """Return all configured parking slots for the active site."""
+    slots = []
+    for floor_entry in _site.raw.get("floors", []):
+        for slot in floor_entry.get("vehicle_slots", []):
+            slots.append({
+                "slot_id": slot["slot_id"],
+                "floor": floor_entry["floor"],
+                "zone": slot.get("zone"),
+                "x": slot["x"],
+                "y": slot["y"],
+            })
+    return {"site_id": _SITE_ID, "slots": slots}
+
+
+@app.get("/favicon.ico")
+def favicon_redirect():
+    """Keep the browser from requesting a missing root favicon."""
+    return RedirectResponse(url="/parking-ui/favicon.svg")
+
+
+@app.get("/parking-ui")
+def parking_ui_redirect():
+    """Support the common browser form without a trailing slash."""
+    return RedirectResponse(url="/parking-ui/", status_code=307)
+
+
+@app.get("/parking")
+def parking_redirect():
+    """Support the same path without a trailing slash."""
+    return RedirectResponse(url="/parking/", status_code=307)
+
+
 # ---------------------------------------------------------------- static test client
-# Mounted last so it doesn't shadow the API routes above. Serves the live
-# capture test page (docs/06_live_capture_test.md) at "/".
+# Mount the more specific app folders before the root catch-all so they are
+# not shadowed by the general static site at "/".
+app.mount("/parking-ui", StaticFiles(directory=str(PARKING_UI_DIR), html=True), name="parking_ui")
+app.mount("/parking", StaticFiles(directory=str(PARKING_UI_DIR), html=True), name="parking_ui_alt")
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
