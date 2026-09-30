@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
     <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
-    <link rel="stylesheet" href="/parking-ui/styles.css?v=20260930-3" />
+    <link rel="stylesheet" href="/parking-ui/styles.css?v=20260930-4" />
   </head>
   <body>
     <div class="page-shell">
@@ -194,8 +194,9 @@
                 <span class="field-label">Destination</span>
                 <strong id="selectedSlotSummary">No slot selected</strong>
               </div>
-              <button id="routeBtn" type="button" class="primary-btn">Get route</button>
+              <button id="routeBtn" type="button" class="primary-btn" disabled>Get route</button>
             </div>
+            <p id="localizationStatus" class="localization-status" role="status">Localize first to establish your current position.</p>
             <div class="workflow-actions">
               <button id="navigationBackBtn" type="button" class="secondary-btn">Back to calibration</button>
             </div>
@@ -256,6 +257,13 @@
               <span id="routeBadge" class="route-badge neutral">Awaiting route</span>
             </div>
 
+            <section class="turn-guidance" aria-labelledby="turnGuidanceTitle" aria-live="polite">
+              <h4 id="turnGuidanceTitle">Turn-by-turn</h4>
+              <ol id="turnInstructions" class="turn-instructions">
+                <li class="turn-instruction-placeholder">Get a route to see directions.</li>
+              </ol>
+            </section>
+
             <div class="route-layout">
               <div class="route-svg-wrap">
                 <svg id="routeSvg" viewBox="0 0 420 220" preserveAspectRatio="xMidYMid meet" aria-label="Route preview"></svg>
@@ -266,8 +274,12 @@
                   <strong id="routeDestination">No slot selected</strong>
                 </div>
                 <div class="route-detail">
-                  <span>Distance</span>
+                  <span>Distance remaining</span>
                   <strong id="routeDistance">0.0 m</strong>
+                </div>
+                <div class="route-detail">
+                  <span>Total route</span>
+                  <strong id="routeTotalDistance">0.0 m</strong>
                 </div>
                 <div class="route-detail">
                   <span>Route status</span>
@@ -282,6 +294,6 @@
 
     <footer class="footer-bar">Powered by Traffic Tech</footer>
 
-    <script src="/parking-ui/app.js?v=20260930-3"></script>
+    <script src="/parking-ui/app.js?v=20260930-10"></script>
   </body>
 </html>

@@ -195,6 +195,13 @@ input {
   background: linear-gradient(90deg, rgba(253, 216, 53, 0.3), var(--line));
 }
 
+.localization-status {
+  margin: 10px 2px 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
 .panel {
   background: linear-gradient(180deg, rgba(22, 22, 22, 0.96), rgba(10, 10, 10, 0.96));
   border: 1px solid var(--line);
@@ -721,6 +728,53 @@ input {
   grid-template-columns: 1.5fr 1fr;
   gap: 18px;
   align-items: center;
+}
+
+.turn-guidance {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.turn-guidance h4 {
+  margin: 0;
+  color: var(--yellow-3);
+  font-size: 0.92rem;
+}
+
+.turn-instructions {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.turn-instruction {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.turn-instruction strong {
+  flex: 0 0 auto;
+  color: var(--yellow-2);
+  font-size: 0.82rem;
+}
+
+.turn-instruction-placeholder {
+  color: var(--muted);
+  font-size: 0.86rem;
 }
 
 .route-svg-wrap {

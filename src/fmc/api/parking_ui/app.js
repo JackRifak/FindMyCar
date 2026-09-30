@@ -1,6 +1,7 @@
 const state = {
   deviceId: "parking-mobile-" + Math.random().toString(36).slice(2, 8),
   workflowStep: "destination",
+  hasLocalizedPosition: false,
   slotList: [],
   position: { floor: 1, x: 0, y: 0, heading: 0, confidence: 0, tracking: false },
   calibration: {
@@ -16,6 +17,21 @@ const state = {
     },
   },
   route: null,
+  routeScreenPoint: null,
+  liveVpr: {
+    running: false,
+    requestInFlight: false,
+    lastCaptureTime: 0,
+  },
+  motion: {
+    gravityEstimate: null,
+    stepArmed: false,
+    peakAcceleration: 0,
+    valleyAcceleration: 0,
+    lastStepTime: 0,
+    lastMagnitude: null,
+    cumulativeMotion: 0,
+  },
   stream: null,
   video: null,
   lastCompassSample: null,
@@ -40,6 +56,7 @@ const ui = {
   selectedSlotSummary: document.getElementById("selectedSlotSummary"),
   localizeBtn: document.getElementById("localizeBtn"),
   routeBtn: document.getElementById("routeBtn"),
+  localizationStatus: document.getElementById("localizationStatus"),
   slotInput: document.getElementById("slotInput"),
   slotSuggestions: document.getElementById("slotSuggestions"),
   slotSuggestionsMini: document.getElementById("slotSuggestionsMini"),
@@ -54,7 +71,9 @@ const ui = {
   routeBadge: document.getElementById("routeBadge"),
   routeDestination: document.getElementById("routeDestination"),
   routeDistance: document.getElementById("routeDistance"),
+  routeTotalDistance: document.getElementById("routeTotalDistance"),
   routeStatus: document.getElementById("routeStatus"),
+  turnInstructions: document.getElementById("turnInstructions"),
   routeSvg: document.getElementById("routeSvg"),
 };
 
@@ -112,6 +131,10 @@ function updateWorkflowControls() {
 
 function setWorkflowStep(step, moveFocus = false) {
   if (!canEnterWorkflowStep(step)) return;
+
+  if (state.workflowStep === "navigation" && step !== "navigation") {
+    stopLiveVprCapture();
+  }
 
   state.workflowStep = step;
   ui.workflowPanels.forEach((panel) => {
@@ -182,10 +205,58 @@ function onDeviceOrientation(event) {
 }
 
 function onDeviceMotion(event) {
-  if (event.rotationRate && typeof event.rotationRate.alpha === "number") {
-    const rotZ = (event.rotationRate.alpha || event.rotationRate.gamma || 0) - state.gyroBias;
-    state.headingOffset = (state.headingOffset + rotZ * 0.05 + 360) % 360;
+  const acceleration = event.accelerationIncludingGravity || event.acceleration;
+  if (acceleration && state.route && state.workflowStep === "navigation") {
+    const magnitude = Math.hypot(acceleration.x || 0, acceleration.y || 0, acceleration.z || 0);
+    const motion = state.motion;
+    if (motion.lastMagnitude !== null) {
+      motion.cumulativeMotion += Math.abs(magnitude - motion.lastMagnitude);
+    }
+    motion.lastMagnitude = magnitude;
+
+    if (state.hasLocalizedPosition) {
+      motion.gravityEstimate = motion.gravityEstimate === null
+        ? magnitude
+        : 0.92 * motion.gravityEstimate + 0.08 * magnitude;
+      detectNavigationStep(magnitude - motion.gravityEstimate, performance.now());
+    }
   }
+
+}
+
+function detectNavigationStep(dynamicAcceleration, now) {
+  const motion = state.motion;
+  const threshold = 1.2;
+
+  if (dynamicAcceleration > threshold) {
+    if (!motion.stepArmed && now - motion.lastStepTime > 280) {
+      motion.stepArmed = true;
+      motion.peakAcceleration = dynamicAcceleration;
+      motion.valleyAcceleration = 0;
+    } else if (motion.stepArmed && dynamicAcceleration > motion.peakAcceleration) {
+      motion.peakAcceleration = dynamicAcceleration;
+    }
+    return;
+  }
+
+  if (!motion.stepArmed) return;
+  motion.valleyAcceleration = Math.min(motion.valleyAcceleration, dynamicAcceleration);
+  if (dynamicAcceleration >= 0.1) return;
+
+  motion.stepArmed = false;
+  motion.lastStepTime = now;
+  advancePositionByStep(0.7 * state.calibration.strideScaleFactor);
+}
+
+function advancePositionByStep(stepLength) {
+  const heading = state.position.heading * Math.PI / 180;
+  state.position.x += stepLength * Math.sin(heading);
+  state.position.y += stepLength * Math.cos(heading);
+  state.position.tracking = true;
+  state.position.confidence = Math.max(0.08, state.position.confidence * 0.985);
+  ui.sessionState.textContent = "Tracking (PDR)";
+  ui.localizationStatus.textContent = "Live position is estimated from steps. Localize again to correct drift.";
+  updateRouteStatus();
 }
 
 async function runCalibrationStep(stepKey) {
@@ -319,7 +390,9 @@ function calibrateWalk() {
 }
 
 function updatePositionFromHeading() {
-  const currentHeading = state.lastCompassSample ?? 0;
+  const currentHeading = state.lastCompassSample === null
+    ? state.position.heading
+    : (state.lastCompassSample + state.headingOffset + 360) % 360;
   state.position.heading = currentHeading;
   ui.metricHeading.textContent = `${Math.round(currentHeading)}°`;
 }
@@ -358,10 +431,14 @@ async function ensureCamera() {
     return false;
   }
 
-  if (state.stream) {
-    state.stream.getTracks().forEach((track) => track.stop());
+  const cameraIsActive = state.stream?.getVideoTracks().some((track) => track.readyState === "live");
+  if (cameraIsActive) {
+    if (ui.cameraView.srcObject !== state.stream) ui.cameraView.srcObject = state.stream;
+    if (ui.cameraView.paused) await ui.cameraView.play();
+    return true;
   }
 
+  state.stream?.getTracks().forEach((track) => track.stop());
   try {
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "environment" },
@@ -377,14 +454,10 @@ async function ensureCamera() {
   }
 }
 
-async function localizeParkingPosition() {
-  if (!state.sessionReady) {
-    alert("Please complete the 3-step calibration before localizing.");
-    return;
+async function captureVprPosition() {
+  if (!state.stream || ui.cameraView.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    throw new Error("Camera frame is not ready yet.");
   }
-
-  const available = await ensureCamera();
-  if (!available) return;
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
@@ -398,38 +471,250 @@ async function localizeParkingPosition() {
   const form = new FormData();
   form.append("image", blob, "parking-frame.jpg");
 
-  try {
-    const response = await fetch(`/localize?device_id=${encodeURIComponent(state.deviceId)}`, {
-      method: "POST",
-      body: form,
-    });
+  const response = await fetch(`/localize?device_id=${encodeURIComponent(state.deviceId)}`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error || "Localization failed");
+  }
+  return response.json();
+}
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(error || "Localization failed");
+function applyVprFix(pos) {
+  state.position = {
+    floor: pos.floor,
+    x: pos.x,
+    y: pos.y,
+    heading: pos.heading,
+    confidence: pos.confidence,
+    tracking: true,
+  };
+  state.hasLocalizedPosition = true;
+  state.motion.gravityEstimate = null;
+  state.motion.lastMagnitude = null;
+  state.motion.cumulativeMotion = 0;
+  const smoothedRawHeading = state.rawHeadingHistory.length > 0
+    ? circularMeanDeg(state.rawHeadingHistory)
+    : state.lastCompassSample;
+  if (smoothedRawHeading !== null) {
+    state.headingOffset = (pos.heading - smoothedRawHeading + 360) % 360;
+  }
+
+  ui.sessionState.textContent = "VPR corrected";
+  ui.localizationStatus.textContent = `VPR fix at ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m. PDR continues between fixes.`;
+  ui.localizeBtn.textContent = "Update position";
+  ui.routeBtn.disabled = false;
+  ui.positionState.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}`;
+  ui.confidenceState.textContent = pos.confidence.toFixed(2);
+  ui.metricFloor.textContent = pos.floor ?? "—";
+  ui.metricCoords.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`;
+  ui.metricHeading.textContent = `${Math.round(pos.heading)}°`;
+  updateRouteStatus();
+}
+
+async function localizeParkingPosition() {
+  if (!state.sessionReady) {
+    alert("Please complete the 3-step calibration before localizing.");
+    return;
+  }
+  if (state.liveVpr.requestInFlight) return;
+
+  state.liveVpr.requestInFlight = true;
+  ui.localizeBtn.disabled = true;
+  try {
+    const available = await ensureCamera();
+    if (!available) return;
+
+    const pos = await captureVprPosition();
+    if (!pos.tracking || pos.confidence <= 0) {
+      ui.localizationStatus.textContent = state.hasLocalizedPosition
+        ? "VPR miss. Continuing with PDR; localize again to correct drift."
+        : "No verified position yet. Move to a recognizable area and localize again.";
+      return;
     }
 
-    const pos = await response.json();
-    state.position = {
-      floor: pos.floor,
-      x: pos.x,
-      y: pos.y,
-      heading: pos.heading,
-      confidence: pos.confidence,
-      tracking: pos.tracking,
-    };
-
-    ui.sessionState.textContent = pos.tracking ? "Tracking" : "Search mode";
-    ui.positionState.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}`;
-    ui.confidenceState.textContent = pos.confidence.toFixed(2);
-    ui.metricFloor.textContent = pos.floor ?? "—";
-    ui.metricCoords.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`;
-    ui.metricHeading.textContent = `${Math.round(pos.heading)}°`;
-    updateRouteStatus();
+    applyVprFix(pos);
+    if (state.route && state.workflowStep === "navigation") {
+      try {
+        await updateRouteForSlot(ui.slotInput.value.trim());
+      } catch (error) {
+        ui.localizationStatus.textContent = `VPR corrected position, but route refresh failed: ${error.message}`;
+      }
+      startLiveVprCapture();
+    }
   } catch (error) {
     console.error(error);
-    alert(`Localization failed: ${error.message}`);
+    ui.localizationStatus.textContent = `Localization failed: ${error.message}`;
+    if (!state.hasLocalizedPosition) alert(`Localization failed: ${error.message}`);
+  } finally {
+    state.liveVpr.requestInFlight = false;
+    ui.localizeBtn.disabled = false;
   }
+}
+
+function startLiveVprCapture() {
+  if (
+    state.liveVpr.running
+    || !state.hasLocalizedPosition
+    || !state.route
+    || !state.stream
+    || state.workflowStep !== "navigation"
+  ) return;
+
+  state.liveVpr.running = true;
+  state.liveVpr.lastCaptureTime = performance.now();
+  state.motion.cumulativeMotion = 0;
+  ui.localizationStatus.textContent = "Live VPR active. Position carries by PDR between camera fixes.";
+  runLiveVprCaptureLoop();
+}
+
+function stopLiveVprCapture() {
+  state.liveVpr.running = false;
+  state.motion.lastMagnitude = null;
+  if (state.stream) {
+    state.stream.getTracks().forEach((track) => track.stop());
+    state.stream = null;
+  }
+  ui.cameraView.srcObject = null;
+}
+
+async function runLiveVprCaptureLoop() {
+  const minimumIntervalMs = 300;
+  const maximumIntervalMs = 2000;
+  const motionThreshold = 1.5;
+
+  while (state.liveVpr.running) {
+    if (state.workflowStep !== "navigation" || !state.route || !state.stream) {
+      stopLiveVprCapture();
+      return;
+    }
+
+    const now = performance.now();
+    const elapsed = now - state.liveVpr.lastCaptureTime;
+    const movedEnough = state.motion.cumulativeMotion >= motionThreshold;
+    const intervalElapsed = elapsed >= maximumIntervalMs;
+
+    if (
+      !state.liveVpr.requestInFlight
+      && elapsed >= minimumIntervalMs
+      && (movedEnough || intervalElapsed)
+    ) {
+      state.motion.cumulativeMotion = 0;
+      state.liveVpr.lastCaptureTime = now;
+      state.liveVpr.requestInFlight = true;
+
+      try {
+        const fix = await captureVprPosition();
+        if (!state.liveVpr.running) return;
+
+        if (!fix.tracking || fix.confidence <= 0) {
+          ui.localizationStatus.textContent = "VPR miss; continuing with PDR until the next camera fix.";
+        } else {
+          applyVprFix(fix);
+          try {
+            await updateRouteForSlot(ui.slotInput.value.trim());
+          } catch (error) {
+            ui.localizationStatus.textContent = `VPR corrected position, but route refresh failed: ${error.message}`;
+          }
+          ui.localizationStatus.textContent = "Live VPR active. Position carries by PDR between camera fixes.";
+        }
+      } catch (error) {
+        console.warn("Live VPR capture failed; PDR will continue.", error);
+        ui.localizationStatus.textContent = `Live VPR unavailable; continuing with PDR. ${error.message}`;
+      } finally {
+        state.liveVpr.requestInFlight = false;
+      }
+      continue;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+function buildTurnInstructions(waypoints) {
+  const points = waypoints.filter((point, index) => {
+    if (index === 0) return true;
+    const previous = waypoints[index - 1];
+    return Math.hypot(point[0] - previous[0], point[1] - previous[1]) >= 0.1;
+  });
+  if (points.length < 2) {
+    return [{ label: "At your destination", distanceAlongRoute: 0, isArrival: true }];
+  }
+
+  const instructions = [];
+  let distanceAlongRoute = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const incomingX = current[0] - previous[0];
+    const incomingY = current[1] - previous[1];
+    distanceAlongRoute += Math.hypot(incomingX, incomingY);
+
+    if (index === points.length - 1) continue;
+
+    const next = points[index + 1];
+    const outgoingX = next[0] - current[0];
+    const outgoingY = next[1] - current[1];
+    const cross = incomingX * outgoingY - incomingY * outgoingX;
+    const dot = incomingX * outgoingX + incomingY * outgoingY;
+    const angle = Math.atan2(cross, dot) * 180 / Math.PI;
+
+    if (Math.abs(angle) < 30) continue;
+
+    const label = Math.abs(angle) >= 150 ? "Turn around" : angle > 0 ? "Turn left" : "Turn right";
+    instructions.push({ label, distanceAlongRoute });
+  }
+
+  if (instructions.length === 0) {
+    return [{ label: "Continue straight to your destination", distanceAlongRoute, isArrival: true }];
+  }
+
+  instructions.push({ label: "Arrive at your destination", distanceAlongRoute, isArrival: true });
+  return instructions;
+}
+
+function renderTurnInstructions(waypoints, traveledDistance = 0) {
+  ui.turnInstructions.replaceChildren();
+  for (const instruction of buildTurnInstructions(waypoints)) {
+    const remainingDistance = instruction.distanceAlongRoute - traveledDistance;
+    if (!instruction.isArrival && remainingDistance < -1) continue;
+
+    const item = document.createElement("li");
+    item.className = "turn-instruction";
+
+    const label = document.createElement("span");
+    label.textContent = instruction.label;
+    item.appendChild(label);
+
+    const distance = document.createElement("strong");
+    distance.textContent = remainingDistance < 0.7
+      ? "Now"
+      : `In ${Math.round(remainingDistance)} m`;
+    item.appendChild(distance);
+    ui.turnInstructions.appendChild(item);
+  }
+}
+
+async function updateRouteForSlot(slotId) {
+  const response = await fetch(`/route/${encodeURIComponent(state.deviceId)}?slot_id=${encodeURIComponent(slotId)}`);
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error || "No route found");
+  }
+
+  const route = await response.json();
+  state.route = route;
+  ui.routeBadge.classList.remove("neutral", "warning");
+  ui.routeBadge.classList.add("success");
+  ui.routeBadge.textContent = "Guidance ready";
+  ui.routeDestination.textContent = slotId;
+  ui.routeTotalDistance.textContent = `${route.total_distance.toFixed(1)} m`;
+  ui.routeStatus.textContent = `Floor ${route.floor}`;
+  renderTurnInstructions(route.waypoints);
+  drawRoute(route.waypoints, slotId);
 }
 
 async function navigateToSlot() {
@@ -438,23 +723,18 @@ async function navigateToSlot() {
     alert("Enter a slot ID to navigate.");
     return;
   }
+  if (!state.hasLocalizedPosition) {
+    ui.localizationStatus.textContent = "Localize first to establish your current position.";
+    return;
+  }
 
   try {
-    const response = await fetch(`/route/${encodeURIComponent(state.deviceId)}?slot_id=${encodeURIComponent(slotId)}`);
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(error || "No route found");
+    await updateRouteForSlot(slotId);
+    if (state.stream) {
+      startLiveVprCapture();
+    } else {
+      ui.localizationStatus.textContent = "Route ready. Tap Update position to reopen the camera and resume live VPR.";
     }
-
-    const route = await response.json();
-    state.route = route;
-    ui.routeBadge.classList.remove("neutral", "warning");
-    ui.routeBadge.classList.add("success");
-    ui.routeBadge.textContent = "Guidance ready";
-    ui.routeDestination.textContent = slotId;
-    ui.routeDistance.textContent = `${route.total_distance.toFixed(1)} m`;
-    ui.routeStatus.textContent = `Floor ${route.floor}`;
-    drawRoute(route.waypoints, slotId);
   } catch (error) {
     console.error(error);
     ui.routeBadge.classList.remove("neutral", "success");
@@ -473,7 +753,66 @@ function updateRouteStatus() {
   ui.metricFloor.textContent = state.position.floor ?? "—";
   ui.metricHeading.textContent = `${Math.round(state.position.heading)}°`;
   ui.confidenceState.textContent = state.position.confidence.toFixed(2);
-  ui.metricDistance.textContent = `${(state.position.confidence * 20).toFixed(1)} m`;
+  ui.metricDistance.textContent = state.route ? `${routeProgress().remainingDistance.toFixed(1)} m` : "—";
+  updateRouteProgress();
+}
+
+function routeProgress() {
+  const waypoints = state.route.waypoints;
+  const position = state.position;
+  let cumulativeDistance = 0;
+  let nearestOffset = Infinity;
+  let distanceAlongRoute = 0;
+
+  for (let index = 1; index < waypoints.length; index += 1) {
+    const [startX, startY] = waypoints[index - 1];
+    const [endX, endY] = waypoints[index];
+    const segmentX = endX - startX;
+    const segmentY = endY - startY;
+    const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY;
+    const segmentLength = Math.sqrt(segmentLengthSquared);
+    if (segmentLength === 0) continue;
+
+    const projection = Math.max(0, Math.min(1,
+      ((position.x - startX) * segmentX + (position.y - startY) * segmentY) / segmentLengthSquared,
+    ));
+    const projectedX = startX + projection * segmentX;
+    const projectedY = startY + projection * segmentY;
+    const offset = Math.hypot(position.x - projectedX, position.y - projectedY);
+
+    if (offset < nearestOffset) {
+      nearestOffset = offset;
+      distanceAlongRoute = cumulativeDistance + projection * segmentLength;
+    }
+    cumulativeDistance += segmentLength;
+  }
+
+  const totalDistance = state.route.total_distance ?? cumulativeDistance;
+  return {
+    distanceAlongRoute,
+    remainingDistance: Math.max(0, totalDistance - distanceAlongRoute),
+  };
+}
+
+function updateRouteProgress() {
+  if (!state.route) return;
+
+  const progress = routeProgress();
+  ui.routeDistance.textContent = `${progress.remainingDistance.toFixed(1)} m`;
+  ui.routeTotalDistance.textContent = `${state.route.total_distance.toFixed(1)} m`;
+  ui.metricDistance.textContent = `${progress.remainingDistance.toFixed(1)} m`;
+  ui.routeStatus.textContent = progress.remainingDistance < 0.7
+    ? `Arrived · Floor ${state.route.floor}`
+    : `Floor ${state.route.floor}`;
+
+  const marker = ui.routeSvg.querySelector("#livePositionMarker");
+  if (marker && state.routeScreenPoint) {
+    const point = state.routeScreenPoint([state.position.x, state.position.y]);
+    marker.setAttribute("cx", String(point.x));
+    marker.setAttribute("cy", String(point.y));
+  }
+
+  renderTurnInstructions(state.route.waypoints, progress.distanceAlongRoute);
 }
 
 function drawRoute(waypoints, slotId) {
@@ -499,6 +838,7 @@ function drawRoute(waypoints, slotId) {
     x: pad + (x - minX) * scale,
     y: h - pad - (y - minY) * scale,
   });
+  state.routeScreenPoint = toPoint;
 
   const pathPoints = waypoints.map(toPoint);
   const d = pathPoints.map((pt, index) => `${index === 0 ? "M" : "L"}${pt.x} ${pt.y}`).join(" ");
@@ -536,6 +876,15 @@ function drawRoute(waypoints, slotId) {
   startDot.setAttribute("fill", "#ffffff");
   svg.appendChild(startDot);
 
+  const positionMarker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  positionMarker.setAttribute("id", "livePositionMarker");
+  positionMarker.setAttribute("r", "7");
+  positionMarker.setAttribute("fill", "#38bdf8");
+  positionMarker.setAttribute("stroke", "#ffffff");
+  positionMarker.setAttribute("stroke-width", "2");
+  positionMarker.setAttribute("aria-label", "Live position");
+  svg.appendChild(positionMarker);
+
   const endDot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
   endDot.setAttribute("cx", String(end.x));
   endDot.setAttribute("cy", String(end.y));
@@ -551,9 +900,12 @@ function drawRoute(waypoints, slotId) {
   label.setAttribute("font-weight", "700");
   label.textContent = slotId;
   svg.appendChild(label);
+  updateRouteProgress();
 }
 
 async function refreshCurrentPosition() {
+  if (state.hasLocalizedPosition) return;
+
   try {
     const response = await fetch(`/position/${encodeURIComponent(state.deviceId)}`);
     if (!response.ok) return;
@@ -571,6 +923,8 @@ async function refreshCurrentPosition() {
     console.warn("Unable to refresh current position.", error);
   }
 }
+
+window.addEventListener("pagehide", stopLiveVprCapture);
 
 ui.calibrationButtons.forEach((button) => {
   button.addEventListener("click", () => {
