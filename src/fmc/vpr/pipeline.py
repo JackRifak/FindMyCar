@@ -23,11 +23,28 @@ logger = logging.getLogger("fmc.vpr")
 
 
 @dataclass
+class CandidateTrace:
+    rank: int
+    image_id: str
+    similarity: float
+    location_id: str
+    x: float
+    y: float
+    timestamp: str
+    num_matches: int
+    num_inliers: int
+    inlier_ratio: float
+    passed: bool
+    image_readable: bool = True
+
+
+@dataclass
 class VPRResult:
     matched: bool
     record: ReferenceImage | None
     similarity: float
     inlier_ratio: float
+    candidates: list[CandidateTrace]
 
 
 class VPRPipeline:
@@ -50,16 +67,48 @@ class VPRPipeline:
             f"VPR query: embed={t_embed:.1f}ms, search={t_search:.1f}ms -> retrieved {len(candidates)} candidates"
         )
 
+        candidate_traces = []
         for i, candidate in enumerate(candidates):
             candidate_img_path = self.site.processed_dir / candidate.record.processed_path
             candidate_img = cv2.imread(str(candidate_img_path))
             if candidate_img is None:
                 logger.warning(f"Candidate image not found on disk: {candidate_img_path}")
+                candidate_traces.append(
+                    CandidateTrace(
+                        rank=i + 1,
+                        image_id=candidate.image_id,
+                        similarity=candidate.similarity,
+                        location_id=candidate.record.location_id,
+                        x=candidate.record.x,
+                        y=candidate.record.y,
+                        timestamp=candidate.record.timestamp,
+                        num_matches=0,
+                        num_inliers=0,
+                        inlier_ratio=0.0,
+                        passed=False,
+                        image_readable=False,
+                    )
+                )
                 continue
 
             t_ver0 = time.perf_counter()
             verification = verify(query_image, candidate_img)
             t_ver = (time.perf_counter() - t_ver0) * 1000
+            candidate_traces.append(
+                CandidateTrace(
+                    rank=i + 1,
+                    image_id=candidate.image_id,
+                    similarity=candidate.similarity,
+                    location_id=candidate.record.location_id,
+                    x=candidate.record.x,
+                    y=candidate.record.y,
+                    timestamp=candidate.record.timestamp,
+                    num_matches=verification.num_matches,
+                    num_inliers=verification.num_inliers,
+                    inlier_ratio=verification.inlier_ratio,
+                    passed=verification.is_match,
+                )
+            )
 
             logger.debug(
                 f"Candidate #{i+1} [{candidate.record.image_id}]: sim={candidate.similarity:.3f}, "
@@ -78,8 +127,15 @@ class VPRPipeline:
                     record=candidate.record,
                     similarity=candidate.similarity,
                     inlier_ratio=verification.inlier_ratio,
+                    candidates=candidate_traces,
                 )
 
         logger.debug(f"VPR: no candidate survived geometric verification out of {len(candidates)} candidates")
-        return VPRResult(matched=False, record=None, similarity=0.0, inlier_ratio=0.0)
+        return VPRResult(
+            matched=False,
+            record=None,
+            similarity=0.0,
+            inlier_ratio=0.0,
+            candidates=candidate_traces,
+        )
 

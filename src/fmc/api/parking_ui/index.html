@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
     <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
-    <link rel="stylesheet" href="/parking-ui/styles.css?v=20260930-4" />
+    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261001-1" />
   </head>
   <body>
     <div class="page-shell">
@@ -197,6 +197,35 @@
               <button id="routeBtn" type="button" class="primary-btn" disabled>Get route</button>
             </div>
             <p id="localizationStatus" class="localization-status" role="status">Localize first to establish your current position.</p>
+            <details class="capture-diagnostics">
+              <summary>Capture diagnostics</summary>
+              <label class="field-label" for="groundTruthLocationId">Known location (optional)</label>
+              <input id="groundTruthLocationId" list="diagnosticLocations" placeholder="Leave blank if unknown" />
+              <datalist id="diagnosticLocations"></datalist>
+              <div class="capture-options-grid">
+                <label class="field-label" for="captureTriggerMode">Capture timing</label>
+                <select id="captureTriggerMode">
+                  <option value="motion">Motion trigger (current)</option>
+                  <option value="motion_then_stillness">Wait for 350 ms stillness</option>
+                </select>
+                <label class="field-label" for="captureMaxDimension">Max image dimension</label>
+                <select id="captureMaxDimension">
+                  <option value="960">960 px</option>
+                  <option value="1280" selected>1280 px</option>
+                  <option value="1600">1600 px</option>
+                  <option value="1920">1920 px</option>
+                </select>
+                <label class="field-label" for="captureJpegQuality">JPEG quality</label>
+                <select id="captureJpegQuality">
+                  <option value="0.65">65%</option>
+                  <option value="0.8" selected>80%</option>
+                  <option value="0.9">90%</option>
+                  <option value="0.95">95%</option>
+                </select>
+              </div>
+              <label class="capture-check"><input id="blurGuardEnabled" type="checkbox" /> Skip frames below sharpness 80</label>
+              <small>Miss images and per-candidate diagnostics are saved on the server, up to its configured sample limit.</small>
+            </details>
             <div class="workflow-actions">
               <button id="navigationBackBtn" type="button" class="secondary-btn">Back to calibration</button>
             </div>
@@ -294,6 +323,6 @@
 
     <footer class="footer-bar">Powered by Traffic Tech</footer>
 
-    <script src="/parking-ui/app.js?v=20260930-10"></script>
+    <script src="/parking-ui/app.js?v=20261001-1"></script>
   </body>
 </html>

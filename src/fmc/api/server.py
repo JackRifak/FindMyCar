@@ -18,6 +18,7 @@ contract end-to-end against any site with a built index.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 import time
@@ -25,12 +26,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from fmc.config import load_site_config
+from fmc.api.live_diagnostics import append_client_event, image_quality_metrics, persist_live_miss
+from fmc.dataset.schema import load_records
 from fmc.fusion.map_matching import snap_to_walkable
 from fmc.fusion.sensor_fusion import PositionFuser
 from fmc.navigation.routing import calculate_route
@@ -57,6 +60,7 @@ if not _SITE_ID:
         "uvicorn fmc.api.server:app --reload) -- there is no default site."
     )
 _site = load_site_config(_SITE_ID)
+LIVE_MISS_SAMPLE_LIMIT = max(0, int(os.environ.get("FMC_LIVE_MISS_SAMPLE_LIMIT", "100")))
 _vpr_pipeline: VPRPipeline | None = None
 _sessions: dict[str, PositionFuser] = {}
 logger.info(f"Server initialized for site={_SITE_ID} (log_level={LOG_LEVEL})")
@@ -96,8 +100,41 @@ class PositionResponse(BaseModel):
     timestamp: float
 
 
+@app.get("/diagnostics/locations")
+def diagnostic_locations():
+    """Capture-location IDs for optional live-miss ground-truth annotation."""
+    unique = {}
+    for record in load_records(_site.dataset_jsonl_path):
+        if record.location_id:
+            unique.setdefault(
+                record.location_id,
+                {"location_id": record.location_id, "floor": record.floor, "zone": record.zone, "x": record.x, "y": record.y},
+            )
+    return sorted(unique.values(), key=lambda item: item["location_id"])
+
+
+@app.post("/diagnostics/client-event")
+def diagnostics_client_event(event: dict):
+    """Persist client-side capture events such as frames rejected as blurry."""
+    append_client_event(_site.data_dir, {"site_id": _SITE_ID, "received_at": time.time(), **event})
+    return {"logged": True}
+
+
 @app.post("/localize", response_model=PositionResponse)
-async def localize(device_id: str, image: UploadFile = File(...)):
+async def localize(
+    device_id: str,
+    image: UploadFile = File(...),
+    ground_truth_location_id: str | None = Form(None),
+    capture_trigger: str = Form("manual"),
+    motion_score: float | None = Form(None),
+    client_laplacian_variance: float | None = Form(None),
+    source_width: int | None = Form(None),
+    source_height: int | None = Form(None),
+    encoded_width: int | None = Form(None),
+    encoded_height: int | None = Form(None),
+    jpeg_quality: float | None = Form(None),
+    screen_orientation: str | None = Form(None),
+):
     """First fix / relocalisation: submit a camera frame, get a VPR-based position."""
     t0 = time.perf_counter()
     contents = await image.read()
@@ -121,6 +158,58 @@ async def localize(device_id: str, image: UploadFile = File(...)):
 
     if fused is None:
         total_ms = (time.perf_counter() - t0) * 1000
+        ground_truth_records = [
+            record for record in load_records(_site.dataset_jsonl_path)
+            if ground_truth_location_id and record.location_id == ground_truth_location_id
+        ]
+        ground_truth_retrieved = None
+        if ground_truth_location_id:
+            ground_truth_retrieved = any(
+                candidate.location_id == ground_truth_location_id
+                or any(math.hypot(candidate.x - record.x, candidate.y - record.y) <= 0.5 for record in ground_truth_records)
+                for candidate in result.candidates
+            )
+        if not result.candidates:
+            failure_stage = "no_candidates"
+        elif ground_truth_location_id and not ground_truth_retrieved:
+            failure_stage = "retrieval_failure"
+        elif ground_truth_location_id and ground_truth_retrieved:
+            failure_stage = "verification_rejection"
+        else:
+            failure_stage = "verification_rejected_ground_truth_unknown"
+        metadata = {
+            "site_id": _SITE_ID,
+            "received_at": time.time(),
+            "device_id": device_id,
+            "capture_trigger": capture_trigger,
+            "ground_truth_location_id": ground_truth_location_id or None,
+            "ground_truth_in_top_k": ground_truth_retrieved,
+            "failure_stage": failure_stage,
+            "candidate_count": len(result.candidates),
+            "candidates": [candidate.__dict__ for candidate in result.candidates],
+            "uploaded_bytes": len(contents),
+            "client": {
+                "motion_score": motion_score,
+                "laplacian_variance": client_laplacian_variance,
+                "source_width": source_width,
+                "source_height": source_height,
+                "encoded_width": encoded_width,
+                "encoded_height": encoded_height,
+                "jpeg_quality": jpeg_quality,
+                "screen_orientation": screen_orientation,
+            },
+            "server_image": image_quality_metrics(frame),
+            "vpr_latency_ms": t_vpr_ms,
+        }
+        try:
+            miss_record = persist_live_miss(_site.data_dir, frame, metadata, LIVE_MISS_SAMPLE_LIMIT)
+            logger.warning(
+                f"[{device_id}] VPR MISS | stage={failure_stage} "
+                f"ground_truth_retrieved={ground_truth_retrieved} candidates={len(result.candidates)} "
+                f"sample={miss_record['frame_path']}"
+            )
+        except OSError:
+            logger.exception("Could not persist live VPR miss diagnostics")
         logger.warning(
             f"[{device_id}] VPR MISS (no verified candidate) | "
             f"vpr={t_vpr_ms:.1f}ms | total_server={total_ms:.1f}ms"

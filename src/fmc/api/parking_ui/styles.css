@@ -202,6 +202,51 @@ input {
   line-height: 1.5;
 }
 
+.capture-diagnostics {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.capture-diagnostics summary {
+  color: var(--white);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.capture-diagnostics input,
+.capture-diagnostics select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--white);
+}
+
+.capture-options-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.capture-check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--white);
+}
+
+.capture-check input { width: auto; }
+.capture-diagnostics small { line-height: 1.45; }
+
 .panel {
   background: linear-gradient(180deg, rgba(22, 22, 22, 0.96), rgba(10, 10, 10, 0.96));
   border: 1px solid var(--line);

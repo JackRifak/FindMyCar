@@ -89,6 +89,42 @@ handler — don't remove that constraint if editing the JS).
 - **Motion threshold** — how much accelerometer change triggers an
   early capture
 - **Max image dimension** — bandwidth/accuracy tradeoff for each frame
+- **Capture diagnostics** — optional known-location annotation, motion or
+  motion-then-stillness triggering, max encoded dimension, JPEG quality, and
+  a client-side Laplacian blur gate. Defaults preserve motion triggering,
+  1280px max dimension, JPEG quality 0.80, and no blur rejection. The
+  client/server record trigger, dimensions, sharpness, and brightness for
+  miss analysis.
+
+## Live miss diagnostics
+Every `/localize` miss appends candidate ranks/scores, ORB matches/inliers,
+failure-stage attribution (when a known location is supplied), image quality,
+capture settings, and timing to
+`data/<site_id>/diagnostics/live_misses/misses.jsonl`. The first 100 miss
+frames are saved under its `frames/` directory by default. Set
+`FMC_LIVE_MISS_SAMPLE_LIMIT=0` before starting Uvicorn to disable saved
+images, or set another nonnegative limit. Client-side blur skips are logged
+separately in `data/<site_id>/diagnostics/client_events.jsonl`.
+
+Annotate the approximate surveyed location in the **Known location** field
+during a controlled test to determine whether that location was retrieved
+but rejected by geometric verification, or absent from top-K. Without this
+ground truth the report deliberately labels the miss as unattributed rather
+than guessing which stage failed.
+
+Generate a local HTML report with each saved failed frame beside its top-K
+reference images, including similarity, verifier results, sharpness,
+brightness, and survey-to-test timestamp difference:
+
+```bash
+python scripts/analyze_live_vpr_diagnostics.py --site site_00
+```
+
+The report is written to
+`data/<site_id>/diagnostics/live_misses/report.html`. Compare trigger modes,
+blur-gate skips, max dimensions, and JPEG qualities across controlled runs;
+change one setting at a time and use the known-location annotation to
+compare true retrieval coverage against verifier rejection.
 
 ## What to actually look for while walking a real route
 - **Does position update smoothly enough to be usable**, or does it feel

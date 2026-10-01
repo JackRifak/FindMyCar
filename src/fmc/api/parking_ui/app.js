@@ -22,6 +22,7 @@ const state = {
     running: false,
     requestInFlight: false,
     lastCaptureTime: 0,
+    nextCaptureAllowedAt: 0,
   },
   motion: {
     gravityEstimate: null,
@@ -30,6 +31,7 @@ const state = {
     valleyAcceleration: 0,
     lastStepTime: 0,
     lastMagnitude: null,
+    lastMeaningfulMotionAt: 0,
     cumulativeMotion: 0,
   },
   stream: null,
@@ -55,6 +57,12 @@ const ui = {
   navigationBackBtn: document.getElementById("navigationBackBtn"),
   selectedSlotSummary: document.getElementById("selectedSlotSummary"),
   localizeBtn: document.getElementById("localizeBtn"),
+  groundTruthLocationId: document.getElementById("groundTruthLocationId"),
+  diagnosticLocations: document.getElementById("diagnosticLocations"),
+  captureTriggerMode: document.getElementById("captureTriggerMode"),
+  captureMaxDimension: document.getElementById("captureMaxDimension"),
+  captureJpegQuality: document.getElementById("captureJpegQuality"),
+  blurGuardEnabled: document.getElementById("blurGuardEnabled"),
   routeBtn: document.getElementById("routeBtn"),
   localizationStatus: document.getElementById("localizationStatus"),
   slotInput: document.getElementById("slotInput"),
@@ -252,7 +260,9 @@ function onDeviceMotion(event) {
     const magnitude = Math.hypot(acceleration.x || 0, acceleration.y || 0, acceleration.z || 0);
     const motion = state.motion;
     if (motion.lastMagnitude !== null) {
-      motion.cumulativeMotion += Math.abs(magnitude - motion.lastMagnitude);
+      const magnitudeChange = Math.abs(magnitude - motion.lastMagnitude);
+      motion.cumulativeMotion += magnitudeChange;
+      if (magnitudeChange >= 0.25) motion.lastMeaningfulMotionAt = performance.now();
     }
     motion.lastMagnitude = magnitude;
 
@@ -449,6 +459,17 @@ async function initSlots() {
         ui.slotInput.dispatchEvent(new Event("input", { bubbles: true }));
       });
     });
+    const locationResponse = await fetch("/diagnostics/locations");
+    if (locationResponse.ok) {
+      const locations = await locationResponse.json();
+      ui.diagnosticLocations.replaceChildren();
+      for (const location of locations) {
+        const option = document.createElement("option");
+        option.value = location.location_id;
+        option.label = `F${location.floor} ${location.zone} (${location.x.toFixed(1)}, ${location.y.toFixed(1)})`;
+        ui.diagnosticLocations.appendChild(option);
+      }
+    }
   } catch (error) {
     console.warn("Using fallback slot suggestions.", error);
     const fallback = ["87-04C", "87-04B", "87-04A", "87-03C", "86-03A", "86-04A"];
@@ -491,22 +512,85 @@ async function ensureCamera() {
   }
 }
 
-async function captureVprPosition() {
+function varianceOfLaplacian(imageData, width, height) {
+  const pixels = imageData.data;
+  const gray = new Float32Array(width * height);
+  for (let index = 0; index < gray.length; index += 1) {
+    const pixel = index * 4;
+    gray[index] = 0.299 * pixels[pixel] + 0.587 * pixels[pixel + 1] + 0.114 * pixels[pixel + 2];
+  }
+
+  let sum = 0;
+  let sumSquared = 0;
+  let count = 0;
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const index = y * width + x;
+      const laplacian = 4 * gray[index] - gray[index - 1] - gray[index + 1] - gray[index - width] - gray[index + width];
+      sum += laplacian;
+      sumSquared += laplacian * laplacian;
+      count += 1;
+    }
+  }
+  const mean = sum / Math.max(count, 1);
+  return Math.max(0, sumSquared / Math.max(count, 1) - mean * mean);
+}
+
+async function logClientDiagnostic(event) {
+  try {
+    await fetch("/diagnostics/client-event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: state.deviceId, ...event }),
+    });
+  } catch (error) {
+    console.debug("Client diagnostic event could not be uploaded.", error);
+  }
+}
+
+async function captureVprPosition({ trigger = "manual", applyBlurGuard = false } = {}) {
   if (!state.stream || ui.cameraView.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
     throw new Error("Camera frame is not ready yet.");
   }
 
+  const sourceWidth = ui.cameraView.videoWidth;
+  const sourceHeight = ui.cameraView.videoHeight;
+  const maxDimension = Number(ui.captureMaxDimension.value) || 1280;
+  const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
-  const width = 1280;
-  const height = 720;
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
   canvas.width = width;
   canvas.height = height;
   ctx.drawImage(ui.cameraView, 0, 0, width, height);
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.8));
+  const clientLaplacianVariance = varianceOfLaplacian(ctx.getImageData(0, 0, width, height), width, height);
+  const jpegQuality = Number(ui.captureJpegQuality.value) || 0.8;
+  const diagnostics = {
+    trigger,
+    motion_score: state.motion.cumulativeMotion,
+    client_laplacian_variance: clientLaplacianVariance,
+    source_width: sourceWidth,
+    source_height: sourceHeight,
+    encoded_width: width,
+    encoded_height: height,
+    jpeg_quality: jpegQuality,
+    screen_orientation: screen.orientation?.type || "unknown",
+  };
+
+  if (applyBlurGuard && ui.blurGuardEnabled.checked && clientLaplacianVariance < 80) {
+    await logClientDiagnostic({ event: "frame_skipped_blur", ...diagnostics });
+    return { skipped: true, diagnostics };
+  }
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", jpegQuality));
+  if (!blob) throw new Error("Browser failed to encode the camera frame.");
 
   const form = new FormData();
   form.append("image", blob, "parking-frame.jpg");
+  const groundTruth = ui.groundTruthLocationId.value.trim();
+  if (groundTruth) form.append("ground_truth_location_id", groundTruth);
+  for (const [key, value] of Object.entries(diagnostics)) form.append(key, String(value));
 
   const response = await fetch(`/localize?device_id=${encodeURIComponent(state.deviceId)}`, {
     method: "POST",
@@ -516,7 +600,7 @@ async function captureVprPosition() {
     const error = await response.text();
     throw new Error(error || "Localization failed");
   }
-  return response.json();
+  return { position: await response.json(), diagnostics };
 }
 
 function applyVprFix(pos) {
@@ -564,7 +648,9 @@ async function localizeParkingPosition() {
     const available = await ensureCamera();
     if (!available) return;
 
-    const pos = await captureVprPosition();
+    const capture = await captureVprPosition({ trigger: "manual" });
+    if (capture.skipped) return;
+    const pos = capture.position;
     if (!pos.tracking || pos.confidence <= 0) {
       ui.localizationStatus.textContent = state.hasLocalizedPosition
         ? "VPR miss. Continuing with PDR; localize again to correct drift."
@@ -602,6 +688,7 @@ function startLiveVprCapture() {
 
   state.liveVpr.running = true;
   state.liveVpr.lastCaptureTime = performance.now();
+  state.motion.lastMeaningfulMotionAt = performance.now();
   state.motion.cumulativeMotion = 0;
   ui.localizationStatus.textContent = "Live VPR active. Position carries by PDR between camera fixes.";
   runLiveVprCaptureLoop();
@@ -621,6 +708,7 @@ async function runLiveVprCaptureLoop() {
   const minimumIntervalMs = 300;
   const maximumIntervalMs = 2000;
   const motionThreshold = 1.5;
+  const stillnessWindowMs = 350;
 
   while (state.liveVpr.running) {
     if (state.workflowStep !== "navigation" || !state.route || !state.stream) {
@@ -632,18 +720,32 @@ async function runLiveVprCaptureLoop() {
     const elapsed = now - state.liveVpr.lastCaptureTime;
     const movedEnough = state.motion.cumulativeMotion >= motionThreshold;
     const intervalElapsed = elapsed >= maximumIntervalMs;
+    const triggerMode = ui.captureTriggerMode.value;
+    const triggerAfterStillness = triggerMode === "motion_then_stillness"
+      && now - state.motion.lastMeaningfulMotionAt >= stillnessWindowMs;
+    const motionReady = movedEnough && (triggerMode !== "motion_then_stillness" || triggerAfterStillness);
 
     if (
       !state.liveVpr.requestInFlight
       && elapsed >= minimumIntervalMs
-      && (movedEnough || intervalElapsed)
+      && now >= state.liveVpr.nextCaptureAllowedAt
+      && (motionReady || intervalElapsed)
     ) {
-      state.motion.cumulativeMotion = 0;
-      state.liveVpr.lastCaptureTime = now;
       state.liveVpr.requestInFlight = true;
+      const trigger = intervalElapsed && !motionReady
+        ? "max_interval"
+        : triggerMode === "motion_then_stillness" ? "motion_then_stillness" : "motion";
 
       try {
-        const fix = await captureVprPosition();
+        const capture = await captureVprPosition({ trigger, applyBlurGuard: true });
+        if (capture.skipped) {
+          state.liveVpr.nextCaptureAllowedAt = performance.now() + 400;
+          ui.localizationStatus.textContent = `Skipped blurry frame (sharpness ${capture.diagnostics.client_laplacian_variance.toFixed(1)}); waiting for a clearer view.`;
+          continue;
+        }
+        state.motion.cumulativeMotion = 0;
+        state.liveVpr.lastCaptureTime = performance.now();
+        const fix = capture.position;
         if (!state.liveVpr.running) return;
 
         if (!fix.tracking || fix.confidence <= 0) {
