@@ -88,7 +88,14 @@ handler — don't remove that constraint if editing the JS).
   so confidence doesn't decay to nothing between fixes
 - **Motion threshold** — how much accelerometer change triggers an
   early capture
-- **Max image dimension** — bandwidth/accuracy tradeoff for each frame
+- **Max image dimension** and **JPEG quality** — bandwidth/feature-detail
+  tradeoffs (Hybrid client defaults remain 640 px and quality 0.75)
+- **Capture timing** — compare motion capture with a 350 ms stillness wait
+  after motion
+- **Blur guard** — optional client-side Laplacian-variance check; rejected
+  frames are logged and retried after 400 ms
+- **Known location** — optional ground truth to distinguish retrieval misses
+  from candidates rejected by geometric verification
 - **Capture diagnostics** — optional known-location annotation, motion or
   motion-then-stillness triggering, max encoded dimension, JPEG quality, and
   a client-side Laplacian blur gate. Defaults preserve motion triggering,
@@ -125,6 +132,12 @@ The report is written to
 blur-gate skips, max dimensions, and JPEG qualities across controlled runs;
 change one setting at a time and use the known-location annotation to
 compare true retrieval coverage against verifier rejection.
+
+The **Hybrid VPR + PDR Live Position Client** (`/`) exposes the same
+diagnostics in **Settings & PDR Tuning → VPR Capture & Upload**. Its starting
+defaults stay at 640 px and JPEG quality 0.75; the Parking UI has separate
+defaults. Both submit metadata to the same API and diagnostics files, so
+their runs can be compared in one report.
 
 ## What to actually look for while walking a real route
 - **Does position update smoothly enough to be usable**, or does it feel

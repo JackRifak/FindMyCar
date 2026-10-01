@@ -20,7 +20,9 @@ const state = {
 
   // VPR network metrics
   lastCaptureTime: 0,
+  nextCaptureAllowedAt: 0,
   lastMotionMagnitude: null,
+  lastMeaningfulMotionAt: 0,
   cumulativeMotion: 0,
   avgLatencyMs: 0,
   framesSent: 0,
@@ -104,6 +106,10 @@ function getSettings() {
     maxIntervalMs: +document.getElementById("maxInterval").value || 2000,
     motionThreshold: +document.getElementById("motionThreshold").value || 1.5,
     maxDimension: +document.getElementById("maxDimension").value || 640,
+    jpegQuality: +document.getElementById("jpegQuality").value || 0.75,
+    captureTriggerMode: document.getElementById("captureTriggerMode").value || "motion",
+    blurGuardEnabled: document.getElementById("blurGuardEnabled").checked,
+    groundTruthLocationId: document.getElementById("groundTruthLocationId").value.trim(),
 
     // PDR
     pdrEnabled: document.getElementById("pdrEnabled").checked,
@@ -260,7 +266,9 @@ function onDeviceMotion(event) {
     state.lastAccelVector = { x: ax, y: ay, z: az };
 
     if (state.lastMotionMagnitude !== null) {
-      state.cumulativeMotion += Math.abs(mag - state.lastMotionMagnitude);
+      const magnitudeChange = Math.abs(mag - state.lastMotionMagnitude);
+      state.cumulativeMotion += magnitudeChange;
+      if (magnitudeChange >= 0.25) state.lastMeaningfulMotionAt = performance.now();
     }
     state.lastMotionMagnitude = mag;
 
@@ -872,6 +880,7 @@ function stopCapture() {
 }
 
 async function captureLoop() {
+  const stillnessWindowMs = 350;
   while (state.capturing) {
     const cfg = getSettings();
     const now = performance.now();
@@ -879,14 +888,18 @@ async function captureLoop() {
     const movedEnough = state.cumulativeMotion > cfg.motionThreshold;
     const mustSend = sinceLast >= cfg.maxIntervalMs;
     const canSend = sinceLast >= cfg.minIntervalMs;
+    const triggerAfterStillness = cfg.captureTriggerMode === "motion_then_stillness"
+      && now - state.lastMeaningfulMotionAt >= stillnessWindowMs;
+    const motionReady = movedEnough && (cfg.captureTriggerMode !== "motion_then_stillness" || triggerAfterStillness);
 
-    if (!state.sending && canSend && (movedEnough || mustSend)) {
-      const trigger = movedEnough ? "motion" : "timeout";
-      state.cumulativeMotion = 0;
-      state.lastCaptureTime = performance.now();
+    if (!state.sending && canSend && now >= state.nextCaptureAllowedAt && (motionReady || mustSend)) {
+      const trigger = mustSend && !motionReady
+        ? "timeout"
+        : cfg.captureTriggerMode === "motion_then_stillness" ? "motion_then_stillness" : "motion";
+      const motionScoreAtTrigger = state.cumulativeMotion;
       state.sending = true;
 
-      captureAndSend(trigger, cfg).finally(() => {
+      captureAndSend(trigger, cfg, motionScoreAtTrigger).finally(() => {
         state.sending = false;
       });
     }
@@ -900,7 +913,43 @@ function sleep(ms) {
 
 // ---------------------------------------------------------------- Frame Grab & Send
 
-function grabFrameBlob(maxDimension) {
+function varianceOfLaplacian(imageData, width, height) {
+  const pixels = imageData.data;
+  const gray = new Float32Array(width * height);
+  for (let index = 0; index < gray.length; index += 1) {
+    const pixel = index * 4;
+    gray[index] = 0.299 * pixels[pixel] + 0.587 * pixels[pixel + 1] + 0.114 * pixels[pixel + 2];
+  }
+
+  let sum = 0;
+  let sumSquared = 0;
+  let count = 0;
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const index = y * width + x;
+      const laplacian = 4 * gray[index] - gray[index - 1] - gray[index + 1] - gray[index - width] - gray[index + width];
+      sum += laplacian;
+      sumSquared += laplacian * laplacian;
+      count += 1;
+    }
+  }
+  const mean = sum / Math.max(count, 1);
+  return Math.max(0, sumSquared / Math.max(count, 1) - mean * mean);
+}
+
+async function logClientDiagnostic(event) {
+  try {
+    await fetch("/diagnostics/client-event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: state.deviceId, ...event }),
+    });
+  } catch (error) {
+    console.debug("Client diagnostic event could not be uploaded.", error);
+  }
+}
+
+function grabFrameBlob(maxDimension, jpegQuality) {
   const vw = state.video.videoWidth,
     vh = state.video.videoHeight;
   if (!vw || !vh) return Promise.resolve(null);
@@ -909,15 +958,40 @@ function grabFrameBlob(maxDimension) {
   state.canvas.height = Math.round(vh * scale);
   const ctx = state.canvas.getContext("2d");
   ctx.drawImage(state.video, 0, 0, state.canvas.width, state.canvas.height);
-  return new Promise((resolve) => state.canvas.toBlob(resolve, "image/jpeg", 0.75));
+  const metrics = {
+    source_width: vw,
+    source_height: vh,
+    encoded_width: state.canvas.width,
+    encoded_height: state.canvas.height,
+    client_laplacian_variance: varianceOfLaplacian(ctx.getImageData(0, 0, state.canvas.width, state.canvas.height), state.canvas.width, state.canvas.height),
+    jpeg_quality: jpegQuality,
+    screen_orientation: screen.orientation?.type || "unknown",
+  };
+  return new Promise((resolve) => state.canvas.toBlob((blob) => resolve({ blob, metrics }), "image/jpeg", jpegQuality));
 }
 
-async function captureAndSend(trigger, cfg) {
-  const blob = await grabFrameBlob(cfg.maxDimension);
-  if (!blob) return;
+async function captureAndSend(trigger, cfg, motionScore) {
+  const captured = await grabFrameBlob(cfg.maxDimension, cfg.jpegQuality);
+  if (!captured?.blob) return;
+  const { blob, metrics } = captured;
+
+  if (cfg.blurGuardEnabled && metrics.client_laplacian_variance < 80) {
+    await logClientDiagnostic({ event: "frame_skipped_blur", trigger, motion_score: motionScore, ...metrics });
+    state.nextCaptureAllowedAt = performance.now() + 400;
+    renderError(`Skipped blurry frame (sharpness ${metrics.client_laplacian_variance.toFixed(1)}); waiting for a clearer frame.`);
+    return;
+  }
 
   const form = new FormData();
   form.append("image", blob, "frame.jpg");
+  form.append("capture_trigger", trigger);
+  form.append("motion_score", String(motionScore));
+  for (const [key, value] of Object.entries(metrics)) form.append(key, String(value));
+  if (cfg.groundTruthLocationId) form.append("ground_truth_location_id", cfg.groundTruthLocationId);
+
+  state.cumulativeMotion = 0;
+  state.lastCaptureTime = performance.now();
+  state.nextCaptureAllowedAt = state.lastCaptureTime + cfg.minIntervalMs;
 
   const t0 = performance.now();
   try {
@@ -935,6 +1009,24 @@ async function captureAndSend(trigger, cfg) {
     onVprResult(pos, latencyMs, trigger);
   } catch (e) {
     renderError(e.message);
+  }
+}
+
+async function loadDiagnosticLocations() {
+  try {
+    const response = await fetch("/diagnostics/locations");
+    if (!response.ok) return;
+    const locations = await response.json();
+    const list = document.getElementById("diagnosticLocations");
+    list.replaceChildren();
+    for (const location of locations) {
+      const option = document.createElement("option");
+      option.value = location.location_id;
+      option.label = `F${location.floor} ${location.zone} (${location.x.toFixed(1)}, ${location.y.toFixed(1)})`;
+      list.appendChild(option);
+    }
+  } catch (error) {
+    console.debug("Known-location annotation list unavailable.", error);
   }
 }
 
@@ -1303,6 +1395,7 @@ window.addEventListener("load", () => {
 
   initCanvas();
   renderCalibrationUI();
+  loadDiagnosticLocations();
 
   document.getElementById("startBtn").addEventListener("click", () => {
     startCapture().catch((e) => renderError(e.message));

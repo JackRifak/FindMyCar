@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Find My Car — Hybrid VPR + PDR Live Position</title>
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/style.css?v=20261001-1">
 </head>
 <body>
   <header class="app-header">
@@ -199,6 +199,31 @@
           Max Dimension (px)
           <input id="maxDimension" type="number" value="640" step="80">
         </label>
+        <label>
+          JPEG Quality
+          <select id="jpegQuality">
+            <option value="0.65">65%</option>
+            <option value="0.75" selected>75% (current)</option>
+            <option value="0.85">85%</option>
+            <option value="0.95">95%</option>
+          </select>
+        </label>
+        <label>
+          Capture Timing
+          <select id="captureTriggerMode">
+            <option value="motion" selected>Motion (current)</option>
+            <option value="motion_then_stillness">Motion, then 350 ms stillness</option>
+          </select>
+        </label>
+        <label class="toggle-label">
+          <input id="blurGuardEnabled" type="checkbox">
+          <span>Skip blurry frames (Laplacian variance &lt; 80)</span>
+        </label>
+        <label>
+          Known Location (optional)
+          <input id="groundTruthLocationId" list="diagnosticLocations" placeholder="Select during a controlled test">
+          <datalist id="diagnosticLocations"></datalist>
+        </label>
       </div>
     </div>
   </details>
@@ -221,6 +246,6 @@
     <div id="logTable" class="table-container"></div>
   </div>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20261001-1"></script>
 </body>
 </html>

@@ -75,6 +75,10 @@ def main() -> None:
         quality = row.get("server_image", {})
         client = row.get("client", {})
         ground_truth = row.get("ground_truth_location_id")
+        ground_truth_records = [
+            record for record in records_by_id.values()
+            if ground_truth and record.location_id == ground_truth
+        ]
         candidates = []
         for candidate in row.get("candidates", []):
             record = records_by_id.get(candidate.get("image_id"))
@@ -90,7 +94,11 @@ def main() -> None:
                         reference_quality = image_quality_metrics(reference_image)
             correct_tag = ""
             if ground_truth:
-                correct_tag = "ground-truth location" if candidate.get("location_id") == ground_truth else "other location"
+                same_location = candidate.get("location_id") == ground_truth or any(
+                    ((candidate.get("x", 0) - record.x) ** 2 + (candidate.get("y", 0) - record.y) ** 2) ** 0.5 <= 0.5
+                    for record in ground_truth_records
+                )
+                correct_tag = "ground-truth location" if same_location else "other location"
             candidates.append(
                 "<article class='candidate'>"
                 f"<div class='candidate-title'>Rank {candidate.get('rank')} · "
