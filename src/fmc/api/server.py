@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import json
 import sys
 import time
 from pathlib import Path
@@ -134,6 +135,8 @@ async def localize(
     encoded_height: int | None = Form(None),
     jpeg_quality: float | None = Form(None),
     screen_orientation: str | None = Form(None),
+    max_dimension: int | None = Form(None),
+    camera_track_settings: str | None = Form(None),
 ):
     """First fix / relocalisation: submit a camera frame, get a VPR-based position."""
     t0 = time.perf_counter()
@@ -197,10 +200,17 @@ async def localize(
                 "encoded_height": encoded_height,
                 "jpeg_quality": jpeg_quality,
                 "screen_orientation": screen_orientation,
+                "max_dimension": max_dimension,
+                "camera_track_settings": {},
             },
             "server_image": image_quality_metrics(frame),
             "vpr_latency_ms": t_vpr_ms,
         }
+        if camera_track_settings:
+            try:
+                metadata["client"]["camera_track_settings"] = json.loads(camera_track_settings)
+            except json.JSONDecodeError:
+                metadata["client"]["camera_track_settings"] = {"parse_error": True}
         try:
             miss_record = persist_live_miss(_site.data_dir, frame, metadata, LIVE_MISS_SAMPLE_LIMIT)
             logger.warning(

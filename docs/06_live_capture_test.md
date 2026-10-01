@@ -89,7 +89,8 @@ handler — don't remove that constraint if editing the JS).
 - **Motion threshold** — how much accelerometer change triggers an
   early capture
 - **Max image dimension** and **JPEG quality** — bandwidth/feature-detail
-  tradeoffs (Hybrid client defaults remain 640 px and quality 0.75)
+  tradeoffs. Hybrid defaults now request 1280×960 where available, encode
+  up to 1600 px, and use JPEG quality 0.75.
 - **Capture timing** — compare motion capture with a 350 ms stillness wait
   after motion
 - **Blur guard** — optional client-side Laplacian-variance check; rejected
@@ -134,10 +135,11 @@ change one setting at a time and use the known-location annotation to
 compare true retrieval coverage against verifier rejection.
 
 The **Hybrid VPR + PDR Live Position Client** (`/`) exposes the same
-diagnostics in **Settings & PDR Tuning → VPR Capture & Upload**. Its starting
-defaults stay at 640 px and JPEG quality 0.75; the Parking UI has separate
-defaults. Both submit metadata to the same API and diagnostics files, so
-their runs can be compared in one report.
+diagnostics in **Settings & PDR Tuning → VPR Capture & Upload**. The browser
+may negotiate a lower actual track resolution; selected
+`MediaStreamTrack.getSettings()` values are logged with each miss. The
+Parking UI has separate defaults. Both submit metadata to the same API and
+diagnostics files, so their runs can be compared in one report.
 
 ## What to actually look for while walking a real route
 - **Does position update smoothly enough to be usable**, or does it feel

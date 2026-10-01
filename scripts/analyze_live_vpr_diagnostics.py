@@ -74,6 +74,7 @@ def main() -> None:
 
         quality = row.get("server_image", {})
         client = row.get("client", {})
+        track_settings = client.get("camera_track_settings", {})
         ground_truth = row.get("ground_truth_location_id")
         ground_truth_records = [
             record for record in records_by_id.values()
@@ -124,8 +125,10 @@ def main() -> None:
             f"<p>time={html.escape(str(row.get('received_at')))} · device={html.escape(str(row.get('device_id')))} · "
             f"trigger={html.escape(str(row.get('capture_trigger')))} · ground truth="
             f"{html.escape(str(ground_truth or 'unknown'))} · retrieved ground truth={row.get('ground_truth_in_top_k')}</p>"
-            f"<p>Client camera={client.get('source_width')}×{client.get('source_height')} → "
-            f"{client.get('encoded_width')}×{client.get('encoded_height')} JPEG q={client.get('jpeg_quality')} "
+            f"<p>Track={track_settings.get('width', 'unknown')}×{track_settings.get('height', 'unknown')} "
+            f"@ {_format(track_settings.get('frameRate'))} fps; requested max={client.get('max_dimension')} px; "
+            f"encoded={client.get('encoded_width')}×{client.get('encoded_height')} JPEG q={client.get('jpeg_quality')} "
+            f"(source={client.get('source_width')}×{client.get('source_height')}); "
             f"client sharpness={_format(client.get('laplacian_variance'))}; server decoded="
             f"{quality.get('width')}×{quality.get('height')} {row.get('uploaded_bytes')} bytes, "
             f"sharpness={_format(quality.get('laplacian_variance'))}, brightness="

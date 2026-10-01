@@ -13,6 +13,7 @@ const state = {
   capturing: false,
   sending: false,
   stream: null,
+  cameraTrackSettings: null,
   video: null,
   canvas: null,
   trailCanvas: null,
@@ -105,7 +106,7 @@ function getSettings() {
     minIntervalMs: +document.getElementById("minInterval").value || 300,
     maxIntervalMs: +document.getElementById("maxInterval").value || 2000,
     motionThreshold: +document.getElementById("motionThreshold").value || 1.5,
-    maxDimension: +document.getElementById("maxDimension").value || 640,
+    maxDimension: +document.getElementById("maxDimension").value || 1600,
     jpegQuality: +document.getElementById("jpegQuality").value || 0.75,
     captureTriggerMode: document.getElementById("captureTriggerMode").value || "motion",
     blurGuardEnabled: document.getElementById("blurGuardEnabled").checked,
@@ -846,8 +847,23 @@ async function requestPermissions() {
 async function startCapture() {
   await requestPermissions();
   state.stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment" },
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1280 },
+      height: { ideal: 960 },
+    },
   });
+  const videoTrack = state.stream.getVideoTracks()[0];
+  const actualSettings = videoTrack?.getSettings ? videoTrack.getSettings() : {};
+  state.cameraTrackSettings = {
+    width: actualSettings.width ?? null,
+    height: actualSettings.height ?? null,
+    aspectRatio: actualSettings.aspectRatio ?? null,
+    frameRate: actualSettings.frameRate ?? null,
+    facingMode: actualSettings.facingMode ?? null,
+    resizeMode: actualSettings.resizeMode ?? null,
+  };
+  console.info("Selected camera track settings:", state.cameraTrackSettings);
   state.video.srcObject = state.stream;
   await state.video.play();
 
@@ -986,6 +1002,8 @@ async function captureAndSend(trigger, cfg, motionScore) {
   form.append("image", blob, "frame.jpg");
   form.append("capture_trigger", trigger);
   form.append("motion_score", String(motionScore));
+  form.append("max_dimension", String(cfg.maxDimension));
+  form.append("camera_track_settings", JSON.stringify(state.cameraTrackSettings || {}));
   for (const [key, value] of Object.entries(metrics)) form.append(key, String(value));
   if (cfg.groundTruthLocationId) form.append("ground_truth_location_id", cfg.groundTruthLocationId);
 
