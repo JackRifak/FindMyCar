@@ -17,29 +17,34 @@ contract end-to-end against any site with a built index.
 """
 from __future__ import annotations
 
+import csv
 import logging
 import math
 import os
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from fmc.config import load_site_config
 from fmc.api.live_diagnostics import append_client_event, image_quality_metrics, persist_live_miss
 from fmc.dataset.schema import load_records
+from fmc.dataset.locations import load_locations_csv
 from fmc.fusion.map_matching import snap_to_walkable
 from fmc.fusion.sensor_fusion import PositionFuser
 from fmc.navigation.routing import calculate_route
-from fmc.vio.tracker import DeadReckoningStub
+from fmc.vio.tracker import DeadReckoningStub, SixDofPose
 from fmc.vpr.pipeline import VPRPipeline
+from fmc.mapping.continuous_mapper import ContinuousMapper
 
 LOG_LEVEL = os.environ.get("FMC_LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -50,6 +55,14 @@ logging.basicConfig(
 logger = logging.getLogger("fmc.api")
 
 app = FastAPI(title="Find My Car — Position API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 PARKING_UI_DIR = Path(__file__).parent / "parking_ui"
@@ -72,6 +85,10 @@ def _get_vpr_pipeline() -> VPRPipeline:
     if _vpr_pipeline is None:
         _vpr_pipeline = VPRPipeline(_site)
     return _vpr_pipeline
+
+# Global mapper instance for the continuous mapping feature
+_global_mapper = ContinuousMapper()
+_finalize_lock = threading.Lock()
 
 
 @app.post("/admin/reload")
@@ -99,6 +116,11 @@ class PositionResponse(BaseModel):
     confidence: float
     tracking: bool
     timestamp: float
+    # optional 6-DOF fields from PnP localization
+    method: str = "none"
+    z: float | None = None
+    num_inliers: int | None = None
+    num_matches: int | None = None
 
 
 @app.get("/diagnostics/locations")
@@ -233,18 +255,83 @@ async def localize(
     snap_drift = float(np.hypot(snapped_x - fused.x, snapped_y - fused.y))
     total_ms = (time.perf_counter() - t0) * 1000
 
+    # keep fuser / 3D viewer on the snapped walkable pose
+    fuser._last_x, fuser._last_y = snapped_x, snapped_y
+    fuser._last_heading = float(fused.heading)
+    fuser.mark_live()
+
     rec_id = result.record.image_id if result.record else "unknown"
     logger.info(
-        f"[{device_id}] VPR MATCH -> photo={rec_id} (floor={fused.floor}) | "
+        f"[{device_id}] LOCALIZE MATCH method={result.method} photo={rec_id} (floor={fused.floor}) | "
         f"raw=({fused.x:.2f}, {fused.y:.2f}) -> snapped=({snapped_x:.2f}, {snapped_y:.2f}) "
         f"[snap_dist={snap_drift:.2f}m] | heading={fused.heading:.1f}° | conf={fused.confidence:.2f} | "
         f"vpr={t_vpr_ms:.1f}ms | total_server={total_ms:.1f}ms"
     )
 
+    pose = result.pose_6dof
     return PositionResponse(
-        floor=fused.floor, x=snapped_x, y=snapped_y, heading=fused.heading,
-        confidence=fused.confidence, tracking=True, timestamp=time.time(),
+        floor=fused.floor,
+        x=snapped_x,
+        y=snapped_y,
+        heading=fused.heading,
+        confidence=fused.confidence,
+        tracking=True,
+        timestamp=time.time(),
+        method=result.method,
+        z=pose.z if pose else None,
+        num_inliers=pose.num_inliers if pose else None,
+        num_matches=pose.num_matches if pose else None,
     )
+
+
+@app.get("/map/live-poses")
+def map_live_poses():
+    """Active localization poses only (hidden when the client ends its session)."""
+    poses = []
+    for did, fuser in _sessions.items():
+        if not getattr(fuser, "is_live", lambda: False)():
+            if getattr(fuser, "_live_marker", False):
+                # ttl expired — clear marker flag
+                fuser.end_live()
+            continue
+        last = fuser.last_position()
+        if last is None:
+            continue
+        floor, x, y = last
+        poses.append({
+            "device_id": did,
+            "floor": floor,
+            "x": float(x),
+            "y": float(y),
+            "z": getattr(fuser, "_last_z", None),
+            "heading": float(getattr(fuser, "_last_heading", 0.0) or 0.0),
+            "confidence": float(getattr(fuser, "_last_confidence", 0.0) or 0.0),
+            "tracking": True,
+            "method": getattr(fuser, "_last_method", "none") or "none",
+            "live_age_s": round(time.time() - float(getattr(fuser, "_live_ts", 0.0) or 0.0), 1),
+        })
+    return {"status": "success", "poses": poses}
+
+
+@app.post("/position/{device_id}/end")
+def end_live_position(device_id: str):
+    """Client localization session ended — remove 3D live marker for this device."""
+    fuser = _sessions.get(device_id)
+    if fuser is None:
+        return {"status": "ok", "device_id": device_id, "live": False}
+    fuser.end_live()
+    logger.info("[%s] live localization ended — 3D marker cleared", device_id)
+    return {"status": "ok", "device_id": device_id, "live": False}
+
+
+@app.post("/position/{device_id}/heartbeat")
+def heartbeat_live_position(device_id: str):
+    """Keep 3D live marker alive while the client is still navigating."""
+    fuser = _sessions.get(device_id)
+    if fuser is None or not getattr(fuser, "_live_marker", False):
+        return {"status": "ok", "device_id": device_id, "live": False}
+    fuser.mark_live()
+    return {"status": "ok", "device_id": device_id, "live": True}
 
 
 @app.get("/position/{device_id}", response_model=PositionResponse)
@@ -265,8 +352,15 @@ def get_last_position(device_id: str):
 
     floor, x, y = last
     return PositionResponse(
-        floor=floor, x=x, y=y, heading=0.0,
-        confidence=fuser._last_confidence, tracking=True, timestamp=time.time(),
+        floor=floor,
+        x=x,
+        y=y,
+        heading=float(getattr(fuser, "_last_heading", 0.0) or 0.0),
+        confidence=fuser._last_confidence,
+        tracking=True,
+        timestamp=time.time(),
+        method=getattr(fuser, "_last_method", "none") or "none",
+        z=getattr(fuser, "_last_z", None),
     )
 
 
@@ -328,6 +422,322 @@ def get_available_slots():
     return {"site_id": _SITE_ID, "slots": slots}
 
 
+# ---------------------------------------------------------------- Mapping API
+
+class MappingTag(BaseModel):
+    timestamp: float
+    x: float
+    y: float
+    floor: int
+
+def _persist_live_tags() -> None:
+    tags_path = _site.index_dir / "tags.json"
+    tags_data = _global_mapper.get_tags_3d()
+    try:
+        tags_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tags_path, "w") as f:
+            json.dump(tags_data, f, indent=2)
+    except OSError as e:
+        logger.warning("[API /map/tag] Failed writing tags.json: %s", e)
+
+
+@app.post("/map/new-session")
+def map_new_session():
+    """Start a separated mapping walk; keep prior sessions' landmarks and tags."""
+    # reload finalized cloud/H2GIS into memory so the next finalize cannot wipe them
+    info = _global_mapper.begin_session(site=_site)
+    logger.info(
+        "[API /map/new-session] session=%s total_landmarks=%s total_tags=%s",
+        info.get("session_id"), info.get("total_landmarks"), info.get("total_tags"),
+    )
+    return {"status": "success", "message": "new mapping session", **info}
+
+
+@app.post("/map/reset")
+def map_reset():
+    """Wipe all mapping sessions and on-disk survey artifacts."""
+    _global_mapper.reset()
+    # drop stale survey files so the viewer / PnP cannot use an old walk
+    for name in ("tags.json", "pointcloud.ply", "map_landmarks.npz"):
+        p = _site.index_dir / name
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError as e:
+                logger.warning("[API /map/reset] Could not remove %s: %s", name, e)
+    try:
+        from fmc.storage.h2gis_store import delete_site_db
+        delete_site_db(_site)
+    except Exception as e:
+        logger.warning("[API /map/reset] H2GIS cleanup failed: %s", e)
+    if _vpr_pipeline is not None:
+        try:
+            _vpr_pipeline.reload_map_index()
+        except Exception as e:
+            logger.warning("[API /map/reset] PnP reload failed: %s", e)
+    return {"status": "success", "message": "all mapping sessions cleared"}
+
+
+@app.post("/map/keyframe")
+async def map_keyframe(
+    device_id: str = Form(...),
+    timestamp: float = Form(...),
+    vio_x: float = Form(...),
+    vio_y: float = Form(...),
+    vio_z: float = Form(...),
+    vio_qw: float = Form(...),
+    vio_qx: float = Form(...),
+    vio_qy: float = Form(...),
+    vio_qz: float = Form(...),
+    image: UploadFile = File(...),
+    heading_deg: float | None = Form(None),
+):
+    """Ingest a camera frame + VIO pose for 3D map building."""
+    contents = await image.read()
+    np_arr = np.frombuffer(contents, np.uint8)
+    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    
+    if frame is None:
+        logger.error(f"[API /map/keyframe] Failed to decode image from device {device_id} ({len(contents)} bytes)")
+        raise HTTPException(status_code=400, detail="Failed to decode mapping image")
+        
+    pose = SixDofPose(
+        timestamp=timestamp, x=vio_x, y=vio_y, z=vio_z, 
+        qw=vio_qw, qx=vio_qx, qy=vio_qy, qz=vio_qz, tracking_status="tracking"
+    )
+    
+    logger.info(
+        f"[API /map/keyframe] Incoming from {device_id}: "
+        f"image={frame.shape[1]}x{frame.shape[0]} ({len(contents)/1024:.1f} KB), "
+        f"VIO=({vio_x:.2f}, {vio_y:.2f}, {vio_z:.2f}), "
+        f"heading={heading_deg if heading_deg is not None else 'n/a'}, "
+        f"Q=[{vio_qw:.2f}, {vio_qx:.2f}, {vio_qy:.2f}, {vio_qz:.2f}]"
+    )
+
+    # first frame after reload: pull prior finalized map so it isn't lost on next finalize
+    if not getattr(_global_mapper, "_disk_hydrated", False):
+        try:
+            _global_mapper.hydrate_from_disk(_site)
+            if _global_mapper.landmarks or _global_mapper.user_tags:
+                # don't append new walk onto an already-aligned session id
+                from fmc.mapping.continuous_mapper import COMMITTED_SESSION
+                aligned = getattr(_global_mapper, "_aligned_sessions", set())
+                if _global_mapper._session_id in aligned or COMMITTED_SESSION in aligned:
+                    _global_mapper._session_id = _global_mapper._next_free_session_id()
+                    logger.info(
+                        "[API /map/keyframe] Auto session=%s after hydrating %s landmarks",
+                        _global_mapper._session_id, len(_global_mapper.landmarks),
+                    )
+        except Exception as e:
+            logger.warning("[API /map/keyframe] Disk hydrate failed: %s", e)
+
+    frame_id = _global_mapper.add_keyframe(frame, timestamp, pose, heading_deg=heading_deg)
+    new_landmarks = getattr(_global_mapper, 'last_new_landmarks', 0)
+    total_landmarks = len(_global_mapper.landmarks)
+    total_keyframes = len(_global_mapper.keyframes)
+
+    logger.info(
+        f"[API /map/keyframe] Ingest complete: Frame #{frame_id} "
+        f"(+{new_landmarks} new 3D points | {total_landmarks} total landmarks | {total_keyframes} keyframes)"
+    )
+
+    return {
+        "status": "success",
+        "frame_id": frame_id,
+        "new_landmarks": new_landmarks,
+        "total_landmarks": total_landmarks,
+        "total_keyframes": total_keyframes,
+        "image_width": int(frame.shape[1]),
+        "image_height": int(frame.shape[0]),
+        "detected_features": getattr(_global_mapper, 'last_detected_keypoints', []),
+        "tracked_features": getattr(_global_mapper, 'last_tracked_keypoints', [])
+    }
+
+@app.post("/map/tag")
+def map_tag(tag: MappingTag):
+    """Add a ground truth physical anchor to the map."""
+    logger.info(f"[API /map/tag] Tag received: pos=({tag.x:.2f}, {tag.y:.2f}), floor={tag.floor}, time={tag.timestamp}")
+    _global_mapper.add_tag(tag.timestamp, tag.x, tag.y, tag.floor)
+    total_tags = len(_global_mapper.user_tags)
+    _persist_live_tags()
+    logger.info(f"[API /map/tag] Total tags recorded: {total_tags}")
+    return {
+        "status": "success",
+        "tags_recorded": total_tags,
+        "tags": _global_mapper.get_tags_3d(),
+    }
+
+@app.get("/map/tags")
+def get_map_tags():
+    """Retrieve all recorded ground control tags and facility landmarks for 3D visualization."""
+    tags = _global_mapper.get_tags_3d()
+    aligned = bool(getattr(_global_mapper, "_is_aligned", False))
+    
+    # If mapper in-memory tags are empty, check disk for finalized tags.json
+    if not tags:
+        tags_file = _site.index_dir / "tags.json"
+        if tags_file.exists():
+            try:
+                with open(tags_file, "r") as f:
+                    tags = json.load(f)
+                if tags:
+                    aligned = bool(tags[0].get("aligned", False))
+            except Exception as e:
+                logger.warning(f"[API /map/tags] Failed reading tags.json: {e}")
+                
+    # Facility spots only make sense once the cloud is in facility coordinates
+    facility_landmarks = []
+    if aligned:
+        locations_file = _site.index_dir / "locations.csv"
+        if locations_file.exists():
+            try:
+                loc_rows = load_locations_csv(locations_file)
+                for r in loc_rows:
+                    facility_landmarks.append({
+                        "id": r["location_id"],
+                        "label": f"Spot {r['location_id']}",
+                        "type": "facility_landmark",
+                        "facility_x": float(r["x"]),
+                        "facility_y": float(r["y"]),
+                        "floor": int(r["floor"]),
+                        "zone": r.get("zone", ""),
+                        "x": float(r["x"]),
+                        "y": float(r["y"]),
+                        "z": 0.0
+                    })
+            except Exception as e:
+                logger.warning(f"[API /map/tags] Failed reading locations.csv: {e}")
+
+    return {
+        "status": "success",
+        "aligned": aligned,
+        "user_tags": tags,
+        "facility_landmarks": facility_landmarks,
+        "all_landmarks": tags + facility_landmarks
+    }
+
+@app.post("/map/finalize")
+def map_finalize():
+    """Finalize map, optimizing poses against the tags."""
+    if not _finalize_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="finalize already running — wait for it to finish (do not tap again)",
+        )
+    try:
+        _global_mapper.hydrate_from_disk(_site)
+        n_tags = len(_global_mapper.user_tags)
+        aligned = set(getattr(_global_mapper, "_aligned_sessions", set()))
+        pending_tags = sum(1 for t in _global_mapper.user_tags if t.session_id not in aligned)
+        if n_tags < 2 and not _global_mapper.landmarks:
+            logger.warning("[API /map/finalize] Refusing finalize with %s tag(s) — need 2+", n_tags)
+            raise HTTPException(
+                status_code=400,
+                detail=f"need at least 2 tags along the walk (got {n_tags})",
+            )
+        logger.info(
+            f"[API /map/finalize] Finalize requested across {len(_global_mapper.keyframes)} keyframes, "
+            f"{n_tags} tags ({pending_tags} on unaligned sessions), "
+            f"{len(_global_mapper.landmarks)} landmarks in memory..."
+        )
+        ply_path = str(_site.index_dir / "pointcloud.ply")
+        num_frames, num_landmarks = _global_mapper.finalize_map(
+            output_ply_path=ply_path, site=_site,
+        )
+        aligned = bool(getattr(_global_mapper, "_is_aligned", False))
+        npz_db = _site.index_dir / "map_landmarks.npz"
+        h2_stem = _site.index_dir / "map_h2gis"
+        h2_ready = Path(str(h2_stem) + ".mv.db").exists() or Path(str(h2_stem) + ".db").exists()
+        # hot-reload PnP index so /localize can use the new 3D map immediately
+        try:
+            _get_vpr_pipeline().reload_map_index()
+        except Exception as e:
+            logger.warning("[API /map/finalize] Could not reload PnP map index: %s", e)
+        logger.info(
+            f"[API /map/finalize] Finalize completed: {num_frames} frames, {num_landmarks} landmarks, "
+            f"aligned={aligned}, h2gis={h2_ready}, npz={npz_db.exists()}"
+        )
+        aligned_sessions = sorted(getattr(_global_mapper, "_aligned_sessions", set()))
+        msg = (
+            f"Map aligned ({len(aligned_sessions)} session(s))"
+            if aligned
+            else "Map exported (not fully aligned — each session needs 2+ tags)"
+        )
+        return {
+            "status": "success",
+            "message": msg,
+            "keyframes": num_frames,
+            "landmarks_3d": num_landmarks,
+            "tags_recorded": n_tags,
+            "aligned": aligned,
+            "session_id": getattr(_global_mapper, "_session_id", 0),
+            "aligned_sessions": aligned_sessions,
+            "pointcloud_path": ply_path,
+            "map_db_path": str(h2_stem) if h2_ready else (str(npz_db) if npz_db.exists() else None),
+            "map_db_ready": h2_ready or npz_db.exists(),
+            "map_db_backend": "h2gis" if h2_ready else ("npz" if npz_db.exists() else None),
+        }
+    finally:
+        _finalize_lock.release()
+
+@app.get("/map/floorplan")
+def get_floorplan():
+    """Serve the floorplan image for visual tagging."""
+    img_path = _site.data_dir / "floorplan" / "floorplan.png"
+    if not img_path.exists():
+        logger.warning(f"[API /map/floorplan] Floorplan not found at {img_path}")
+        raise HTTPException(status_code=404, detail="Floorplan image not found")
+    return FileResponse(img_path)
+
+@app.get("/map/transform")
+def get_transform():
+    """Serve the floorplan transform matrix to map pixels to meters."""
+    transform_path = _site.data_dir / "floorplan" / "transform.json"
+    if not transform_path.exists():
+        logger.warning(f"[API /map/transform] Transform not found at {transform_path}")
+        raise HTTPException(status_code=404, detail="Transform not found")
+    with open(transform_path, "r") as f:
+        return json.load(f)
+
+@app.get("/map/survey-spots")
+def get_survey_spots():
+    """Pixel coords of survey spots (P5–P8) for the tagging floorplan overlay."""
+    path = _site.data_dir / "floorplan" / "locations_pixels.csv"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Survey spot pixels not found")
+    want = {"P5", "P6", "P7", "P8"}
+    spots = []
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                lid = (row.get("location_id") or "").strip()
+                if lid not in want:
+                    continue
+                spots.append({
+                    "id": lid,
+                    "px": float(row["pixel_x"]),
+                    "py": float(row["pixel_y"]),
+                    "floor": int(float(row.get("floor") or 1)),
+                    "zone": (row.get("zone") or "").strip(),
+                })
+    except (KeyError, ValueError, OSError) as e:
+        logger.warning("[API /map/survey-spots] Failed reading %s: %s", path, e)
+        raise HTTPException(status_code=500, detail="Could not load survey spots") from e
+    spots.sort(key=lambda s: s["id"])
+    return {"status": "success", "spots": spots}
+
+@app.get("/map/pointcloud")
+def get_pointcloud():
+    """Serve the generated 3D point cloud PLY file."""
+    ply_path = _site.index_dir / "pointcloud.ply"
+    if not ply_path.exists():
+        logger.warning(f"[API /map/pointcloud] Pointcloud file not found at {ply_path}")
+        raise HTTPException(status_code=404, detail="Point cloud not generated yet")
+    size_bytes = ply_path.stat().st_size
+    logger.info(f"[API /map/pointcloud] Serving pointcloud.ply ({size_bytes/1024:.1f} KB)")
+    return FileResponse(ply_path, media_type="application/octet-stream")
+
+
 @app.get("/favicon.ico")
 def favicon_redirect():
     """Keep the browser from requesting a missing root favicon."""
@@ -344,6 +754,12 @@ def parking_ui_redirect():
 def parking_redirect():
     """Support the same path without a trailing slash."""
     return RedirectResponse(url="/parking/", status_code=307)
+
+
+@app.get("/mapping")
+def mapping_redirect():
+    """Redirect to the static mapping UI."""
+    return RedirectResponse(url="/mapping.html", status_code=307)
 
 
 # ---------------------------------------------------------------- static test client

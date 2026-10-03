@@ -1,0 +1,5 @@
+{
+  "appId": "org.findmycar.app",
+  "appName": "FindMyCar",
+  "webDir": "src/fmc/api/static"
+}

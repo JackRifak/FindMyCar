@@ -17,9 +17,13 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from fmc.config import GEOMETRIC_INLIER_RATIO_THRESHOLD, ORB_MIN_MATCH_COUNT, RANSAC_REPROJ_THRESHOLD
+from fmc.config import (
+    GEOMETRIC_INLIER_RATIO_THRESHOLD,
+    ORB_MIN_MATCH_COUNT,
+    RANSAC_REPROJ_THRESHOLD,
+)
 
-_orb = cv2.ORB_create(nfeatures=1000)
+_orb = cv2.ORB_create(nfeatures=5000)
 _matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
 
 

@@ -1,0 +1,29 @@
+{
+  "name": "findmycar",
+  "version": "1.0.0",
+  "description": "See `PROJECT_CONTEXT.md` for the condensed project brief and `docs/` for the\r Phase 1 planning deliverables. This README covers the code scaffold.",
+  "main": "temp_mapping.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JackRifak/FindMyCar.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/JackRifak/FindMyCar/issues"
+  },
+  "homepage": "https://github.com/JackRifak/FindMyCar#readme",
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2"
+  }
+}

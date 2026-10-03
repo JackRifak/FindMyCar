@@ -11,9 +11,23 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
+# Node / Capacitor
+node_modules/
+android/
+ios/
+www/
+
 # Environment / secrets
 .env
 *.pem
+
+# H2GIS runtime (download via scripts/fetch_h2gis.py)
+lib/h2gis/
+lib/*.zip
+data/*/index/map_h2gis.mv.db
+data/*/index/map_h2gis.db
+data/*/index/map_h2gis.trace.db
+data/*/index/map_landmarks.npz
 
 # LibreOffice / editor lock files
 .~lock.*#

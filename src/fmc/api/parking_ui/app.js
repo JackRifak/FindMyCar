@@ -137,11 +137,39 @@ function updateWorkflowControls() {
   });
 }
 
+let liveHeartbeatTimer = null;
+
+function endLiveLocalization() {
+  if (liveHeartbeatTimer) {
+    clearInterval(liveHeartbeatTimer);
+    liveHeartbeatTimer = null;
+  }
+  // clear cyan avatar in 3D viewer for this device
+  const url = `/position/${encodeURIComponent(state.deviceId)}/end`;
+  try {
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(url);
+      return;
+    }
+  } catch (_) { /* fall through */ }
+  fetch(url, { method: "POST", keepalive: true }).catch(() => {});
+}
+
+function startLiveHeartbeat() {
+  if (liveHeartbeatTimer) return;
+  liveHeartbeatTimer = setInterval(() => {
+    if (state.workflowStep !== "navigation" || !state.hasLocalizedPosition) return;
+    fetch(`/position/${encodeURIComponent(state.deviceId)}/heartbeat`, { method: "POST" })
+      .catch(() => {});
+  }, 45000);
+}
+
 function setWorkflowStep(step, moveFocus = false) {
   if (!canEnterWorkflowStep(step)) return;
 
   if (state.workflowStep === "navigation" && step !== "navigation") {
     stopLiveVprCapture();
+    endLiveLocalization();
   }
 
   state.workflowStep = step;
@@ -632,6 +660,7 @@ function applyVprFix(pos) {
   ui.metricFloor.textContent = pos.floor ?? "—";
   ui.metricCoords.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`;
   ui.metricHeading.textContent = `${Math.round(pos.heading)}°`;
+  startLiveHeartbeat();
   updateRouteStatus();
 }
 
@@ -1063,7 +1092,15 @@ async function refreshCurrentPosition() {
   }
 }
 
-window.addEventListener("pagehide", stopLiveVprCapture);
+window.addEventListener("pagehide", () => {
+  stopLiveVprCapture();
+  endLiveLocalization();
+});
+window.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && state.workflowStep !== "navigation") {
+    endLiveLocalization();
+  }
+});
 
 ui.calibrationButtons.forEach((button) => {
   button.addEventListener("click", () => {

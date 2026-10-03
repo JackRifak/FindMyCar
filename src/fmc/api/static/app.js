@@ -47,6 +47,11 @@ const state = {
   distanceWalked: 0.0,
   lastCorrectionDrift: null,
   lastVprFix: null, // { x, y, distanceWalkedAtFix } -- used for in-session stride refinement
+  walkingHeadingOffset: 0.0,
+  hasWalkingHeadingEstimate: false,
+  pdrHeadingSinSum: 0.0,
+  pdrHeadingCosSum: 0.0,
+  pdrHeadingSampleCount: 0,
 
   // Trajectory history for 2D visualizer
   // { x, y, heading, source: 'vpr'|'pdr'|'miss', t, drift }
@@ -106,7 +111,7 @@ function getSettings() {
     minIntervalMs: +document.getElementById("minInterval").value || 300,
     maxIntervalMs: +document.getElementById("maxInterval").value || 2000,
     motionThreshold: +document.getElementById("motionThreshold").value || 1.5,
-    maxDimension: +document.getElementById("maxDimension").value || 1600,
+    maxDimension: +document.getElementById("maxDimension").value || 4096,
     jpegQuality: +document.getElementById("jpegQuality").value || 0.75,
     captureTriggerMode: document.getElementById("captureTriggerMode").value || "motion",
     blurGuardEnabled: document.getElementById("blurGuardEnabled").checked,
@@ -145,6 +150,9 @@ function computeEulerHeading(event) {
   if (typeof event.webkitCompassHeading === "number" && !isNaN(event.webkitCompassHeading)) {
     return event.webkitCompassHeading;
   }
+
+  // Relative alpha is not north-referenced and must not drive facility PDR.
+  if (event.absolute !== true) return null;
 
   if (typeof event.alpha !== "number" || isNaN(event.alpha)) {
     return null;
@@ -345,7 +353,14 @@ function detectStep(dynAcc, now) {
 
 function processStep(stepLength) {
   updateLiveHeading();
-  const hdgDeg = state.pos.heading;
+  const sensorHeading = state.pos.heading;
+  const sensorHeadingRad = (sensorHeading * Math.PI) / 180;
+  state.pdrHeadingSinSum += Math.sin(sensorHeadingRad);
+  state.pdrHeadingCosSum += Math.cos(sensorHeadingRad);
+  state.pdrHeadingSampleCount++;
+
+  const hdgDeg = (sensorHeading + state.walkingHeadingOffset + 360) % 360;
+  state.pos.heading = hdgDeg;
   const hdgRad = (hdgDeg * Math.PI) / 180;
 
   // docs/01_coordinate_system.md: 0° = +Y North, 90° = +X East
@@ -389,6 +404,27 @@ function processStep(stepLength) {
 }
 
 // ---------------------------------------------------------------- VPR Relocalisation & Fusion
+
+function inferWalkingHeadingOffset(previousFix, currentFix, segment) {
+  if (!previousFix || previousFix.floor !== currentFix.floor) return null;
+  if (currentFix.confidence < 0.45 || segment.steps < 6 || segment.headingSamples < 6) return null;
+  if (segment.pathDistance < 2) return null;
+
+  const dx = currentFix.x - previousFix.x;
+  const dy = currentFix.y - previousFix.y;
+  const fixDistance = Math.hypot(dx, dy);
+  if (fixDistance < 2) return null;
+
+  const displacementToPathRatio = fixDistance / segment.pathDistance;
+  if (displacementToPathRatio < 0.65 || displacementToPathRatio > 1.8) return null;
+
+  const concentration = Math.hypot(segment.headingSinSum, segment.headingCosSum) / segment.headingSamples;
+  if (concentration < 0.85) return null;
+
+  const meanPdrHeading = (Math.atan2(segment.headingSinSum, segment.headingCosSum) * 180) / Math.PI;
+  const walkingBearing = (Math.atan2(dx, dy) * 180) / Math.PI;
+  return ((walkingBearing - meanPdrHeading + 540) % 360) - 180;
+}
 
 function refineStrideScaleFactor(vprFix) {
   // Uses actual distance-per-step between two consecutive genuine VPR fixes to
@@ -438,6 +474,24 @@ function onVprResult(vprFix, latencyMs, trigger) {
 
     refineStrideScaleFactor(vprFix);
 
+    const inferredWalkingOffset = inferWalkingHeadingOffset(state.lastVprFix, vprFix, {
+      steps: state.stepsSinceFix,
+      pathDistance: state.distanceWalked - (state.lastVprFix?.distanceWalkedAtFix ?? state.distanceWalked),
+      headingSinSum: state.pdrHeadingSinSum,
+      headingCosSum: state.pdrHeadingCosSum,
+      headingSamples: state.pdrHeadingSampleCount,
+    });
+    if (inferredWalkingOffset !== null) {
+      if (state.hasWalkingHeadingEstimate) {
+        const offsetDelta = ((inferredWalkingOffset - state.walkingHeadingOffset + 540) % 360) - 180;
+        state.walkingHeadingOffset = ((state.walkingHeadingOffset + offsetDelta * 0.35 + 540) % 360) - 180;
+      } else {
+        state.walkingHeadingOffset = inferredWalkingOffset;
+        state.hasWalkingHeadingEstimate = true;
+      }
+      console.info("Learned walking-direction offset:", state.walkingHeadingOffset.toFixed(1), "degrees");
+    }
+
     // Auto-calibrate compass offset: aligns device compass to site coordinate
     // frame. Uses the SMOOTHED (circular-mean) recent heading rather than one
     // instantaneous sample, for the same reason as the rolling buffer above.
@@ -448,7 +502,15 @@ function onVprResult(vprFix, latencyMs, trigger) {
       state.hasHeadingCalibration = true;
     }
 
-    state.lastVprFix = { x: vprFix.x, y: vprFix.y, distanceWalkedAtFix: state.distanceWalked };
+    state.lastVprFix = {
+      floor: vprFix.floor,
+      x: vprFix.x,
+      y: vprFix.y,
+      distanceWalkedAtFix: state.distanceWalked,
+    };
+    state.pdrHeadingSinSum = 0;
+    state.pdrHeadingCosSum = 0;
+    state.pdrHeadingSampleCount = 0;
 
     // Hard reset / snap position to VPR fix
     state.pos.floor = vprFix.floor;
@@ -849,7 +911,7 @@ async function startCapture() {
   state.stream = await navigator.mediaDevices.getUserMedia({
     video: {
       facingMode: { ideal: "environment" },
-      width: { ideal: 1280 },
+      width: { ideal: 960 },
       height: { ideal: 960 },
     },
   });

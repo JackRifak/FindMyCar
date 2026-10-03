@@ -1,0 +1,14 @@
+site_id: YOUR_SITE_ID
+floors:
+- floor: 1
+  zones: []
+  walkable_segments: []
+  landmarks: []
+  vehicle_slots: []
+
+# Auto-generated placeholder. Add walkable_segments/vehicle_slots
+# per docs/01_coordinate_system.md and data/mock_site/config.yaml for
+# an example, once you need routing (fmc/navigation) or map matching
+# (fmc/fusion/map_matching.py). Add one entry per real floor if this
+# site has more than one -- the 'floor' field must match the floor
+# numbers used in your locations.csv / dataset.jsonl.

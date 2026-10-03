@@ -5,6 +5,10 @@ pyyaml>=6.0
 fastapi>=0.110
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9
+h5py>=3.11.0
+jaydebeapi>=1.2.3
+JPype1>=1.5.0
+# H2GIS jars live under lib/h2gis/ (see scripts/fetch_h2gis.py) — requires Java 17+
 
 # Not yet needed by the mock-site baseline, add once Deliverable 4/5
 # picks a real embedding model / VIO framework:

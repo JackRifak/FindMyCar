@@ -23,7 +23,7 @@ PROCESSED_IMAGE_SHORT_SIDE = 720
 EMBEDDING_DIM = 64
 
 # VPR search parameters
-TOP_K_CANDIDATES = 5
+TOP_K_CANDIDATES = 10
 
 # Geometric verification thresholds (baseline ORB+RANSAC; revisit after
 # Deliverable 4/5 benchmarking of SuperPoint/SuperGlue/LightGlue etc.)

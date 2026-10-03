@@ -37,6 +37,15 @@ compass aligned to the facility's coordinate frame (per
 `01_coordinate_system.md`: 0°=+Y, clockwise) and self-corrects for slow
 magnetometer drift, at the cost of a caveat below.
 
+**Walking direction** — phone facing direction is not always the direction of
+travel. After consecutive same-floor VPR fixes, the client estimates a separate
+phone-to-walk offset from the fix-to-fix bearing and the circular mean of PDR
+headings between those fixes. It learns only from segments with at least six
+steps, at least 2m of estimated travel and fix displacement, concentrated
+headings, and a plausible displacement-to-path ratio. The learned offset is
+smoothed and applied to subsequent PDR steps; it cannot correct the segment
+that first taught it, and short, curved, or ambiguous segments are ignored.
+
 **Fusion** — on each VPR fix: hard-reset `(x, y)` to the match, recompute
 the heading offset, log the drift (distance between where PDR had wandered
 to and where VPR corrected it, in meters). On a VPR miss: PDR keeps

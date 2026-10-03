@@ -1,22 +1,24 @@
 """End-to-end VPR pipeline: query image -> verified position estimate.
 
-Implements the flow from project brief Section 6:
-  frame -> preprocessing -> embedding -> vector search -> Top-K candidates
-  -> geometric verification -> best matching location -> estimated position
+Flow:
+  1) Optional 6-DOF PnP against mapped 3D landmarks (2D-to-3D + RANSAC)
+  2) Fallback: embedding retrieval -> Top-K -> geometric verification -> 2D fix
 """
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import cv2
 import numpy as np
 
 from fmc.config import SiteConfig
-from fmc.dataset.schema import ReferenceImage
+from fmc.dataset.schema import CameraInfo, ReferenceImage
 from fmc.vpr.embedder import get_embedder
 from fmc.vpr.geometric_verification import verify
+from fmc.vpr.pnp_localizer import Pose6Dof, load_map_index
 from fmc.vpr.search import VectorIndex
 
 logger = logging.getLogger("fmc.vpr")
@@ -45,6 +47,8 @@ class VPRResult:
     similarity: float
     inlier_ratio: float
     candidates: list[CandidateTrace]
+    pose_6dof: Pose6Dof | None = None
+    method: str = "none"  # "pnp" | "image_vpr" | "none"
 
 
 class VPRPipeline:
@@ -52,9 +56,58 @@ class VPRPipeline:
         self.site = site
         self.embedder = get_embedder(site)
         self.index = VectorIndex.load(site)
-        logger.info(f"VPRPipeline initialized with {len(self.index.ids)} index records")
+        self.map_index = load_map_index(site)
+        n_map = 0 if self.map_index is None else len(self.map_index.positions)
+        logger.info(
+            f"VPRPipeline initialized with {len(self.index.ids)} index records, "
+            f"{n_map} 3D map landmarks"
+        )
+
+    def reload_map_index(self) -> None:
+        """Reload H2GIS / NPZ map index after a new mapping finalize."""
+        self.map_index = load_map_index(self.site)
+        n = 0 if self.map_index is None else len(self.map_index.positions)
+        logger.info("[VPR] Reloaded 3D map index (%s landmarks)", n)
 
     def localize(self, query_image: np.ndarray) -> VPRResult:
+        # --- Stage A: 2D-to-3D PnP against continuous map ---
+        if self.map_index is not None:
+            t0 = time.perf_counter()
+            pose = self.map_index.localize(query_image)
+            t_pnp = (time.perf_counter() - t0) * 1000
+            if pose is not None:
+                logger.info(
+                    "[VPR] PnP localization succeeded in %.1fms "
+                    "at (%.2f, %.2f) heading=%.0f",
+                    t_pnp, pose.x, pose.y, pose.heading,
+                )
+                record = ReferenceImage(
+                    image_id="pnp_fix",
+                    floor=1,
+                    zone="map",
+                    x=pose.x,
+                    y=pose.y,
+                    orientation=int(round(pose.heading)) % 360,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    camera_information=CameraInfo(),
+                    processed_path="",
+                    location_id="pnp",
+                )
+                return VPRResult(
+                    matched=True,
+                    record=record,
+                    similarity=pose.confidence,
+                    inlier_ratio=pose.inlier_ratio,
+                    candidates=[],
+                    pose_6dof=pose,
+                    method="pnp",
+                )
+            logger.info("[VPR] PnP failed (%.1fms) — falling back to image VPR", t_pnp)
+
+        # --- Stage B: classic image retrieval + geometric verification ---
+        return self._localize_image_vpr(query_image)
+
+    def _localize_image_vpr(self, query_image: np.ndarray) -> VPRResult:
         t0 = time.perf_counter()
         query_embedding = self.embedder.embed(query_image)
         t_embed = (time.perf_counter() - t0) * 1000
@@ -128,6 +181,7 @@ class VPRPipeline:
                     similarity=candidate.similarity,
                     inlier_ratio=verification.inlier_ratio,
                     candidates=candidate_traces,
+                    method="image_vpr",
                 )
 
         logger.debug(f"VPR: no candidate survived geometric verification out of {len(candidates)} candidates")
@@ -137,5 +191,5 @@ class VPRPipeline:
             similarity=0.0,
             inlier_ratio=0.0,
             candidates=candidate_traces,
+            method="none",
         )
-
