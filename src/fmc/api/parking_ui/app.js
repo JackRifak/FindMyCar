@@ -191,21 +191,41 @@ function onDestFloor() {
 }
 
 function routeDestPoint() {
-  // prefer active last-leg end, else flat route end
-  const leg = activeRouteLeg();
-  const legWps = leg?.waypoints;
-  if (legWps?.length) return legWps[legWps.length - 1];
-  const wps = state.route?.waypoints;
-  if (wps?.length) return wps[wps.length - 1];
+  // parking bay — never the elevator door at end of a mid-route walk leg
   const slotId = ui.slotInput?.value?.trim();
   const slot = (state.slotList || []).find((s) => s.slot_id === slotId);
-  if (slot) return [slot.x, slot.y];
+  if (slot && Number.isFinite(slot.x) && Number.isFinite(slot.y)) {
+    return [slot.x, slot.y];
+  }
+  const dest = destFloorId();
+  if (state.route?.legs?.length) {
+    for (let i = state.route.legs.length - 1; i >= 0; i -= 1) {
+      const leg = state.route.legs[i];
+      if (leg?.floor_transition) continue;
+      if (dest && String(leg.floor) !== dest) continue;
+      if (leg.waypoints?.length) return leg.waypoints[leg.waypoints.length - 1];
+    }
+  }
+  const wps = state.route?.waypoints;
+  if (wps?.length) return wps[wps.length - 1];
   return null;
+}
+
+/** still need lift/stairs before the bay */
+function hasFloorChangeAhead() {
+  if (!state.route?.legs?.length) return false;
+  if (state.inFloorTransition) return true;
+  return Boolean(nextTransitionLeg(state.activeLegIndex || 0));
 }
 
 function hasReachedDestination(progress) {
   if (!state.route || !onDestFloor()) return false;
   if (state.inFloorTransition) return false;
+  // elevator / stairs still ahead — end of this floor is NOT the bay
+  if (hasFloorChangeAhead()) return false;
+
+  const leg = activeRouteLeg();
+  if (leg?.floor_transition) return false;
 
   const pos = state.position;
   const dest = routeDestPoint();
@@ -214,13 +234,13 @@ function hasReachedDestination(progress) {
     : Infinity;
 
   // bay coords are often a few meters off the corridor — use looser radius
+  // only when dest point is the real slot (same floor, no connector left)
   if (distSlot <= ARRIVE_SLOT_M) return true;
 
   const rem = progress?.remainingDistance;
   if (typeof rem === "number" && rem <= ARRIVE_M) return true;
 
   // corridor approach node (waypoint before the off-path slot spur)
-  const leg = activeRouteLeg();
   const wps = leg?.waypoints?.length ? leg.waypoints : state.route.waypoints;
   if (wps?.length >= 2) {
     const approach = wps[wps.length - 2];
@@ -228,6 +248,29 @@ function hasReachedDestination(progress) {
     if (distApproach <= ARRIVE_M) return true;
   }
   return false;
+}
+
+function elevatorBanner(tf, remM = 0) {
+  if (!tf) {
+    return {
+      label: "Take elevator to your floor",
+      distanceM: Math.max(0, remM),
+      isArrival: false,
+      kind: remM <= ENTER_CONNECTOR_M ? "arrive" : "straight",
+      isFloorChange: true,
+    };
+  }
+  const cid = tf.connector_id || "";
+  const atDoor = remM <= ENTER_CONNECTOR_M;
+  return {
+    label: atDoor
+      ? (tf.instruction || `Take ${connectorLabel(tf)}${cid ? ` (${cid})` : ""} to Floor ${tf.to_floor}`)
+      : `Walk to ${cid || "lift"} · then ${connectorLabel(tf)} to Floor ${tf.to_floor}`,
+    distanceM: atDoor ? 0 : Math.max(0, remM),
+    isArrival: false,
+    kind: atDoor ? "arrive" : "straight",
+    isFloorChange: true,
+  };
 }
 
 function activeRouteLeg() {
@@ -488,7 +531,19 @@ function nextTurnFromLegs(legs, traveledDistance = 0) {
     along += leg.dist || 0;
   }
   const remain = Math.max(0, along - traveledDistance);
+  // current-floor polyline ends at the lift — not the parking bay
+  if (remain < 12 && hasFloorChangeAhead()) {
+    const tf = nextTransitionLeg((state.activeLegIndex || 0) + 1)?.floor_transition
+      || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition
+      || activeRouteLeg()?.floor_transition;
+    const ban = elevatorBanner(tf, remain);
+    return { ...ban, kind: ban.kind };
+  }
   if (remain < ARRIVE_M) {
+    if (!onDestFloor() || hasFloorChangeAhead()) {
+      const tf = nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
+      return elevatorBanner(tf, 0);
+    }
     return { label: "You've arrived", kind: "arrive", distanceM: 0, isArrival: true };
   }
   return { label: "Continue straight", kind: "straight", distanceM: remain, isArrival: false };
@@ -1582,7 +1637,11 @@ async function startWebXrNav() {
         paintTurnBanner(nextTurnFromLegs(legs, along));
       },
       onWalk: (progress, remain) => {
-        if (ui.metricDistance) ui.metricDistance.textContent = `${remain.toFixed(1)} m`;
+        if (ui.metricDistance) {
+          ui.metricDistance.textContent = hasFloorChangeAhead() && remain <= ENTER_CONNECTOR_M
+            ? "Now"
+            : `${remain.toFixed(1)} m`;
+        }
         const next = nextTurnFromLegs(legs, progress);
         paintTurnBanner({
           ...next,
@@ -1590,6 +1649,19 @@ async function startWebXrNav() {
         });
       },
       onArrived: () => {
+        // end of this floor's AR path — often the elevator, not the bay
+        if (!onDestFloor() || hasFloorChangeAhead()) {
+          enterConnectorLeg();
+          const tf = activeRouteLeg()?.floor_transition
+            || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
+          const ban = elevatorBanner(tf, 0);
+          paintTurnBanner(ban);
+          setStatusChip(connectorLabel(tf), "live");
+          setStatusMsg(ban.label);
+          setHint(ban.label, true);
+          updateRouteProgress();
+          return;
+        }
         setStatusChip("Arrived", "live");
         setStatusMsg("You've arrived at your bay.");
         paintTurnBanner({
@@ -1956,10 +2028,9 @@ function updateRouteProgress() {
   if (ui.routeTotalDistance) ui.routeTotalDistance.textContent = `${state.route.total_distance.toFixed(1)} m`;
   ui.metricDistance.textContent = `${progress.remainingDistance.toFixed(1)} m`;
   const destFloor = destFloorId();
-  const isLastLeg = !state.route.legs
-    || state.activeLegIndex >= state.route.legs.length - 1
-    || onDestFloor();
   const upcoming = nextTransitionLeg((state.activeLegIndex || 0) + 1);
+  const hasMoreLegs = Boolean(state.route.legs)
+    && (state.activeLegIndex || 0) < state.route.legs.length - 1;
   const reached = hasReachedDestination(progress);
   if (ui.routeStatus) {
     ui.routeStatus.textContent = reached
@@ -1984,13 +2055,13 @@ function updateRouteProgress() {
     // enter lift/stairs early — PDR often freezes inside the cabin (~2m left)
     const nearConnector = Boolean(upcoming?.floor_transition)
       && (progress.remainingDistance <= ENTER_CONNECTOR_M || distLift <= ENTER_CONNECTOR_M);
-    if (!isLastLeg && !onDestFloor() && nearConnector) {
+    if (hasMoreLegs && nearConnector) {
       if (enterConnectorLeg()) {
         updateRouteProgress();
         return;
       }
     }
-    if (!isLastLeg && !onDestFloor() && progress.remainingDistance < LEG_ADVANCE_M) {
+    if (hasMoreLegs && progress.remainingDistance < LEG_ADVANCE_M) {
       state.activeLegIndex += 1;
       const nxt = activeRouteLeg();
       state.inFloorTransition = Boolean(nxt?.floor_transition);
@@ -2000,7 +2071,7 @@ function updateRouteProgress() {
     if (reached) {
       showArrivalCelebration(ui.slotInput?.value?.trim() || "");
     }
-  } else if (reached) {
+  } else if (reached && !hasFloorChangeAhead()) {
     showArrivalCelebration(ui.slotInput?.value?.trim() || "");
   }
 
