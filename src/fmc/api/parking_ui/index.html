@@ -2,327 +2,160 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Find My Car | Parking Slot Locator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
+    <title>Find My Car | Live Navigation</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
     <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
-    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261001-1" />
+    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261004-ar" />
   </head>
   <body>
-    <div class="page-shell">
-      <header class="topbar">
-        <div class="brand-lockup">
-          <div class="brand-mark">F</div>
+    <div class="ar-stage" id="arStage">
+      <video id="cameraView" playsinline muted autoplay></video>
+      <img id="arPreview" alt="" />
+      <canvas id="arCanvas"></canvas>
+
+      <div class="ar-top">
+        <div class="brand-chip">
+          <span class="mark">F</span>
+          <span>Find My Car</span>
+        </div>
+        <div id="statusChip" class="status-chip is-warn">Ready</div>
+      </div>
+
+      <div id="turnBanner" class="turn-banner" hidden>
+        <div class="turn-arrow-wrap" aria-hidden="true">
+          <svg id="turnIcon" class="turn-icon" viewBox="0 0 24 24">
+            <path d="M12 3 L12 17 M12 3 L7 8 M12 3 L17 8" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </div>
+        <div class="turn-copy">
+          <p id="turnLabel" class="turn-label">Continue straight</p>
+          <p id="turnDistance" class="turn-distance">—</p>
+        </div>
+        <div class="turn-dest">
+          Slot
+          <strong id="hudSlot">—</strong>
+        </div>
+      </div>
+
+      <p id="arHint" class="ar-hint">Choose your parking slot to begin</p>
+
+      <div class="ar-bottom">
+        <div class="telemetry">
           <div>
-            <p class="eyebrow">Parking slot finder</p>
-            <h1>Find My Car</h1>
+            <span>Floor</span>
+            <strong id="metricFloor">—</strong>
+          </div>
+          <div>
+            <span>Position</span>
+            <strong id="metricCoords">—</strong>
+          </div>
+          <div>
+            <span>Heading</span>
+            <strong id="metricHeading">—</strong>
+          </div>
+          <div>
+            <span>Left</span>
+            <strong id="metricDistance">—</strong>
           </div>
         </div>
-        <div class="powered">Powered by Traffic Tech</div>
-      </header>
 
-      <main class="app-shell">
-        <section class="hero panel">
-          <div class="hero-copy">
-            <span class="pill accent">Live in-car guidance</span>
-            <h2>Find your parking bay and navigate there without guesswork</h2>
-            <p>
-              Choose your parking slot, calibrate your phone, then localize to get a guided route.
-            </p>
-          </div>
-          <div class="hero-status">
-            <div class="status-item">
-              <span class="label">Session</span>
-              <strong id="sessionState">Ready</strong>
-            </div>
-            <div class="status-item">
-              <span class="label">Position</span>
-              <strong id="positionState">Not set</strong>
-            </div>
-            <div class="status-item">
-              <span class="label">Confidence</span>
-              <strong id="confidenceState">0.00</strong>
-            </div>
-          </div>
-        </section>
-
-        <nav class="workflow-progress" aria-label="Setup progress">
-          <button type="button" class="workflow-step is-active" data-workflow-step="destination" aria-current="step">
-            <span class="workflow-number">1</span>
-            <span class="workflow-label">Parking slot</span>
-          </button>
-          <span class="workflow-connector" aria-hidden="true"></span>
-          <button type="button" class="workflow-step" data-workflow-step="calibration" disabled>
-            <span class="workflow-number">2</span>
-            <span class="workflow-label">Calibration</span>
-          </button>
-          <span class="workflow-connector" aria-hidden="true"></span>
-          <button type="button" class="workflow-step" data-workflow-step="navigation" disabled>
-            <span class="workflow-number">3</span>
-            <span class="workflow-label">Navigation</span>
-          </button>
-        </nav>
-
-        <section class="panel workflow-panel destination-panel" data-workflow-panel="destination">
-          <div class="panel-header">
-            <div>
-              <p class="section-kicker">Step 1 of 3</p>
-              <h3 tabindex="-1">Choose your parking slot</h3>
-            </div>
-          </div>
-
-          <div class="search-row">
-            <label class="field-label" for="slotInput">Slot ID</label>
-            <div class="input-wrap">
-              <input id="slotInput" list="slotSuggestions" placeholder="Type slot ID, e.g. 87-04C" />
-              <datalist id="slotSuggestions"></datalist>
-            </div>
-          </div>
-          <div id="slotSuggestionsMini" class="chip-list"></div>
-
-          <div class="workflow-actions workflow-actions-end">
-            <button id="destinationContinueBtn" type="button" class="primary-btn" disabled>Continue to calibration</button>
-          </div>
-        </section>
-
-        <section class="panel calibration-panel workflow-panel" data-workflow-panel="calibration" hidden>
-          <div class="panel-header">
-            <div>
-              <p class="section-kicker">Step 2 of 3</p>
-              <h3 tabindex="-1">Calibrate your phone</h3>
-            </div>
-          </div>
-
-          <div class="calibration-steps" id="calibrationSteps">
-            <article class="cal-step is-active" data-step="stillness">
-              <span class="step-number">1</span>
-              <div class="cal-step-copy">
-                <h4>Stillness check</h4>
-                <p>Hold the phone still to stabilize the motion sensor baseline.</p>
-              </div>
-              <button type="button" class="step-action" data-step-key="stillness">Start stillness</button>
-            </article>
-            <article class="cal-step" data-step="magnetometer">
-              <span class="step-number">2</span>
-              <div class="cal-step-copy">
-                <h4>Compass sweep</h4>
-                <p>Rotate in a gentle figure-8 to calibrate heading and direction.</p>
-              </div>
-              <button type="button" class="step-action" data-step-key="compass">Start compass</button>
-            </article>
-            <article class="cal-step" data-step="walk">
-              <span class="step-number">3</span>
-              <div class="cal-step-copy">
-                <h4>Walk calibration</h4>
-                <p>Take a few steps forward to tune stride and live navigation.</p>
-              </div>
-              <button type="button" class="step-action" data-step-key="walk">Start walk</button>
-            </article>
-          </div>
-
-          <div class="calibration-visual step-stillness" id="calibrationVisual" aria-live="polite">
-            <div class="visual-track" aria-hidden="true">
-              <svg class="stillness-scene" viewBox="0 0 320 180">
-                <g class="stillness-person">
-                  <path d="M148 104 L143 151 M172 104 L177 151" fill="none" stroke="#c5d0ca" stroke-width="10" stroke-linecap="round" />
-                  <path d="M143 151 L137 161 M177 151 L183 161" fill="none" stroke="#f1c7a5" stroke-width="8" stroke-linecap="round" />
-                  <path d="M145 54 Q160 48 175 54 L181 108 Q160 115 139 108 Z" fill="#6ee7a8" />
-                  <path d="M145 62 L151 79 L156 84 M175 62 L169 79 L164 84" fill="none" stroke="#f1c7a5" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
-                  <circle cx="160" cy="31" r="14" fill="#f1c7a5" />
-                  <path d="M148 28 Q151 14 162 16 Q173 17 174 30 Q165 24 148 28" fill="#263b36" />
-                  <rect x="154" y="77" width="12" height="23" rx="3" fill="#17201d" stroke="#f5f3e9" stroke-width="1.5" />
-                  <rect x="157" y="81" width="6" height="14" rx="1" fill="#9ed9c1" />
-                </g>
-              </svg>
-              <svg class="compass-route" viewBox="0 0 360 180" preserveAspectRatio="xMidYMid meet">
-                <path id="figureEightRoute" d="M180 90 C180 10 30 10 30 90 C30 170 180 170 180 90 C180 10 330 10 330 90 C330 170 180 170 180 90" />
-                <g class="route-phone">
-                  <animateMotion dur="3.2s" repeatCount="indefinite" rotate="auto">
-                    <mpath href="#figureEightRoute" />
-                  </animateMotion>
-                  <rect x="-8" y="-14" width="16" height="28" rx="3" />
-                  <rect class="route-phone-screen" x="-5" y="-9" width="10" height="18" rx="1.5" />
-                  <circle cx="0" cy="11" r="1" />
-                </g>
-              </svg>
-              <svg class="walking-scene" viewBox="0 0 320 180">
-                <path class="walk-ground" d="M30 162 H290" />
-                <g class="walk-leg walk-leg-left">
-                  <path d="M153 103 L144 128 L138 154 L151 157" />
-                </g>
-                <g class="walk-leg walk-leg-right">
-                  <path d="M167 103 L176 128 L182 154 L169 157" />
-                </g>
-                <path d="M145 54 Q160 48 175 54 L181 107 Q160 114 139 107 Z" fill="#6ee7a8" />
-                <g class="walk-arm walk-arm-left">
-                  <path d="M145 61 L131 83 L142 101" />
-                </g>
-                <g class="walk-arm walk-arm-right">
-                  <path d="M175 61 L189 83 L178 101" />
-                </g>
-                <circle cx="160" cy="31" r="14" fill="#f1c7a5" />
-                <path d="M148 28 Q151 14 162 16 Q173 17 174 30 Q165 24 148 28" fill="#263b36" />
-              </svg>
-            </div>
-          </div>
-
-          <div id="calibrationStatus" class="calibration-status">
-            Waiting for calibration to begin.
-          </div>
-          <p id="calibrationHint" class="calibration-hint">Hold the phone perfectly still to stabilize the sensors.</p>
-
-          <div class="workflow-actions">
-            <button id="calibrationBackBtn" type="button" class="secondary-btn">Back</button>
-            <button id="calibrationContinueBtn" type="button" class="primary-btn" disabled>Continue to navigation</button>
-          </div>
-        </section>
-
-        <section id="navigationPanel" class="workflow-panel navigation-panel" data-workflow-panel="navigation" hidden>
-          <section class="panel controls-panel">
-            <div class="panel-header inline-header">
-              <div>
-                <p class="section-kicker">Step 3 of 3</p>
-                <h3 tabindex="-1">Navigate to your car</h3>
-              </div>
-              <button id="localizeBtn" class="secondary-btn">Localize</button>
-            </div>
-
-            <div class="navigation-destination">
-              <div>
-                <span class="field-label">Destination</span>
-                <strong id="selectedSlotSummary">No slot selected</strong>
-              </div>
-              <button id="routeBtn" type="button" class="primary-btn" disabled>Get route</button>
-            </div>
-            <p id="localizationStatus" class="localization-status" role="status">Localize first to establish your current position.</p>
-            <details class="capture-diagnostics">
-              <summary>Capture diagnostics</summary>
-              <label class="field-label" for="groundTruthLocationId">Known location (optional)</label>
-              <input id="groundTruthLocationId" list="diagnosticLocations" placeholder="Leave blank if unknown" />
-              <datalist id="diagnosticLocations"></datalist>
-              <div class="capture-options-grid">
-                <label class="field-label" for="captureTriggerMode">Capture timing</label>
-                <select id="captureTriggerMode">
-                  <option value="motion">Motion trigger (current)</option>
-                  <option value="motion_then_stillness">Wait for 350 ms stillness</option>
-                </select>
-                <label class="field-label" for="captureMaxDimension">Max image dimension</label>
-                <select id="captureMaxDimension">
-                  <option value="960">960 px</option>
-                  <option value="1280" selected>1280 px</option>
-                  <option value="1600">1600 px</option>
-                  <option value="1920">1920 px</option>
-                </select>
-                <label class="field-label" for="captureJpegQuality">JPEG quality</label>
-                <select id="captureJpegQuality">
-                  <option value="0.65">65%</option>
-                  <option value="0.8" selected>80%</option>
-                  <option value="0.9">90%</option>
-                  <option value="0.95">95%</option>
-                </select>
-              </div>
-              <label class="capture-check"><input id="blurGuardEnabled" type="checkbox" /> Skip frames below sharpness 80</label>
-              <small>Miss images and per-candidate diagnostics are saved on the server, up to its configured sample limit.</small>
-            </details>
-            <div class="workflow-actions">
-              <button id="navigationBackBtn" type="button" class="secondary-btn">Back to calibration</button>
-            </div>
-          </section>
-
-          <section class="content-grid">
-            <div class="panel camera-panel">
-              <div class="panel-header compact-header">
-                <div>
-                  <p class="section-kicker">Live camera</p>
-                  <h3>Positioning</h3>
-                </div>
-              </div>
-
-              <div class="camera-wrap">
-                <video id="cameraView" playsinline muted autoplay></video>
-                <div class="camera-overlay">
-                  <span>Live capture</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="panel metrics-panel">
-              <div class="panel-header compact-header">
-                <div>
-                  <p class="section-kicker">Live telemetry</p>
-                  <h3>Drive status</h3>
-                </div>
-              </div>
-
-              <div class="metrics-grid">
-                <div class="metric-card">
-                  <span>Floor</span>
-                  <strong id="metricFloor">—</strong>
-                </div>
-                <div class="metric-card">
-                  <span>Coordinates</span>
-                  <strong id="metricCoords">—</strong>
-                </div>
-                <div class="metric-card">
-                  <span>Heading</span>
-                  <strong id="metricHeading">—</strong>
-                </div>
-                <div class="metric-card">
-                  <span>Distance</span>
-                  <strong id="metricDistance">—</strong>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel route-panel">
-            <div class="panel-header inline-header">
-              <div>
-                <p class="section-kicker">Route guidance</p>
-                <h3>Navigation preview</h3>
-              </div>
-              <span id="routeBadge" class="route-badge neutral">Awaiting route</span>
-            </div>
-
-            <section class="turn-guidance" aria-labelledby="turnGuidanceTitle" aria-live="polite">
-              <h4 id="turnGuidanceTitle">Turn-by-turn</h4>
-              <ol id="turnInstructions" class="turn-instructions">
-                <li class="turn-instruction-placeholder">Get a route to see directions.</li>
-              </ol>
-            </section>
-
-            <div class="route-layout">
-              <div class="route-svg-wrap">
-                <svg id="routeSvg" viewBox="0 0 420 220" preserveAspectRatio="xMidYMid meet" aria-label="Route preview"></svg>
-              </div>
-              <div class="route-details">
-                <div class="route-detail">
-                  <span>Destination</span>
-                  <strong id="routeDestination">No slot selected</strong>
-                </div>
-                <div class="route-detail">
-                  <span>Distance remaining</span>
-                  <strong id="routeDistance">0.0 m</strong>
-                </div>
-                <div class="route-detail">
-                  <span>Total route</span>
-                  <strong id="routeTotalDistance">0.0 m</strong>
-                </div>
-                <div class="route-detail">
-                  <span>Route status</span>
-                  <strong id="routeStatus">Waiting</strong>
-                </div>
-              </div>
-            </div>
-          </section>
-        </section>
-      </main>
+        <div class="action-row">
+          <button id="slotSheetBtn" type="button" class="ghost-btn">Slot</button>
+          <button id="localizeBtn" type="button" class="secondary-btn" disabled>Localize</button>
+          <button id="routeBtn" type="button" class="primary-btn" disabled>Start nav</button>
+        </div>
+        <p id="statusLine" class="status-line" role="status">Select a parking slot, calibrate, then localize.</p>
+      </div>
     </div>
 
-    <footer class="footer-bar">Powered by Traffic Tech</footer>
+    <!-- slot picker -->
+    <div id="slotSheet" class="sheet">
+      <div class="sheet-backdrop" data-close-sheet="slot"></div>
+      <div class="sheet-panel">
+        <div class="sheet-handle"></div>
+        <h2>Where did you park?</h2>
+        <p class="sheet-sub">Pick your bay, then we’ll calibrate sensors and lock your position with the camera.</p>
+        <label class="field-label" for="slotInput">Slot ID</label>
+        <input id="slotInput" list="slotSuggestions" placeholder="e.g. 87-04C" autocomplete="off" />
+        <datalist id="slotSuggestions"></datalist>
+        <div id="slotSuggestionsMini" class="chip-list"></div>
+        <button id="destinationContinueBtn" type="button" class="primary-btn sheet-confirm" disabled>Continue</button>
+      </div>
+    </div>
 
-    <script src="/parking-ui/app.js?v=20261001-1"></script>
+    <!-- calibration -->
+    <div id="calSheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-close-sheet="cal"></div>
+      <div class="sheet-panel cal-panel">
+        <div class="sheet-handle"></div>
+        <h2>Phone calibration</h2>
+        <p class="sheet-sub">Run each step once. This tunes heading and stride for live navigation.</p>
+
+        <div class="calibration-steps" id="calibrationSteps">
+          <article class="cal-step is-active" data-step="stillness">
+            <span class="step-number">1</span>
+            <div class="cal-step-copy">
+              <h4>Stillness</h4>
+              <p>Hold still for a few seconds.</p>
+            </div>
+            <button type="button" class="step-action" data-step-key="stillness">Start</button>
+          </article>
+          <article class="cal-step" data-step="magnetometer">
+            <span class="step-number">2</span>
+            <div class="cal-step-copy">
+              <h4>Compass</h4>
+              <p>Slow figure-8 rotation.</p>
+            </div>
+            <button type="button" class="step-action" data-step-key="compass">Start</button>
+          </article>
+          <article class="cal-step" data-step="walk">
+            <span class="step-number">3</span>
+            <div class="cal-step-copy">
+              <h4>Walk</h4>
+              <p>Take ~5 steps forward.</p>
+            </div>
+            <button type="button" class="step-action" data-step-key="walk">Start</button>
+          </article>
+        </div>
+
+        <div class="calibration-visual step-stillness" id="calibrationVisual" hidden aria-hidden="true"></div>
+        <div id="calibrationStatus" class="cal-status">Waiting for calibration to begin.</div>
+        <p id="calibrationHint" class="cal-hint">Hold the phone still to stabilize sensors.</p>
+
+        <div class="sheet-actions">
+          <button id="calibrationBackBtn" type="button" class="secondary-btn">Back</button>
+          <button id="calibrationContinueBtn" type="button" class="primary-btn" disabled>Open camera</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- hidden diagnostics defaults (kept for captureVprPosition) -->
+    <div class="sr-only" aria-hidden="true">
+      <input id="groundTruthLocationId" list="diagnosticLocations" value="" />
+      <datalist id="diagnosticLocations"></datalist>
+      <select id="captureTriggerMode"><option value="motion" selected>motion</option></select>
+      <select id="captureMaxDimension"><option value="1280" selected>1280</option></select>
+      <select id="captureJpegQuality"><option value="0.8" selected>0.8</option></select>
+      <input id="blurGuardEnabled" type="checkbox" />
+      <span id="sessionState"></span>
+      <span id="positionState"></span>
+      <span id="confidenceState"></span>
+      <span id="localizationStatus"></span>
+      <span id="selectedSlotSummary"></span>
+      <span id="routeBadge"></span>
+      <span id="routeDestination"></span>
+      <span id="routeDistance"></span>
+      <span id="routeTotalDistance"></span>
+      <span id="routeStatus"></span>
+      <ol id="turnInstructions"></ol>
+      <svg id="routeSvg"></svg>
+      <button id="navigationBackBtn" type="button"></button>
+    </div>
+
+    <script src="/ar-vio.js"></script>
+    <script src="/parking-ui/app.js?v=20261004-ar"></script>
   </body>
 </html>

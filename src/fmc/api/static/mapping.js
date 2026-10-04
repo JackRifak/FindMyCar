@@ -1,6 +1,10 @@
 const video = document.getElementById('video');
+const arPreview = document.getElementById('ar-preview');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
+let arPreviewUrl = null;
+let arPreviewTimer = null;
+let arPreviewBusy = false;
 const statusEl = document.getElementById('status');
 
 const btnStart = document.getElementById('btn-start');
@@ -85,7 +89,7 @@ function logDebug(message, level = 'info') {
 let isMapping = false;
 let deviceId = "mapper-" + Math.random().toString(36).substr(2, 6);
 
-// 6-DOF Live Sensor State (Gyroscope + Accelerometer PDR)
+// 6-DOF Live Sensor State — ARCore preferred, compass PDR fallback
 let currentPos = { x: 0.0, y: 0.0, z: 0.0 };
 let currentRot = { qw: 1.0, qx: 0.0, qy: 0.0, qz: 0.0, headingDeg: 0 };
 let lastAccelNorm = 9.8;
@@ -94,8 +98,11 @@ let lastPdrTs = 0;
 let smoothHeading = null;
 const STEP_LENGTH = 0.65; // ~0.65m per step (bonus if accel peaks fire)
 const WALK_SPEED = 0.85; // m/s — slightly under real walk; over-speed warped prior maps
+let arVioActive = false;
+let arVioPollTimer = null;
+let poseSource = "pdr"; // "arcore" | "pdr"
 
-// WebXR State (optional)
+// WebXR State (optional leftover)
 let xrSession = null;
 let xrRefSpace = null;
 let xrSupported = false;
@@ -160,10 +167,137 @@ function updateHUD() {
     }
 }
 
+function stopWebCamera() {
+    try {
+        if (video && video.srcObject) {
+            video.srcObject.getTracks().forEach((t) => t.stop());
+            video.srcObject = null;
+        }
+        if (video) video.style.display = 'none';
+    } catch (_) {}
+}
+
+function showArPreview(jpegBase64) {
+    if (!arPreview || !jpegBase64) return;
+    if (arPreviewUrl) URL.revokeObjectURL(arPreviewUrl);
+    const bin = atob(jpegBase64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'image/jpeg' });
+    arPreviewUrl = URL.createObjectURL(blob);
+    arPreview.src = arPreviewUrl;
+    arPreview.style.display = 'block';
+    if (video) video.style.display = 'none';
+}
+
+function startArPreviewLoop() {
+    if (arPreviewTimer) return;
+    arPreviewTimer = setInterval(async () => {
+        if (!arVioActive || arPreviewBusy || !window.ArVio || !ArVio.getPreview) return;
+        arPreviewBusy = true;
+        try {
+            const res = await ArVio.getPreview();
+            if (res && res.ok && res.jpegBase64) showArPreview(res.jpegBase64);
+        } catch (_) { /* keep last frame */ }
+        arPreviewBusy = false;
+    }, 120);
+}
+
+function stopArPreviewLoop() {
+    if (arPreviewTimer) {
+        clearInterval(arPreviewTimer);
+        arPreviewTimer = null;
+    }
+    arPreviewBusy = false;
+}
+
+async function grabArJpegBlob() {
+    if (!window.ArVio || typeof ArVio.captureFrame !== 'function') return null;
+    const res = await ArVio.captureFrame();
+    if (!res || !res.jpegBase64) return null;
+    showArPreview(res.jpegBase64);
+    const bin = atob(res.jpegBase64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: 'image/jpeg' });
+}
+
+async function startArVioIfAvailable() {
+    if (!window.ArVio) return false;
+    try {
+        const ok = await ArVio.isAvailable();
+        if (!ok) {
+            logDebug("ARCore not available — using PDR", "warn");
+            return false;
+        }
+        // ARCore takes the camera exclusively — release WebView getUserMedia first
+        stopWebCamera();
+        await ArVio.start();
+        arVioActive = true;
+        poseSource = "arcore";
+        if (arVioPollTimer) clearInterval(arVioPollTimer);
+        arVioPollTimer = setInterval(pollArVioPose, 50);
+        if (trackingBadge) {
+            trackingBadge.innerText = "ARCore: 6-DOF VIO";
+            trackingBadge.className = "badge badge-success";
+        }
+        logDebug("ARCore 6-DOF tracking started (camera via ARCore)", "success");
+        startArPreviewLoop();
+        return true;
+    } catch (err) {
+        arVioActive = false;
+        poseSource = "pdr";
+        logDebug("ARCore start failed: " + (err.message || err) + " — PDR fallback", "warn");
+        return false;
+    }
+}
+
+async function pollArVioPose() {
+    if (!arVioActive || !window.ArVio) return;
+    try {
+        const pose = await ArVio.getPose();
+        if (!pose || pose.tracking !== "tracking") {
+            if (trackingBadge && pose) {
+                trackingBadge.innerText = `ARCore: ${pose.tracking || "lost"}`;
+            }
+            return;
+        }
+        currentPos.x = Number(pose.x) || 0;
+        currentPos.y = Number(pose.y) || 0;
+        currentPos.z = Number(pose.z) || 0;
+        currentRot.qw = Number(pose.qw) || 1;
+        currentRot.qx = Number(pose.qx) || 0;
+        currentRot.qy = Number(pose.qy) || 0;
+        currentRot.qz = Number(pose.qz) || 0;
+        currentRot.headingDeg = Number(pose.headingDeg) || 0;
+        poseSource = "arcore";
+        if (trackingBadge) {
+            trackingBadge.innerText = "ARCore: tracking";
+            trackingBadge.className = "badge badge-success";
+        }
+        updateHUD();
+    } catch (_) { /* keep last pose */ }
+}
+
+async function stopArVio() {
+    stopArPreviewLoop();
+    if (arVioPollTimer) {
+        clearInterval(arVioPollTimer);
+        arVioPollTimer = null;
+    }
+    if (arVioActive && window.ArVio) {
+        try { await ArVio.stop(); } catch (_) {}
+    }
+    arVioActive = false;
+}
+
 // Initialize Motion Sensors (DeviceOrientation + Accelerometer Step Detection)
 function initSensors() {
-    // 1. Gyroscope / Compass Orientation
+    // ARCore is started from initCamera(); PDR sensors stay as fallback
+
+    // 1. Gyroscope / Compass Orientation (used when ARCore inactive)
     const onOrientation = (e) => {
+        if (arVioActive && poseSource === "arcore") return;
         let heading = e.alpha;
         if (e.webkitCompassHeading !== undefined) {
             heading = e.webkitCompassHeading;
@@ -194,6 +328,7 @@ function initSensors() {
 
     // 2. Accelerometer step peaks (bonus; often silent inside Android WebView)
     window.addEventListener("devicemotion", (e) => {
+        if (arVioActive && poseSource === "arcore") return;
         const acc = e.acceleration || e.accelerationIncludingGravity;
         if (!acc) return;
         const norm = Math.hypot(acc.x || 0, acc.y || 0, acc.z || 0);
@@ -211,14 +346,16 @@ function initSensors() {
         lastAccelNorm = norm * 0.25 + lastAccelNorm * 0.75;
     }, true);
 
-    if (trackingBadge) {
+    if (trackingBadge && !arVioActive) {
         trackingBadge.innerText = "PDR: walk-speed + compass";
         trackingBadge.className = "badge badge-success";
     }
-    logDebug("Motion sensors initialized (compass + time-based walk PDR)", "success");
+    logDebug("Motion sensors initialized (ARCore if native, else PDR)", "success");
 }
 
 function advancePdr() {
+    // ARCore owns position when tracking — do not integrate walk-speed on top
+    if (arVioActive && poseSource === "arcore") return;
     // primary motion model: constant walk speed while mapping is armed
     // tap Stop before standing still / placing a tag
     if (!isMapping) return;
@@ -316,6 +453,12 @@ function drawFloorplanTags() {
 async function initCamera() {
     await loadFloorplanAndTransform();
     initSensors();
+    // ARCore first — owns the camera on native; getUserMedia only as browser fallback
+    const arOk = await startArVioIfAvailable();
+    if (arOk) {
+        statusEl.innerText = "ARCore camera active. Tap 'Start Mapping' and walk.";
+        return;
+    }
 
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -328,6 +471,7 @@ async function initCamera() {
         });
         video.srcObject = stream;
         video.style.display = 'block';
+        if (arPreview) arPreview.style.display = 'none';
         const track = stream.getVideoTracks()[0];
         statusEl.innerText = "Live camera active. Tap 'Start Mapping' and walk.";
         logDebug(`Camera active: ${track.label || 'Environment Camera'}`, "success");
@@ -340,74 +484,84 @@ async function initCamera() {
 
 let keyframeCount = 0;
 
+async function blobFromVideoFrame() {
+    if (!(video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0)) return null;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+}
+
+async function uploadKeyframeBlob(blob) {
+    if (!blob) return;
+
+    keyframeCount++;
+    advancePdr();
+
+    const formData = new FormData();
+    formData.append("device_id", deviceId);
+    formData.append("timestamp", Date.now() / 1000.0);
+    formData.append("vio_x", currentPos.x);
+    formData.append("vio_y", currentPos.y);
+    formData.append("vio_z", currentPos.z);
+    formData.append("vio_qw", currentRot.qw);
+    formData.append("vio_qx", currentRot.qx);
+    formData.append("vio_qy", currentRot.qy);
+    formData.append("vio_qz", currentRot.qz);
+    formData.append("heading_deg", currentRot.headingDeg || 0);
+    formData.append("image", blob, "frame.jpg");
+
+    try {
+        logDebug(`[Upload] Sending Keyframe #${keyframeCount} (${(blob.size/1024).toFixed(0)} KB) at (${currentPos.x.toFixed(1)}, ${currentPos.z.toFixed(1)}m) via ${poseSource}...`);
+        const res = await fetch(getApiUrl("/map/keyframe"), { method: "POST", body: formData });
+        const data = await res.json();
+
+        if (data.detected_features || data.tracked_features) {
+            activeFeatures = {
+                detected: data.detected_features || [],
+                tracked: data.tracked_features || [],
+                timestamp: performance.now(),
+                imageWidth: data.image_width || 1280,
+                imageHeight: data.image_height || 720
+            };
+            if (featuresBadge && showFeaturesOverlay) {
+                featuresBadge.innerText = `${activeFeatures.tracked.length} tracked | ${activeFeatures.detected.length} detected`;
+                featuresBadge.style.display = 'inline-block';
+            }
+        }
+
+        const level = data.new_landmarks > 0 ? "success" : "info";
+        logDebug(`[Server] Frame #${keyframeCount} (ID: ${data.frame_id}): +${data.new_landmarks} 3D points (${data.tracked_features ? data.tracked_features.length : 0} inliers) | Map Total: ${data.total_landmarks} points across ${data.total_keyframes} frames`, level);
+        statusEl.innerText = `Keyframe #${keyframeCount} | +${data.new_landmarks} 3D pts | Total Map: ${data.total_landmarks} landmarks`;
+    } catch (err) {
+        console.error(err);
+        statusEl.innerText = "Upload failed: " + err.message;
+        logDebug(`[Error] Frame #${keyframeCount} upload failed: ${err.message}`, "error");
+    }
+}
+
 // 2. Continuous Mapping Loop
 async function captureAndSendFrame() {
     if (!isMapping) return;
 
-    if (video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        canvas.toBlob(async (blob) => {
-            if (!blob) {
-                if (isMapping) setTimeout(captureAndSendFrame, 300);
-                return;
-            }
-
-            keyframeCount++;
-            advancePdr();
-
-            const formData = new FormData();
-            formData.append("device_id", deviceId);
-            formData.append("timestamp", Date.now() / 1000.0);
-            
-            // PDR pose: steps + compass yaw (server uses yaw-only for triangulation)
-            formData.append("vio_x", currentPos.x);
-            formData.append("vio_y", currentPos.y);
-            formData.append("vio_z", currentPos.z);
-            formData.append("vio_qw", currentRot.qw);
-            formData.append("vio_qx", currentRot.qx);
-            formData.append("vio_qy", currentRot.qy);
-            formData.append("vio_qz", currentRot.qz);
-            formData.append("heading_deg", currentRot.headingDeg || 0);
-            formData.append("image", blob, "frame.jpg");
-
-            try {
-                logDebug(`[Upload] Sending Keyframe #${keyframeCount} (${(blob.size/1024).toFixed(0)} KB) at (${currentPos.x.toFixed(1)}, ${currentPos.z.toFixed(1)}m)...`);
-                const res = await fetch(getApiUrl("/map/keyframe"), { method: "POST", body: formData });
-                const data = await res.json();
-                
-                // Update live camera feature overlay
-                if (data.detected_features || data.tracked_features) {
-                    activeFeatures = {
-                        detected: data.detected_features || [],
-                        tracked: data.tracked_features || [],
-                        timestamp: performance.now(),
-                        imageWidth: data.image_width || 1280,
-                        imageHeight: data.image_height || 720
-                    };
-                    if (featuresBadge && showFeaturesOverlay) {
-                        featuresBadge.innerText = `${activeFeatures.tracked.length} tracked | ${activeFeatures.detected.length} detected`;
-                        featuresBadge.style.display = 'inline-block';
-                    }
-                }
-
-                const level = data.new_landmarks > 0 ? "success" : "info";
-                logDebug(`[Server] Frame #${keyframeCount} (ID: ${data.frame_id}): +${data.new_landmarks} 3D points (${data.tracked_features ? data.tracked_features.length : 0} inliers) | Map Total: ${data.total_landmarks} points across ${data.total_keyframes} frames`, level);
-                statusEl.innerText = `Keyframe #${keyframeCount} | +${data.new_landmarks} 3D pts | Total Map: ${data.total_landmarks} landmarks`;
-            } catch (err) {
-                console.error(err);
-                statusEl.innerText = "Upload failed: " + err.message;
-                logDebug(`[Error] Frame #${keyframeCount} upload failed: ${err.message}`, "error");
-            }
-            
-            // Capture next keyframe roughly every 1.0 second
-            if (isMapping) setTimeout(captureAndSendFrame, 1000);
-        }, "image/jpeg", 0.85);
-    } else {
-        if (isMapping) setTimeout(captureAndSendFrame, 200);
+    let blob = null;
+    try {
+        if (arVioActive && window.ArVio) {
+            blob = await grabArJpegBlob();
+        } else {
+            blob = await blobFromVideoFrame();
+        }
+    } catch (err) {
+        logDebug("Capture failed: " + (err.message || err), "warn");
     }
+
+    if (!blob) {
+        if (isMapping) setTimeout(captureAndSendFrame, 300);
+        return;
+    }
+
+    await uploadKeyframeBlob(blob);
+    if (isMapping) setTimeout(captureAndSendFrame, 1000);
 }
 
 async function requestMotionPerms() {
@@ -461,6 +615,11 @@ async function beginWalk(mode) {
         } catch (err) {
             logDebug("New session failed: " + err.message, "warn");
         }
+        // restart ARCore so local VIO origin is fresh for this separated walk
+        if (arVioActive) {
+            await stopArVio();
+            await startArVioIfAvailable();
+        }
         currentPos = { x: 0.0, y: 0.0, z: 0.0 };
         keyframeCount = 0;
         smoothHeading = null;
@@ -469,6 +628,7 @@ async function beginWalk(mode) {
     } else if (!sessionActive) {
         // first start this page load — do not wipe server map
         sessionActive = true;
+        if (!arVioActive) await startArVioIfAvailable();
         currentPos = { x: 0.0, y: 0.0, z: 0.0 };
         keyframeCount = 0;
         smoothHeading = null;

@@ -44,9 +44,12 @@ class Keyframe:
     keypoints: np.ndarray  # Shape (N, 2)
     descriptors: np.ndarray
     heading_deg: float = 0.0
-    # integrated map path (client PDR or visual fallback)
+    # integrated map path (client PDR / ARCore)
     map_x: float = 0.0
+    map_y: float = 0.0  # height
     map_z: float = 0.0
+    # OpenCV-cam → world (X right, Y up, Z fwd); None → yaw-only fallback
+    R_wc: Optional[np.ndarray] = None
     session_id: int = 0
     # local keypoint index -> global landmark id
     landmark_ids: Dict[int, int] = field(default_factory=dict) 
@@ -248,8 +251,9 @@ class ContinuousMapper:
         self.last_tracked_keypoints = []
 
         yaw = float(heading_deg) if heading_deg is not None else self._yaw_from_pose(vio_pose)
-        
-        # seed path from client PDR (may stay 0 on WebView — visual path fills in later)
+        R_wc = self._R_wc_from_pose(vio_pose, yaw)
+
+        # seed path from client PDR / ARCore (may stay 0 on WebView — visual path fills in later)
         frame = Keyframe(
             frame_id=self._next_frame_id,
             timestamp=timestamp,
@@ -258,7 +262,9 @@ class ContinuousMapper:
             descriptors=desc,
             heading_deg=yaw,
             map_x=float(vio_pose.x),
+            map_y=float(vio_pose.y),
             map_z=float(vio_pose.z),
+            R_wc=R_wc,
             session_id=self._session_id,
             landmark_ids={}
         )
@@ -267,7 +273,8 @@ class ContinuousMapper:
             f"[Mapper] Keyframe #{frame.frame_id} sess={self._session_id}: "
             f"extracted {len(kpts_cv)} ORB features | "
             f"VIO: ({vio_pose.x:.2f}, {vio_pose.y:.2f}, {vio_pose.z:.2f}) "
-            f"Q: [{vio_pose.qw:.2f}, {vio_pose.qx:.2f}, {vio_pose.qy:.2f}, {vio_pose.qz:.2f}]"
+            f"Q: [{vio_pose.qw:.2f}, {vio_pose.qx:.2f}, {vio_pose.qy:.2f}, {vio_pose.qz:.2f}] "
+            f"6dof={self._pose_has_6dof(vio_pose)}"
         )
         
         # 2. Match only within the same session (separated walks must not link)
@@ -308,6 +315,12 @@ class ContinuousMapper:
         except ValueError:
             return 0.0
 
+    @staticmethod
+    def _pose_has_6dof(pose: SixDofPose) -> bool:
+        """True when client sent a real ARCore/VIO quat (not identity PDR stub)."""
+        off = abs(float(pose.qw) - 1.0) + abs(float(pose.qx)) + abs(float(pose.qy)) + abs(float(pose.qz))
+        return off > 0.02 or abs(float(pose.y)) > 0.05
+
     def _yaw_R(self, heading_deg: float) -> np.ndarray:
         """Yaw-only world rotation: forward=(sin h, 0, cos h), matching client PDR."""
         h = np.deg2rad(heading_deg)
@@ -317,6 +330,25 @@ class ContinuousMapper:
             [0.0, 1.0, 0.0],
             [-s, 0.0, c],
         ], dtype=np.float64)
+
+    def _R_wc_from_pose(self, pose: SixDofPose, heading_deg: float) -> np.ndarray:
+        """OpenCV camera → world (X right, Y up, Z fwd).
+
+        ARCore quat maps OpenGL cam → AR world; client stores position with Z flipped
+        to our world. Compose F @ R_ar @ S with S: OpenCV→OpenGL, F: AR→ours.
+        """
+        if not self._pose_has_6dof(pose):
+            return self._yaw_R(heading_deg)
+        from scipy.spatial.transform import Rotation
+        try:
+            R_ar = Rotation.from_quat(
+                [pose.qx, pose.qy, pose.qz, pose.qw]
+            ).as_matrix()
+        except ValueError:
+            return self._yaw_R(heading_deg)
+        S = np.diag([1.0, -1.0, -1.0])  # OpenCV → OpenGL cam
+        F = np.diag([1.0, 1.0, -1.0])   # AR world → our Z-forward world
+        return (F @ R_ar @ S).astype(np.float64)
 
     def _track_and_triangulate(self, prev_frame: Keyframe, curr_frame: Keyframe, curr_image: Optional[np.ndarray] = None) -> int:
         """Match features between consecutive frames and triangulate into 3D using Visual Odometry."""
@@ -370,20 +402,23 @@ class ContinuousMapper:
             logger.warning(f"[Mapper] Low inliers after recoverPose ({num_inliers} < 8).")
             return 0
 
-        # 2. Metric baseline: prefer client PDR; fall back to visual flow * walk speed
+        # 2. Metric baseline: prefer client 6-DOF / PDR delta; fall back to visual flow
         dx = curr_frame.vio_pose.x - prev_frame.vio_pose.x
+        dy = curr_frame.vio_pose.y - prev_frame.vio_pose.y
         dz = curr_frame.vio_pose.z - prev_frame.vio_pose.z
-        vio_baseline = float(np.hypot(dx, dz))
+        vio_baseline = float(np.linalg.norm([dx, dy, dz]))
 
         inlier_idx = mask_pose.ravel() > 0
         flow = np.linalg.norm(pts_curr_np[inlier_idx] - pts_prev_np[inlier_idx], axis=1)
         med_flow = float(np.median(flow)) if len(flow) else 0.0
         dt = abs(float(curr_frame.timestamp) - float(prev_frame.timestamp))
+        use_6dof = self._pose_has_6dof(curr_frame.vio_pose)
 
         if vio_baseline >= 0.12:
             baseline = vio_baseline
-            baseline_src = "pdr"
+            baseline_src = "vio6dof" if use_6dof else "pdr"
             curr_frame.map_x = float(curr_frame.vio_pose.x)
+            curr_frame.map_y = float(curr_frame.vio_pose.y)
             curr_frame.map_z = float(curr_frame.vio_pose.z)
             self._vo_x = curr_frame.map_x
             self._vo_z = curr_frame.map_z
@@ -395,13 +430,15 @@ class ContinuousMapper:
             self._vo_x += float(np.sin(yaw) * baseline)
             self._vo_z += float(np.cos(yaw) * baseline)
             curr_frame.map_x = self._vo_x
+            curr_frame.map_y = float(prev_frame.map_y)
             curr_frame.map_z = self._vo_z
         else:
             logger.info(
                 f"[Mapper] Skip triangulation: baseline={vio_baseline:.3f}m flow={med_flow:.1f}px "
-                f"(need PDR>=0.12m or visual flow>=8px)."
+                f"(need VIO>=0.12m or visual flow>=8px)."
             )
             curr_frame.map_x = prev_frame.map_x
+            curr_frame.map_y = prev_frame.map_y
             curr_frame.map_z = prev_frame.map_z
             tracked = [
                 [round(float(pts_curr_np[i, 0]), 1), round(float(pts_curr_np[i, 1]), 1)]
@@ -415,7 +452,7 @@ class ContinuousMapper:
         logger.info(
             f"[Mapper] Pose recovered: inliers={num_inliers}/{len(good_matches)} | "
             f"baseline={baseline:.2f}m ({baseline_src}) flow={med_flow:.1f}px "
-            f"path=({curr_frame.map_x:.1f},{curr_frame.map_z:.1f})"
+            f"path=({curr_frame.map_x:.1f},{curr_frame.map_y:.1f},{curr_frame.map_z:.1f})"
         )
 
         # 3. Triangulate points in normalized camera coordinates
@@ -432,9 +469,18 @@ class ContinuousMapper:
         points_3d_local = np.zeros((points_4d.shape[1], 3), dtype=np.float64)
         points_3d_local[valid_w] = (points_4d[:3, valid_w] / w_coords[valid_w]).T
 
-        # 4. Register landmarks with yaw-only world frame (ignore phone pitch/roll)
-        rot_wc = self._yaw_R(prev_frame.heading_deg)
-        t_wc = np.array([prev_frame.map_x, 0.0, prev_frame.map_z], dtype=np.float64)
+        # 4. Register landmarks in world — full SE3 when ARCore quat present
+        if prev_frame.R_wc is not None and use_6dof:
+            rot_wc = prev_frame.R_wc
+            t_wc = np.array(
+                [prev_frame.map_x, prev_frame.map_y, prev_frame.map_z],
+                dtype=np.float64,
+            )
+            se3 = True
+        else:
+            rot_wc = self._yaw_R(prev_frame.heading_deg)
+            t_wc = np.array([prev_frame.map_x, 0.0, prev_frame.map_z], dtype=np.float64)
+            se3 = False
 
         new_points = 0
         for i, (idx_prev, idx_curr) in enumerate(match_indices):
@@ -446,11 +492,18 @@ class ContinuousMapper:
             if pt_cam[2] < 0.3 or pt_cam[2] > 20.0 or np.any(np.isnan(pt_cam)) or np.any(np.isinf(pt_cam)):
                 continue
 
-            # OpenCV cam (X right, Y down, Z fwd) → body (X right, Y up, Z fwd)
-            pt_body = np.array([pt_cam[0], -pt_cam[1], pt_cam[2]], dtype=np.float64)
-            if abs(pt_body[1]) > 4.0:
+            if se3:
+                # R_wc already maps OpenCV cam → world
+                pt_world = rot_wc @ pt_cam + t_wc
+            else:
+                # OpenCV cam (X right, Y down, Z fwd) → body (X right, Y up, Z fwd)
+                pt_body = np.array([pt_cam[0], -pt_cam[1], pt_cam[2]], dtype=np.float64)
+                if abs(pt_body[1]) > 4.0:
+                    continue
+                pt_world = rot_wc @ pt_body + t_wc
+
+            if abs(float(pt_world[1])) > 4.5:
                 continue
-            pt_world = rot_wc @ pt_body + t_wc
 
             # Sample RGB color
             pt_color = (52, 199, 89)

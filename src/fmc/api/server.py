@@ -42,7 +42,7 @@ from fmc.dataset.locations import load_locations_csv
 from fmc.fusion.map_matching import snap_to_walkable
 from fmc.fusion.sensor_fusion import PositionFuser
 from fmc.navigation.routing import calculate_route
-from fmc.vio.tracker import DeadReckoningStub, SixDofPose
+from fmc.vio.tracker import SixDofPose, TrueVIOTracker
 from fmc.vpr.pipeline import VPRPipeline
 from fmc.mapping.continuous_mapper import ContinuousMapper
 
@@ -159,6 +159,14 @@ async def localize(
     screen_orientation: str | None = Form(None),
     max_dimension: int | None = Form(None),
     camera_track_settings: str | None = Form(None),
+    # optional ARCore pose at capture time — locks VIO→facility on this fix
+    vio_x: float | None = Form(None),
+    vio_y: float | None = Form(None),
+    vio_z: float | None = Form(None),
+    vio_qw: float | None = Form(None),
+    vio_qx: float | None = Form(None),
+    vio_qy: float | None = Form(None),
+    vio_qz: float | None = Form(None),
 ):
     """First fix / relocalisation: submit a camera frame, get a VPR-based position."""
     t0 = time.perf_counter()
@@ -178,7 +186,22 @@ async def localize(
     result = pipeline.localize(frame)
     t_vpr_ms = (time.perf_counter() - t_vpr0) * 1000
 
-    fuser = _sessions.setdefault(device_id, PositionFuser(DeadReckoningStub(), floor=1))
+    fuser = _sessions.setdefault(device_id, PositionFuser(TrueVIOTracker(), floor=1))
+    # seed VIO pose before reset so facility lock is relative to current ARCore frame
+    if vio_x is not None and vio_z is not None:
+        tracker = fuser.vio_tracker
+        if isinstance(tracker, TrueVIOTracker):
+            tracker.update_from_6dof(SixDofPose(
+                timestamp=time.time(),
+                x=float(vio_x),
+                y=float(vio_y or 0.0),
+                z=float(vio_z),
+                qw=float(vio_qw if vio_qw is not None else 1.0),
+                qx=float(vio_qx or 0.0),
+                qy=float(vio_qy or 0.0),
+                qz=float(vio_qz or 0.0),
+                tracking_status="tracking",
+            ))
     fused = fuser.on_vpr_result(result)
 
     if fused is None:
@@ -332,6 +355,54 @@ def heartbeat_live_position(device_id: str):
         return {"status": "ok", "device_id": device_id, "live": False}
     fuser.mark_live()
     return {"status": "ok", "device_id": device_id, "live": True}
+
+
+class TrackPoseBody(BaseModel):
+    timestamp: float | None = None
+    x: float
+    y: float
+    z: float = 0.0
+    qw: float = 1.0
+    qx: float = 0.0
+    qy: float = 0.0
+    qz: float = 0.0
+    tracking_status: str = "tracking"
+
+
+@app.post("/track/{device_id}", response_model=PositionResponse)
+def track_six_dof(device_id: str, body: TrackPoseBody):
+    """Push ARCore/6-DOF odometry between VPR fixes (live localization)."""
+    fuser = _sessions.setdefault(device_id, PositionFuser(TrueVIOTracker(), floor=1))
+    # need an absolute fix first — otherwise marker stays off
+    if fuser.last_position() is None and not getattr(fuser, "_live_marker", False):
+        return PositionResponse(
+            floor=fuser.floor, x=0.0, y=0.0, heading=0.0,
+            confidence=0.0, tracking=False, timestamp=time.time(),
+            method="none",
+        )
+    six = SixDofPose(
+        timestamp=float(body.timestamp or time.time()),
+        x=float(body.x),
+        y=float(body.y),
+        z=float(body.z),
+        qw=float(body.qw),
+        qx=float(body.qx),
+        qy=float(body.qy),
+        qz=float(body.qz),
+        tracking_status=body.tracking_status or "tracking",
+    )
+    fused = fuser.on_six_dof(six)
+    return PositionResponse(
+        floor=fused.floor,
+        x=fused.x,
+        y=fused.y,
+        heading=fused.heading,
+        confidence=fused.confidence,
+        tracking=fused.tracking_status == "tracking",
+        timestamp=time.time(),
+        method="vio6dof",
+        z=getattr(fuser, "_last_z", None),
+    )
 
 
 @app.get("/position/{device_id}", response_model=PositionResponse)

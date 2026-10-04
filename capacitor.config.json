@@ -1,5 +1,13 @@
 {
   "appId": "org.findmycar.app",
   "appName": "FindMyCar",
-  "webDir": "src/fmc/api/static"
+  "webDir": "src/fmc/api/static",
+  "server": {
+    "url": "https://charging-equivocal-sulphuric.ngrok-free.dev/mapping.html",
+    "cleartext": true,
+    "allowNavigation": [
+      "charging-equivocal-sulphuric.ngrok-free.dev",
+      "*"
+    ]
+  }
 }

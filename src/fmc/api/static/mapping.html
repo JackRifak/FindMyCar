@@ -53,6 +53,7 @@
 
     <div class="video-container">
         <video id="video" autoplay playsinline muted></video>
+        <img id="ar-preview" alt="" style="display:none; width:100%; height:100%; object-fit:cover; position:absolute; inset:0; background:#000;">
         <canvas id="features-canvas"></canvas>
         <canvas id="canvas"></canvas>
         <div class="hud-overlay">
@@ -132,10 +133,12 @@
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
+    <!-- ARCore 6-DOF bridge (Capacitor native); no-op in plain browser -->
+    <script src="ar-vio.js"></script>
     <!-- Cache-buster to ensure the latest JS is loaded on mobile -->
     <script>
         const script = document.createElement('script');
-        script.src = '/mapping.js?v=' + Date.now();
+        script.src = 'mapping.js?v=' + Date.now();
         document.body.appendChild(script);
     </script>
 </body>

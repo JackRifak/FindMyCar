@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from fmc.vio.tracker import Pose, VIOTracker
+from fmc.vio.tracker import Pose, SixDofPose, VIOTracker
 from fmc.vpr.pipeline import VPRResult
 
 # drop stale 3D markers if the client never calls end (tab crash, etc.)
@@ -89,7 +89,10 @@ class PositionFuser:
             return None
 
         self.floor = floor
-        self.vio_tracker.reset(x=x, y=y, heading=heading)
+        try:
+            self.vio_tracker.reset(x=x, y=y, heading=heading, z=z)
+        except TypeError:
+            self.vio_tracker.reset(x=x, y=y, heading=heading)
         self._last_confidence = conf
         self._last_x, self._last_y = x, y
         self._last_heading = float(heading)
@@ -110,6 +113,9 @@ class PositionFuser:
         self._last_confidence = max(self._last_confidence * 0.98, 0.1)
         self._last_x, self._last_y = pose.x, pose.y
         self._last_heading = float(pose.heading)
+        if getattr(pose, "z", None) is not None:
+            self._last_z = float(pose.z)
+        self.mark_live()
         return FusedPosition(
             floor=self.floor,
             x=pose.x,
@@ -118,6 +124,25 @@ class PositionFuser:
             confidence=self._last_confidence,
             tracking_status=pose.tracking_status,
         )
+
+    def on_six_dof(self, six: "SixDofPose") -> FusedPosition:
+        """Ingest ARCore/6-DOF odometry between VPR fixes."""
+        from fmc.vio.tracker import TrueVIOTracker
+
+        tracker = self.vio_tracker
+        if isinstance(tracker, TrueVIOTracker):
+            pose = tracker.update_from_6dof(six)
+        else:
+            # planar fallback: treat VIO x,z as facility x,y
+            pose = Pose(
+                x=float(six.x),
+                y=float(six.z),
+                heading=0.0,
+                velocity=0.0,
+                tracking_status=six.tracking_status,
+                z=float(six.y),
+            )
+        return self.on_vio_pose(pose)
 
 
 class EKFPositionFuser(PositionFuser):
