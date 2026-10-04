@@ -3,15 +3,130 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
-    <title>Find My Car | Live Navigation</title>
+    <meta name="theme-color" content="#2C3716" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Msheireb Find My Car</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Marcellus&family=Manrope:wght@400;500;600;700;800&family=Noto+Kufi+Arabic:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
-    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261004-nocal" />
+    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261005-slots" />
+    <link rel="stylesheet" href="/parking-ui/home.css?v=20261005-slots" />
   </head>
-  <body>
-    <div class="ar-stage" id="arStage">
+  <body class="entry-mode">
+    <!-- React-matched splash + home -->
+    <div class="shell" id="shell" lang="en" dir="ltr">
+      <div class="splash" id="splash" role="button" aria-label="Skip intro">
+        <img class="sp-mark" src="/parking-ui/brand/mark.png" alt="Msheireb" />
+        <img class="sp-word" src="/parking-ui/brand/word-light.png" alt="Msheireb Properties" />
+        <div class="sp-title" id="spTitle">
+          Find My Car
+          <small>اعثر على سيارتك</small>
+        </div>
+        <div class="sp-foot">
+          <span id="spPowered">Powered by</span>
+          <img src="/parking-ui/brand/powered.jpg" alt="Traffic Tech" />
+        </div>
+      </div>
+
+      <section class="screen screen--home active" id="homeScreen">
+        <div class="home-wrap">
+          <div class="hero">
+            <button class="lang" id="langBtn" type="button">عربي</button>
+            <div class="mark-wrap">
+              <img src="/parking-ui/brand/mark-home.png" alt="Msheireb" />
+            </div>
+            <img class="word" src="/parking-ui/brand/word-dark.png" alt="Msheireb Properties" />
+            <div class="rule"><i></i></div>
+            <h1 id="homeTitle">Find My Car</h1>
+            <div class="ar-sub" id="homeArSub">اعثر على سيارتك</div>
+            <p class="sub" id="homeSub">AR guidance to your parking bay at Msheireb Downtown Doha</p>
+          </div>
+
+          <div class="card">
+            <button class="btn btn-primary" id="homeScanBtn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+                <rect x="7" y="7" width="4" height="4" />
+                <rect x="13" y="13" width="4" height="4" />
+                <path d="M13 7h4v2M7 15v2h2" />
+              </svg>
+              <span id="homeScanLabel">Scan Parking QR Code</span>
+            </button>
+            <div class="or" id="homeOr">or enter bay number</div>
+            <label class="lbl" id="homeBayLabel" for="bayInput">Parking bay / slot ID</label>
+            <div class="input-wrap">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M12 22s7-6.2 7-12a7 7 0 1 0-14 0c0 5.8 7 12 7 12z" />
+                <circle cx="12" cy="10" r="2.5" />
+              </svg>
+              <input
+                id="bayInput"
+                class="bay-input"
+                placeholder="e.g. 87-04C or B045"
+                autocomplete="off"
+              />
+            </div>
+            <div class="err" id="homeErr"></div>
+            <div class="home-slots" id="homeSlots" hidden>
+              <h3 id="homeSlotsTitle">Available slots</h3>
+              <div class="chips" id="homeSlotChips"></div>
+            </div>
+            <button class="btn btn-dark" id="homeStartBtn" type="button" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2 4.5 20.3l.7.7L12 18l6.8 3 .7-.7z" />
+              </svg>
+              <span id="homeStartLabel">Start AR Guidance</span>
+            </button>
+            <p class="hint" id="homeHint">
+              Your camera opens and arrows on the floor guide you to your car.<br />
+              Allow camera and motion access when asked.
+            </p>
+          </div>
+
+          <div class="features">
+            <div class="feat">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+                <rect x="8" y="8" width="8" height="8" rx="1" />
+              </svg>
+              <b id="homeF1">Scan or type</b>
+            </div>
+            <div class="feat">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 15l6-6 6 6M6 20l6-6 6 6M6 10l6-6 6 6" />
+              </svg>
+              <b id="homeF2">Live AR arrows</b>
+            </div>
+            <div class="feat">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M11 5 6 9H2v6h4l5 4zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14" />
+              </svg>
+              <b id="homeF3">Voice guidance</b>
+            </div>
+          </div>
+
+          <div class="recent" id="homeRecent" hidden>
+            <h3 id="homeRecentTitle">Recent</h3>
+            <div class="chips" id="homeChips"></div>
+          </div>
+
+          <div class="powered">
+            <span id="homePowered">Powered by</span>
+            <img src="/parking-ui/brand/powered.jpg" alt="Traffic Tech" />
+            <small>Msheireb Downtown Doha</small>
+          </div>
+        </div>
+      </section>
+
+      <div class="home-toast" id="homeToast" role="status"></div>
+    </div>
+
+    <div class="ar-stage" id="arStage" hidden>
       <video id="cameraView" playsinline muted autoplay></video>
       <img id="arPreview" alt="" />
       <canvas id="arCanvas"></canvas>
@@ -104,53 +219,7 @@
       </div>
     </div>
 
-    <!-- calibration UI temporarily disabled
-    <div id="calSheet" class="sheet" hidden>
-      <div class="sheet-backdrop" data-close-sheet="cal"></div>
-      <div class="sheet-panel cal-panel">
-        <div class="sheet-handle"></div>
-        <h2>Phone calibration</h2>
-        <p class="sheet-sub">Run each step once. This tunes heading and stride for live navigation.</p>
-
-        <div class="calibration-steps" id="calibrationSteps">
-          <article class="cal-step is-active" data-step="stillness">
-            <span class="step-number">1</span>
-            <div class="cal-step-copy">
-              <h4>Stillness</h4>
-              <p>Hold still for a few seconds.</p>
-            </div>
-            <button type="button" class="step-action" data-step-key="stillness">Start</button>
-          </article>
-          <article class="cal-step" data-step="magnetometer">
-            <span class="step-number">2</span>
-            <div class="cal-step-copy">
-              <h4>Compass</h4>
-              <p>Slow figure-8 rotation.</p>
-            </div>
-            <button type="button" class="step-action" data-step-key="compass">Start</button>
-          </article>
-          <article class="cal-step" data-step="walk">
-            <span class="step-number">3</span>
-            <div class="cal-step-copy">
-              <h4>Walk</h4>
-              <p>Take ~5 steps forward.</p>
-            </div>
-            <button type="button" class="step-action" data-step-key="walk">Start</button>
-          </article>
-        </div>
-
-        <div class="calibration-visual step-stillness" id="calibrationVisual" hidden aria-hidden="true"></div>
-        <div id="calibrationStatus" class="cal-status">Waiting for calibration to begin.</div>
-        <p id="calibrationHint" class="cal-hint">Hold the phone still to stabilize sensors.</p>
-
-        <div class="sheet-actions">
-          <button id="calibrationBackBtn" type="button" class="secondary-btn">Back</button>
-          <button id="calibrationContinueBtn" type="button" class="primary-btn" disabled>Open camera</button>
-        </div>
-      </div>
-    </div>
-    -->
-    <!-- stubs so app.js getElementById calls stay safe while calibration is off -->
+    <!-- calibration UI temporarily disabled -->
     <div id="calSheet" hidden aria-hidden="true"></div>
     <button id="calibrationBackBtn" type="button" hidden aria-hidden="true"></button>
     <button id="calibrationContinueBtn" type="button" hidden aria-hidden="true"></button>
@@ -158,7 +227,7 @@
     <p id="calibrationHint" hidden aria-hidden="true"></p>
     <div id="calibrationVisual" hidden aria-hidden="true"></div>
 
-    <!-- hidden diagnostics defaults (kept for captureVprPosition) -->
+    <!-- hidden diagnostics defaults -->
     <div class="sr-only" aria-hidden="true">
       <input id="groundTruthLocationId" list="diagnosticLocations" value="" />
       <datalist id="diagnosticLocations"></datalist>
@@ -182,6 +251,7 @@
     </div>
 
     <script src="/ar-vio.js"></script>
-    <script src="/parking-ui/app.js?v=20261004-fastdist"></script>
+    <script src="/parking-ui/home.js?v=20261005-slots"></script>
+    <script src="/parking-ui/app.js?v=20261005-slots"></script>
   </body>
 </html>

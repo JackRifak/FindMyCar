@@ -702,7 +702,10 @@ function setWorkflowStep(step, moveFocus = false) {
   updateWorkflowControls();
 
   if (step === "destination") {
-    showSheet("slot");
+    // home screen owns bay entry — only open slot sheet when AR stage is visible
+    const onHome = !document.getElementById("shell")?.hidden;
+    if (!onHome) showSheet("slot");
+    else hideSheets();
     setHint("Choose your parking slot to begin", true);
     setStatusMsg(SKIP_CALIBRATION
       ? "Select a parking slot, then continue to localize."
@@ -1029,21 +1032,34 @@ function updatePositionFromHeading() {
   ui.metricHeading.textContent = `${Math.round(currentHeading)}°`;
 }
 
-async function initSlots() {
-  try {
-    const res = await fetch("/slots");
-    if (!res.ok) throw new Error("Failed to load slot list");
-    const payload = await res.json();
-    state.slotList = payload.slots || [];
-    const datalist = ui.slotSuggestions;
-    datalist.innerHTML = state.slotList.map((slot) => `<option value="${slot.slot_id}"></option>`).join("");
-    ui.slotSuggestionsMini.innerHTML = state.slotList.slice(0, 8).map((slot) => `<button class="chip" type="button">${slot.slot_id}</button>`).join("");
+function paintSlotChips(ids) {
+  const list = ids || [];
+  window.ParkingHome?.setSlots?.(list);
+  if (ui.slotSuggestions) {
+    ui.slotSuggestions.innerHTML = list.map((id) => `<option value="${id}"></option>`).join("");
+  }
+  if (ui.slotSuggestionsMini) {
+    ui.slotSuggestionsMini.innerHTML = list
+      .slice(0, 12)
+      .map((id) => `<button class="chip" type="button">${id}</button>`)
+      .join("");
     ui.slotSuggestionsMini.querySelectorAll(".chip").forEach((button) => {
       button.addEventListener("click", () => {
         ui.slotInput.value = button.textContent.trim();
         ui.slotInput.dispatchEvent(new Event("input", { bubbles: true }));
       });
     });
+  }
+}
+
+async function initSlots() {
+  try {
+    const res = await fetch("/slots");
+    if (!res.ok) throw new Error("Failed to load slot list");
+    const payload = await res.json();
+    state.slotList = payload.slots || [];
+    const ids = state.slotList.map((slot) => slot.slot_id).filter(Boolean);
+    paintSlotChips(ids);
     const locationResponse = await fetch("/diagnostics/locations");
     if (locationResponse.ok) {
       const locations = await locationResponse.json();
@@ -1058,13 +1074,8 @@ async function initSlots() {
   } catch (error) {
     console.warn("Using fallback slot suggestions.", error);
     const fallback = ["87-04C", "87-04B", "87-04A", "87-03C", "86-03A", "86-04A"];
-    ui.slotSuggestionsMini.innerHTML = fallback.map((slot) => `<button class="chip" type="button">${slot}</button>`).join("");
-    ui.slotSuggestionsMini.querySelectorAll(".chip").forEach((button) => {
-      button.addEventListener("click", () => {
-        ui.slotInput.value = button.textContent.trim();
-        ui.slotInput.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-    });
+    state.slotList = fallback.map((slot_id) => ({ slot_id }));
+    paintSlotChips(fallback);
   }
 }
 
@@ -1899,10 +1910,38 @@ ui.slotInput.addEventListener("keydown", (event) => {
   }
 });
 
+/** called from home.js after bay is chosen */
+function startGuidanceFromHome(bay) {
+  const id = String(bay || "").trim().toUpperCase();
+  if (!id) return;
+  if (ui.slotInput) {
+    ui.slotInput.value = id;
+    ui.slotInput.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  if (SKIP_CALIBRATION) markCalibrationSkipped();
+  updateCalibrationReadiness();
+  hideSheets();
+  setWorkflowStep("navigation", true);
+  setStatusMsg(`Bay ${id} — point camera and tap Localize`);
+  setHint("Point the camera and tap Localize", true);
+}
+
+window.ParkingUiEntry = {
+  startGuidance: startGuidanceFromHome,
+  showHome: () => {
+    if (typeof window.ParkingHome?.showHome === "function") {
+      window.ParkingHome.showHome();
+      setWorkflowStep("destination");
+    }
+  },
+};
+
 window.addEventListener("load", async () => {
   await initSlots();
   updateCalibrationReadiness();
+  // stay on React-matched home until Start AR Guidance
   setWorkflowStep("destination");
+  hideSheets();
   if (!SKIP_CALIBRATION) {
     setCalibrationStep("Waiting for calibration to begin.", 0, "stillness");
   }

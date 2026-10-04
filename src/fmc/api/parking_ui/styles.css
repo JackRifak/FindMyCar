@@ -1,12 +1,4 @@
 :root {
-  --ink: #0c1110;
-  --foam: #f4f7f5;
-  --mint: #5ee4a8;
-  --amber: #ffd166;
-  --glass: rgba(12, 17, 16, 0.55);
-  --glass-2: rgba(12, 17, 16, 0.72);
-  --line: rgba(255, 255, 255, 0.14);
-  --danger: #ff6b6b;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bot: env(safe-area-inset-bottom, 0px);
 }
@@ -17,14 +9,29 @@ html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: var(--ink);
-  color: var(--foam);
-  font-family: "DM Sans", system-ui, sans-serif;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
 }
 
-button, input { font: inherit; }
+/* AR palette only after home → Start (home.css owns entry tokens) */
+body:not(.entry-mode) {
+  --ink: #0c1110;
+  --foam: #f4f7f5;
+  --mint: #5ee4a8;
+  --amber: #ffd166;
+  --glass: rgba(12, 17, 16, 0.55);
+  --glass-2: rgba(12, 17, 16, 0.72);
+  --line: rgba(255, 255, 255, 0.14);
+  --danger: #ff6b6b;
+  background: var(--ink);
+  color: var(--foam);
+  font-family: "DM Sans", system-ui, sans-serif;
+}
+
+body:not(.entry-mode) button,
+body:not(.entry-mode) input {
+  font: inherit;
+}
 
 .ar-stage {
   position: fixed;
