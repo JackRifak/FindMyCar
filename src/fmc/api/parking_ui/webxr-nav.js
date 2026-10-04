@@ -476,10 +476,10 @@ export class WebXrNav {
     }
 
     this.session = session;
-    this.hasCameraAccess = Boolean(
-      session.enabledFeatures?.has?.("camera-access")
-      || (Array.isArray(session.enabledFeatures) && session.enabledFeatures.includes("camera-access")),
-    );
+    // null = unknown (try once); false = confirmed unavailable
+    const granted = session.enabledFeatures?.has?.("camera-access")
+      || (Array.isArray(session.enabledFeatures) && session.enabledFeatures.includes("camera-access"));
+    this.hasCameraAccess = granted ? true : null;
     this.renderer.xr.setReferenceSpaceType("local-floor");
     await this.renderer.xr.setSession(session);
 
@@ -553,9 +553,10 @@ export class WebXrNav {
         if (this.capturePending?.timer === timer) {
           this.capturePending = null;
           this._capBusy = false;
+          this.hasCameraAccess = false;
           reject(new Error("xr camera capture timeout"));
         }
-      }, 1800);
+      }, 1200);
       this.capturePending = { resolve, reject, maxDim, quality, timer };
     });
   }
