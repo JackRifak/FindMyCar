@@ -43,7 +43,69 @@ button, input { font: inherit; }
 }
 
 #arPreview { display: none; background: #000; }
-#arCanvas { pointer-events: none; z-index: 2; }
+#arCanvas {
+  pointer-events: none;
+  z-index: 2;
+  display: none;
+}
+.ar-stage.webxr-on #arCanvas {
+  display: block;
+  pointer-events: auto;
+  z-index: 1;
+}
+.ar-stage.webxr-on #cameraView {
+  visibility: hidden;
+}
+.ar-stage.webxr-on .floor {
+  display: none !important;
+}
+
+/* camera floor chevrons — same idea as original Start nav / React AR fallback */
+.floor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 58%;
+  perspective: 520px;
+  perspective-origin: 50% 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.floor[hidden] { display: none !important; }
+
+.path {
+  position: absolute;
+  left: 50%;
+  bottom: -10%;
+  width: 130px;
+  height: 150%;
+  transform-origin: 50% 100%;
+  transform: translateX(-50%) rotateX(62deg) rotateZ(0deg);
+  transition: transform 0.35s ease;
+}
+
+.chev {
+  position: absolute;
+  left: 50%;
+  width: 110px;
+  height: 70px;
+  margin-left: -55px;
+  opacity: 0;
+  animation: chevFlow 1.8s linear infinite;
+}
+.chev svg {
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 0 10px rgba(201, 214, 79, 0.85));
+}
+
+@keyframes chevFlow {
+  0% { bottom: 0; opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { bottom: 88%; opacity: 0; }
+}
 
 .ar-top,
 .turn-banner,
@@ -124,9 +186,11 @@ button, input { font: inherit; }
 .turn-icon {
   width: 34px;
   height: 34px;
-  fill: #0c1110;
+  color: #0c1110;
+  fill: none;
+  stroke: currentColor;
   transform-origin: 50% 50%;
-  transition: transform 0.2s ease;
+  transition: opacity 0.2s ease;
 }
 
 .turn-copy { min-width: 0; }
@@ -216,6 +280,11 @@ button, input { font: inherit; }
   display: grid;
   grid-template-columns: 0.7fr 1fr 1.1fr;
   gap: 8px;
+}
+
+.primary-btn.is-exit-ar {
+  background: rgba(255, 107, 107, 0.92);
+  color: #fff;
 }
 
 .primary-btn,

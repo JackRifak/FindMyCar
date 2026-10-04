@@ -8,13 +8,37 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
     <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
-    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261004-nocal" />
+    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261005-flip" />
   </head>
   <body>
     <div class="ar-stage" id="arStage">
       <video id="cameraView" playsinline muted autoplay></video>
       <img id="arPreview" alt="" />
-      <canvas id="arCanvas"></canvas>
+      <canvas id="arCanvas" aria-hidden="true"></canvas>
+
+      <!-- camera floor arrows (same style as original Start nav / React fallback — not WebXR) -->
+      <div id="floorArrows" class="floor" hidden>
+        <div id="floorPath" class="path">
+          <div class="chev" style="animation-delay: 0s">
+            <svg viewBox="0 0 110 70"><path d="M8 62 55 12l47 50" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="chev" style="animation-delay: 0.3s">
+            <svg viewBox="0 0 110 70"><path d="M8 62 55 12l47 50" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="chev" style="animation-delay: 0.6s">
+            <svg viewBox="0 0 110 70"><path d="M8 62 55 12l47 50" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="chev" style="animation-delay: 0.9s">
+            <svg viewBox="0 0 110 70"><path d="M8 62 55 12l47 50" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="chev" style="animation-delay: 1.2s">
+            <svg viewBox="0 0 110 70"><path d="M8 62 55 12l47 50" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="chev" style="animation-delay: 1.5s">
+            <svg viewBox="0 0 110 70"><path d="M8 62 55 12l47 50" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+        </div>
+      </div>
 
       <div class="ar-top">
         <div class="brand-chip">
@@ -45,7 +69,7 @@
       <div id="turnBanner" class="turn-banner" hidden>
         <div class="turn-arrow-wrap" aria-hidden="true">
           <svg id="turnIcon" class="turn-icon" viewBox="0 0 24 24">
-            <path d="M12 3 L12 17 M12 3 L7 8 M12 3 L17 8" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M12 20V4M5 11l7-7 7 7" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </div>
         <div class="turn-copy">
@@ -182,6 +206,7 @@
     </div>
 
     <script src="/ar-vio.js"></script>
-    <script src="/parking-ui/app.js?v=20261004-liftstick"></script>
+    <script type="module" src="/parking-ui/webxr-nav.js?v=20261005-flip"></script>
+    <script src="/parking-ui/app.js?v=20261005-flip"></script>
   </body>
 </html>

@@ -33,6 +33,9 @@ const state = {
     lastCaptureTime: 0,
     nextCaptureAllowedAt: 0,
   },
+  lastLocalizeMethod: null, // "pnp" | "image_vpr" | null
+  navActive: false, // Start nav camera guidance
+  webXrActive: false,
   motion: {
     gravityEstimate: null,
     stepArmed: false,
@@ -107,7 +110,13 @@ const ui = {
   arriveOverlay: document.getElementById("arriveOverlay"),
   arriveSlot: document.getElementById("arriveSlot"),
   arriveDismissBtn: document.getElementById("arriveDismissBtn"),
+  arStage: document.getElementById("arStage"),
+  arCanvas: document.getElementById("arCanvas"),
+  floorArrows: document.getElementById("floorArrows"),
+  floorPath: document.getElementById("floorPath"),
 };
+
+let webXrNav = null;
 
 function setStatusChip(text, kind = "warn") {
   if (ui.sessionState) ui.sessionState.textContent = text;
@@ -141,6 +150,15 @@ function hideSheets() {
 function showArrivalCelebration(slotId) {
   if (state.arrivedShown) return;
   state.arrivedShown = true;
+  state.navActive = false;
+  if (webXrNav) {
+    webXrNav.dispose();
+    webXrNav = null;
+  }
+  state.webXrActive = false;
+  ui.arStage?.classList.remove("webxr-on");
+  showFloorArrows(false);
+  setRouteBtnMode("start");
   stopLiveVprCapture({ keepCamera: true });
   const label = slotId || "your destination";
   if (ui.arriveSlot) ui.arriveSlot.textContent = slotId || "your car";
@@ -419,8 +437,181 @@ function turnKind(label) {
   if (t.includes("left")) return "left";
   if (t.includes("right")) return "right";
   if (t.includes("around") || t.includes("u-turn")) return "uturn";
-  if (t.includes("arrive") || t.includes("destination")) return "arrive";
+  if (t.includes("arrive") || t.includes("destination") || t.includes("reached")) return "arrive";
   return "straight";
+}
+
+// distinct glyphs — never rotate a straight arrow for left/right
+const TURN_ICON_PATHS = {
+  straight: "M12 20V4M5 11l7-7 7 7",
+  left: "M18 20v-7a4 4 0 0 0-4-4H5M9 5 5 9l4 4",
+  right: "M6 20v-7a4 4 0 0 1 4-4h9M15 5l4 4-4 4",
+  uturn: "M9 7v7a3 3 0 0 0 6 0V8M15 8l-3-3M15 8l3-3",
+  arrive: "M12 3v11M8 11l4 4 4-4M6 19h12",
+};
+
+function setTurnIcon(kind) {
+  if (!ui.turnIcon) return;
+  const path = ui.turnIcon.querySelector("path");
+  const key = TURN_ICON_PATHS[kind] ? kind : "straight";
+  if (path) path.setAttribute("d", TURN_ICON_PATHS[key]);
+  ui.turnIcon.style.transform = "none";
+  ui.turnIcon.style.opacity = kind === "arrive" ? "0.55" : "1";
+  ui.turnIcon.dataset.kind = key;
+}
+
+/** active walk polyline for AR / HUD */
+function guideWaypoints() {
+  const leg = activeRouteLeg();
+  if (leg?.waypoints?.length >= 2) return leg.waypoints;
+  return state.route?.waypoints || [];
+}
+
+/** +turn = left — same cross-product as buildTurnInstructions */
+function nextTurnFromLegs(legs, traveledDistance = 0) {
+  const list = legs || [];
+  let along = 0;
+  for (let i = 0; i < list.length; i++) {
+    const leg = list[i];
+    const abs = Math.abs(leg.turn || 0);
+    if (i > 0 && abs >= 30 && traveledDistance <= along + 1.5) {
+      const kind = abs >= 150 ? "uturn" : leg.turn > 0 ? "left" : "right";
+      const label =
+        kind === "uturn" ? "Turn around" : kind === "left" ? "Turn left" : "Turn right";
+      return {
+        label,
+        kind,
+        distanceM: Math.max(0, along - traveledDistance),
+        isArrival: false,
+      };
+    }
+    along += leg.dist || 0;
+  }
+  const remain = Math.max(0, along - traveledDistance);
+  if (remain < ARRIVE_M) {
+    return { label: "You've arrived", kind: "arrive", distanceM: 0, isArrival: true };
+  }
+  return { label: "Continue straight", kind: "straight", distanceM: remain, isArrival: false };
+}
+
+function normHeadingDelta(targetDeg, headingDeg) {
+  return ((targetDeg - headingDeg + 540) % 360) - 180;
+}
+
+/** facility bearing: 0° = +Y, 90° = +X (same as PnP / PDR) */
+function bearingTo(ax, ay, bx, by) {
+  let d = (Math.atan2(bx - ax, by - ay) * 180) / Math.PI;
+  if (d < 0) d += 360;
+  return d;
+}
+
+/** point ahead on polyline from current position (meters along route) */
+function lookAheadOnRoute(waypoints, x, y, aheadM = 6) {
+  const wps = waypoints || [];
+  if (wps.length < 2) return null;
+
+  let bestD = Infinity;
+  let bestI = 0;
+  let bestT = 0;
+  let acc = 0;
+  let bestAcc = 0;
+  for (let i = 0; i < wps.length - 1; i++) {
+    const a = wps[i];
+    const b = wps[i + 1];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy || 1e-12;
+    const len = Math.sqrt(len2);
+    let t = ((x - a[0]) * dx + (y - a[1]) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const px = a[0] + dx * t;
+    const py = a[1] + dy * t;
+    const d = Math.hypot(x - px, y - py);
+    if (d < bestD) {
+      bestD = d;
+      bestI = i;
+      bestT = t;
+      bestAcc = acc;
+    }
+    acc += len;
+  }
+
+  let left = aheadM;
+  let i = bestI;
+  let t = bestT;
+  while (i < wps.length - 1 && left > 0) {
+    const a = wps[i];
+    const b = wps[i + 1];
+    const segLen = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1e-6;
+    const remainOnSeg = segLen * (1 - t);
+    if (left <= remainOnSeg) {
+      const u = t + left / segLen;
+      return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u];
+    }
+    left -= remainOnSeg;
+    i += 1;
+    t = 0;
+  }
+  const last = wps[wps.length - 1];
+  return [Number(last[0]), Number(last[1])];
+}
+
+/**
+ * tilt chevrons from real heading error vs route look-ahead
+ * (not a fake left/right from the banner text alone)
+ */
+function updateFloorArrowTilt(next) {
+  if (!ui.floorPath || !state.navActive || state.webXrActive) return;
+  const wps = guideWaypoints();
+  if (!wps || wps.length < 2) return;
+
+  // "Turn left · 4 m" → look along the straight approach (not past the corner)
+  // only peek past the turn when you're almost there
+  let ahead = 5;
+  if (next && (next.kind === "left" || next.kind === "right" || next.kind === "uturn")) {
+    const d = Number(next.distanceM);
+    if (Number.isFinite(d)) {
+      if (d > 3.5) {
+        // stay on the straight segment before the turn
+        ahead = Math.min(5, Math.max(1.5, d - 0.8));
+      } else {
+        // near the corner — lean into the turn
+        ahead = Math.max(3, d + 2.2);
+      }
+    }
+  }
+
+  const target = lookAheadOnRoute(wps, state.position.x, state.position.y, ahead);
+  if (!target) return;
+
+  const want = bearingTo(state.position.x, state.position.y, target[0], target[1]);
+  const rel = normHeadingDelta(want, state.position.heading);
+  // screen lean: negative = left, positive = right (matches needed turn)
+  const z = Math.max(-55, Math.min(55, rel));
+  ui.floorPath.style.transform = `translateX(-50%) rotateX(62deg) rotateZ(${z}deg)`;
+}
+
+function showFloorArrows(on) {
+  if (!ui.floorArrows) return;
+  ui.floorArrows.hidden = !on;
+  if (!on && ui.floorPath) {
+    ui.floorPath.style.transform = "translateX(-50%) rotateX(62deg) rotateZ(0deg)";
+  }
+}
+
+function paintTurnBanner(next) {
+  if (!ui.turnBanner || !next) return;
+  ui.turnBanner.hidden = false;
+  if (ui.turnLabel) ui.turnLabel.textContent = next.label;
+  if (ui.turnDistance) {
+    const now =
+      next.isArrival
+      || next.distanceM < 1
+      || (next.isFloorChange && next.distanceM < 1);
+    ui.turnDistance.textContent = now ? "Now" : `${Math.round(next.distanceM)} m`;
+  }
+  setTurnIcon(turnKind(next.label) || next.kind || "straight");
+  updateFloorArrowTilt(next);
 }
 
 function updateTurnHud(traveledDistance = 0) {
@@ -438,28 +629,13 @@ function updateTurnHud(traveledDistance = 0) {
     if (!ui.turnBanner.hidden) {
       if (ui.turnLabel) ui.turnLabel.textContent = "You have reached";
       if (ui.turnDistance) ui.turnDistance.textContent = slotId;
+      setTurnIcon("arrive");
     }
     return;
   }
 
   const next = nextTurnGuidance(state.route.waypoints, traveledDistance);
-  ui.turnBanner.hidden = false;
-  if (ui.turnLabel) ui.turnLabel.textContent = next.label;
-  if (ui.turnDistance) {
-    ui.turnDistance.textContent = next.isFloorChange
-      ? (next.distanceM < 1 ? "Now" : `${Math.round(next.distanceM)} m`)
-      : next.isArrival && next.distanceM < ARRIVE_M
-        ? "Now"
-        : next.distanceM < 1
-          ? "Now"
-          : `${Math.round(next.distanceM)} m`;
-  }
-  if (ui.turnIcon) {
-    const deg = { left: -90, right: 90, uturn: 180, arrive: 0, straight: 0 }[next.kind] || 0;
-    ui.turnIcon.style.transform = `rotate(${deg}deg)`;
-    ui.turnIcon.style.opacity = next.kind === "arrive" ? "0.55" : "1";
-  }
-  // keep floor-change copy visible; don't wipe elevator hint
+  paintTurnBanner(next);
   if (!next.isFloorChange && !state.inFloorTransition) {
     setHint("", false);
   }
@@ -667,10 +843,10 @@ function setWorkflowStep(step, moveFocus = false) {
   } else if (step === "navigation") {
     hideSheets();
     setHint(state.hasLocalizedPosition
-      ? (state.route ? "" : "Tap Start nav for turn-by-turn guidance")
+      ? (state.route ? "" : "Tap Start nav for AR chevrons")
       : "Point the camera and tap Localize", !state.route);
     setStatusMsg(state.hasLocalizedPosition
-      ? "Localized. Start nav for live guidance on the camera."
+      ? "Localized. Start nav for WebXR / camera chevrons."
       : "Camera ready. Tap Localize to lock your position.");
     ensureCamera().catch(() => {});
     ensureArVio().catch(() => {});
@@ -971,6 +1147,12 @@ function updatePositionFromHeading() {
     ? state.position.heading
     : (state.lastCompassSample + state.headingOffset + 360) % 360;
   state.position.heading = currentHeading;
+  // keep chevrons locked to heading vs route while navigating
+  if (state.navActive && state.route) {
+    const progress = routeProgressForWaypoints(guideWaypoints());
+    const next = nextTurnGuidance(state.route.waypoints, progress.distanceAlongRoute);
+    updateFloorArrowTilt(next);
+  }
   ui.metricHeading.textContent = `${Math.round(currentHeading)}°`;
 }
 
@@ -1013,6 +1195,22 @@ async function initSlots() {
   }
 }
 
+async function waitForCameraFrame(timeoutMs = 4000) {
+  const video = ui.cameraView;
+  if (!video) return false;
+  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 2) {
+    return true;
+  }
+  const start = performance.now();
+  while (performance.now() - start < timeoutMs) {
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 2) {
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
 async function ensureCamera() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     alert("This browser does not support camera capture.");
@@ -1023,7 +1221,7 @@ async function ensureCamera() {
   if (cameraIsActive) {
     if (ui.cameraView.srcObject !== state.stream) ui.cameraView.srcObject = state.stream;
     if (ui.cameraView.paused) await ui.cameraView.play();
-    return true;
+    return waitForCameraFrame();
   }
 
   state.stream?.getTracks().forEach((track) => track.stop());
@@ -1034,6 +1232,11 @@ async function ensureCamera() {
     });
     ui.cameraView.srcObject = state.stream;
     await ui.cameraView.play();
+    const ready = await waitForCameraFrame();
+    if (!ready) {
+      setStatusMsg("Camera opened but no frame yet — try Localize again.");
+      return false;
+    }
     return true;
   } catch (error) {
     console.error(error);
@@ -1120,7 +1323,11 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
   form.append("image", blob, "parking-frame.jpg");
   const groundTruth = ui.groundTruthLocationId.value.trim();
   if (groundTruth) form.append("ground_truth_location_id", groundTruth);
-  if (state.position?.floor) form.append("prior_floor", String(state.position.floor));
+  // prefer active route floor for PnP map selection
+  const priorFloor = activeRouteLeg()?.floor ?? state.position?.floor ?? state.route?.floor;
+  if (priorFloor != null && priorFloor !== "") {
+    form.append("prior_floor", String(priorFloor));
+  }
   for (const [key, value] of Object.entries(diagnostics)) form.append(key, String(value));
 
   // lock ARCore frame at the moment of this VPR fix
@@ -1150,6 +1357,13 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
   return { position: await response.json(), diagnostics };
 }
 
+function localizeMethodLabel(method) {
+  const m = String(method || "").toLowerCase();
+  if (m === "pnp") return "PnP";
+  if (m.includes("vpr") || m === "image_vpr") return "Image VPR";
+  return "Localize";
+}
+
 function applyVprFix(pos) {
   state.position = {
     floor: pos.floor,
@@ -1160,6 +1374,7 @@ function applyVprFix(pos) {
     tracking: true,
   };
   state.hasLocalizedPosition = true;
+  state.lastLocalizeMethod = pos.method || null;
   state.motion.gravityEstimate = null;
   state.motion.lastMagnitude = null;
   state.motion.cumulativeMotion = 0;
@@ -1170,8 +1385,14 @@ function applyVprFix(pos) {
     state.headingOffset = (pos.heading - smoothedRawHeading + 360) % 360;
   }
 
-  setStatusChip("VPR fix", "live");
-  setStatusMsg(`Locked at ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m · live VIO/PDR between fixes`);
+  const via = localizeMethodLabel(pos.method);
+  const isPnp = String(pos.method || "").toLowerCase() === "pnp";
+  setStatusChip(isPnp ? "PnP fix" : "VPR fix", "live");
+  setStatusMsg(
+    `${via} lock · ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`
+    + (isPnp && pos.num_inliers != null ? ` · ${pos.num_inliers} inliers` : "")
+    + " · VIO/PDR between fixes",
+  );
   ui.localizeBtn.textContent = "Relocalize";
   ui.routeBtn.disabled = false;
   if (ui.positionState) ui.positionState.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}`;
@@ -1206,10 +1427,10 @@ async function localizeParkingPosition() {
     if (capture.skipped) return;
     const pos = capture.position;
     if (!pos.tracking || pos.confidence <= 0) {
-      setStatusChip("VPR miss", "warn");
+      setStatusChip("PnP/VPR miss", "warn");
       setStatusMsg(state.hasLocalizedPosition
-        ? "VPR miss — continuing with VIO/PDR. Relocalize to correct drift."
-        : "No verified position yet. Move to a recognizable area and try again.");
+        ? "PnP + image VPR miss — continuing with VIO/PDR. Relocalize to correct drift."
+        : "No verified pose yet (PnP needs 3D map; else image VPR). Try a clearer view.");
       return;
     }
 
@@ -1238,6 +1459,7 @@ async function localizeParkingPosition() {
 function startLiveVprCapture() {
   if (
     state.liveVpr.running
+    || state.webXrActive
     || !state.hasLocalizedPosition
     || !state.route
     || !state.stream
@@ -1248,7 +1470,8 @@ function startLiveVprCapture() {
   state.liveVpr.lastCaptureTime = performance.now();
   state.motion.lastMeaningfulMotionAt = performance.now();
   state.motion.cumulativeMotion = 0;
-  setStatusMsg("Live guidance active · VPR + VIO/PDR between fixes");
+  const via = localizeMethodLabel(state.lastLocalizeMethod);
+  setStatusMsg(`Live guidance · ${via} + VIO/PDR between fixes`);
   runLiveVprCaptureLoop();
 }
 
@@ -1263,6 +1486,157 @@ function stopLiveVprCapture({ keepCamera = false } = {}) {
   if (ui.cameraView) ui.cameraView.srcObject = null;
 }
 
+function setRouteBtnMode(mode) {
+  if (!ui.routeBtn) return;
+  if (mode === "stop") {
+    ui.routeBtn.textContent = "Stop nav";
+    ui.routeBtn.classList.add("is-exit-ar");
+    ui.routeBtn.disabled = false;
+  } else {
+    ui.routeBtn.textContent = "Start nav";
+    ui.routeBtn.classList.remove("is-exit-ar");
+    ui.routeBtn.disabled = !state.hasLocalizedPosition;
+  }
+}
+
+function stopWebXrSession({ resumeCamera = false } = {}) {
+  if (webXrNav) {
+    webXrNav.dispose();
+    webXrNav = null;
+  }
+  state.webXrActive = false;
+  ui.arStage?.classList.remove("webxr-on");
+  if (resumeCamera && state.route && state.workflowStep === "navigation") {
+    startCameraNav();
+    setStatusMsg("WebXR ended — camera chevrons continue.");
+  }
+}
+
+function stopCameraNav() {
+  stopWebXrSession({ resumeCamera: false });
+  state.navActive = false;
+  showFloorArrows(false);
+  setRouteBtnMode("start");
+  stopLiveVprCapture({ keepCamera: true });
+  if (ui.turnBanner) ui.turnBanner.hidden = true;
+  setStatusMsg("Navigation stopped.");
+}
+
+/** camera fallback: same chevron style + bearing tilt */
+function startCameraNav() {
+  state.navActive = true;
+  state.webXrActive = false;
+  showFloorArrows(true);
+  setRouteBtnMode("stop");
+  const via = localizeMethodLabel(state.lastLocalizeMethod);
+  setStatusChip("Navigating", "live");
+  setStatusMsg(`Follow the arrows · ${via} + VIO/PDR`);
+  setHint("Walk with the camera — arrows lean left/right at turns", true);
+  updateRouteProgress();
+  startLiveVprCapture();
+}
+
+/** WebXR with camera-style V chevrons on the floor */
+async function startWebXrNav() {
+  const api = window.ParkingWebXr;
+  if (!api || !state.route || !ui.arCanvas || !ui.arStage) return false;
+
+  let canXr = false;
+  try {
+    canXr = await api.canUseWebXr();
+  } catch {
+    canXr = false;
+  }
+  if (!canXr) return false;
+
+  const wps = guideWaypoints();
+  if (!wps || wps.length < 2) return false;
+
+  stopLiveVprCapture({ keepCamera: true });
+  showFloorArrows(false);
+
+  const facilityPose = {
+    x: Number(state.position.x),
+    y: Number(state.position.y),
+    heading: Number(state.position.heading),
+  };
+  const remWps = api.remainingWaypoints
+    ? api.remainingWaypoints(wps, facilityPose.x, facilityPose.y)
+    : wps;
+  const legs = api.legsFromWaypoints(remWps);
+  const distanceM = legs.reduce((s, l) => s + l.dist, 0)
+    || Number(state.route.total_distance)
+    || 1;
+
+  webXrNav?.dispose();
+  webXrNav = new api.WebXrNav({
+    overlayRoot: ui.arStage,
+    canvas: ui.arCanvas,
+    waypoints: wps,
+    legs,
+    distanceM,
+    facilityPose,
+    handlers: {
+      onStep: (idx) => {
+        const along = legs.slice(0, idx).reduce((s, l) => s + l.dist, 0);
+        paintTurnBanner(nextTurnFromLegs(legs, along));
+      },
+      onWalk: (progress, remain) => {
+        if (ui.metricDistance) ui.metricDistance.textContent = `${remain.toFixed(1)} m`;
+        const next = nextTurnFromLegs(legs, progress);
+        paintTurnBanner({
+          ...next,
+          distanceM: Math.min(next.distanceM, remain),
+        });
+      },
+      onArrived: () => {
+        setStatusChip("Arrived", "live");
+        setStatusMsg("You've arrived at your bay.");
+        paintTurnBanner({
+          label: "You've arrived",
+          kind: "arrive",
+          distanceM: 0,
+          isArrival: true,
+        });
+        showArrivalCelebration(ui.slotInput?.value?.trim() || "");
+      },
+      onEnd: () => {
+        webXrNav = null;
+        state.webXrActive = false;
+        ui.arStage?.classList.remove("webxr-on");
+        if (state.route && state.workflowStep === "navigation" && state.navActive) {
+          startCameraNav();
+        } else {
+          setRouteBtnMode("start");
+          state.navActive = false;
+        }
+      },
+      onErr: () => {
+        webXrNav?.dispose();
+        webXrNav = null;
+        state.webXrActive = false;
+        ui.arStage?.classList.remove("webxr-on");
+      },
+    },
+  });
+
+  const ok = await webXrNav.start();
+  if (!ok) {
+    webXrNav.dispose();
+    webXrNav = null;
+    return false;
+  }
+
+  state.webXrActive = true;
+  state.navActive = true;
+  ui.arStage.classList.add("webxr-on");
+  setRouteBtnMode("stop");
+  setStatusChip("AR nav", "live");
+  setStatusMsg("Point at the floor ahead — lime chevrons guide the route");
+  setHint("Follow the chevrons on the floor", true);
+  return true;
+}
+
 async function runLiveVprCaptureLoop() {
   const minimumIntervalMs = 300;
   const maximumIntervalMs = 2000;
@@ -1270,6 +1644,10 @@ async function runLiveVprCaptureLoop() {
   const stillnessWindowMs = 350;
 
   while (state.liveVpr.running) {
+    if (state.webXrActive) {
+      await new Promise((r) => setTimeout(r, 200));
+      continue;
+    }
     if (state.workflowStep !== "navigation" || !state.route || !state.stream) {
       stopLiveVprCapture();
       return;
@@ -1447,6 +1825,12 @@ async function updateRouteForSlot(slotId) {
 }
 
 async function navigateToSlot() {
+  // toggle: Start nav ↔ Stop nav
+  if (state.navActive) {
+    stopCameraNav();
+    return;
+  }
+
   const slotId = ui.slotInput.value.trim();
   if (!slotId) {
     alert("Enter a slot ID to navigate.");
@@ -1459,16 +1843,24 @@ async function navigateToSlot() {
     return;
   }
 
+  ui.routeBtn.disabled = true;
   try {
     await updateRouteForSlot(slotId);
+
+    // prefer WebXR with the same lime V-chevron style; else camera overlay
+    const xrOk = await startWebXrNav();
+    if (xrOk) return;
+
     const camOk = state.stream || await ensureCamera();
-    if (camOk) {
-      startLiveVprCapture();
-    } else {
-      setStatusMsg("Route ready, but camera is unavailable for live VPR.");
+    if (!camOk) {
+      setStatusMsg("Route ready, but camera is unavailable.");
+      setRouteBtnMode("start");
+      return;
     }
+    startCameraNav();
   } catch (error) {
     console.error(error);
+    showFloorArrows(false);
     if (ui.turnBanner) ui.turnBanner.hidden = true;
     if (ui.routeBadge) {
       ui.routeBadge.classList.remove("neutral", "success");
@@ -1480,7 +1872,12 @@ async function navigateToSlot() {
     if (ui.routeDestination) ui.routeDestination.textContent = slotId;
     setStatusChip("No route", "bad");
     setStatusMsg(error.message);
+    setRouteBtnMode("start");
     alert(error.message);
+  } finally {
+    if (!state.navActive) {
+      ui.routeBtn.disabled = !state.hasLocalizedPosition;
+    }
   }
 }
 
@@ -1731,6 +2128,7 @@ async function refreshCurrentPosition() {
 }
 
 window.addEventListener("pagehide", () => {
+  stopCameraNav();
   stopLiveVprCapture({ keepCamera: false });
   endLiveLocalization();
 });
@@ -1773,7 +2171,13 @@ document.querySelectorAll("[data-close-sheet]").forEach((el) => {
 });
 ui.slotInput.addEventListener("input", updateWorkflowControls);
 ui.localizeBtn.addEventListener("click", localizeParkingPosition);
-ui.routeBtn.addEventListener("click", navigateToSlot);
+ui.routeBtn.addEventListener("click", () => {
+  navigateToSlot().catch((err) => {
+    console.error(err);
+    setStatusMsg(`Nav failed: ${err.message}`);
+    setRouteBtnMode("start");
+  });
+});
 ui.arriveDismissBtn?.addEventListener("click", () => {
   hideArrivalCelebration();
   setHint("Tap Slot to navigate somewhere else", true);
