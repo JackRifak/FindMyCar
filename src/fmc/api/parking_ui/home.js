@@ -75,14 +75,9 @@
     toast: document.getElementById("homeToast"),
     title: document.getElementById("homeTitle"),
     arSub: document.getElementById("homeArSub"),
-    sub: document.getElementById("homeSub"),
     scanLabel: document.getElementById("homeScanLabel"),
     or: document.getElementById("homeOr"),
     bayLabel: document.getElementById("homeBayLabel"),
-    hint: document.getElementById("homeHint"),
-    f1: document.getElementById("homeF1"),
-    f2: document.getElementById("homeF2"),
-    f3: document.getElementById("homeF3"),
     recentTitle: document.getElementById("homeRecentTitle"),
     powered: document.getElementById("homePowered"),
     spTitle: document.getElementById("spTitle"),
@@ -151,16 +146,11 @@
       el.arSub.textContent = t("altTitle");
       el.arSub.style.fontFamily = lang === "ar" ? "var(--f-display)" : "var(--f-ar)";
     }
-    if (el.sub) el.sub.textContent = t("subtitle");
     if (el.scanLabel) el.scanLabel.textContent = t("scan");
     if (el.or) el.or.textContent = t("or");
     if (el.bayLabel) el.bayLabel.textContent = t("bayLabel");
     if (el.bayInput) el.bayInput.placeholder = t("ph");
     if (el.startLabel) el.startLabel.textContent = t("start");
-    if (el.hint) el.hint.innerHTML = `${t("hint1")}<br>${t("hint2")}`;
-    if (el.f1) el.f1.textContent = t("f1");
-    if (el.f2) el.f2.textContent = t("f2");
-    if (el.f3) el.f3.textContent = t("f3");
     if (el.recentTitle) el.recentTitle.textContent = t("recent");
     if (el.slotsTitle) el.slotsTitle.textContent = t("slots");
     if (el.powered) el.powered.textContent = t("powered");
