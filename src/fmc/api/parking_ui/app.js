@@ -217,20 +217,29 @@ function setFloorContinueVisible(on, toFloor = "") {
   ui.turnBanner?.classList.toggle("turn-banner--action", Boolean(on));
 }
 
-/** resume live VPR during XR elevator so landing floor is detected automatically */
+/** resume live /localize (PnP first) so landing floor advances without Continue */
 function startFloorDetectVpr() {
   if (!state.hasLocalizedPosition || !state.route) return;
   if (state.liveVpr.running) return;
-  // keep / reopen camera for VPR frames (same idea as pre-AR camera nav)
-  ensureCamera().then((ok) => {
-    if (!ok || !state.stream) return;
-    if (state.liveVpr.running) return;
-    state.liveVpr.running = true;
-    state.liveVpr.lastCaptureTime = 0; // capture soon
-    state.motion.cumulativeMotion = 0;
-    state.motion.lastMeaningfulMotionAt = performance.now();
+  state.liveVpr.running = true;
+  state.liveVpr.lastCaptureTime = 0; // capture soon
+  state.motion.cumulativeMotion = 0;
+  state.motion.lastMeaningfulMotionAt = performance.now();
+  // XR camera-access preferred; getUserMedia is backup when AR doesn't own cam
+  if (state.webXrActive && webXrNav?.grabFrameBlob) {
     runLiveVprCaptureLoop();
-  }).catch((err) => console.warn("floor-detect camera", err));
+    return;
+  }
+  ensureCamera().then((ok) => {
+    if (!ok || !state.stream) {
+      state.liveVpr.running = false;
+      return;
+    }
+    runLiveVprCaptureLoop();
+  }).catch((err) => {
+    state.liveVpr.running = false;
+    console.warn("floor-detect camera", err);
+  });
 }
 
 function routeDestPoint() {
@@ -1470,14 +1479,13 @@ async function logClientDiagnostic(event) {
   }
 }
 
-async function captureVprPosition({ trigger = "manual", applyBlurGuard = false } = {}) {
+async function encodeCameraViewFrame(maxDimension, jpegQuality) {
   if (!state.stream || ui.cameraView.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-    throw new Error("Camera frame is not ready yet.");
+    return null;
   }
-
   const sourceWidth = ui.cameraView.videoWidth;
   const sourceHeight = ui.cameraView.videoHeight;
-  const maxDimension = Number(ui.captureMaxDimension.value) || 1280;
+  if (sourceWidth < 2 || sourceHeight < 2) return null;
   const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
@@ -1486,33 +1494,91 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
   canvas.width = width;
   canvas.height = height;
   ctx.drawImage(ui.cameraView, 0, 0, width, height);
-  const clientLaplacianVariance = varianceOfLaplacian(ctx.getImageData(0, 0, width, height), width, height);
+  const clientLaplacianVariance = varianceOfLaplacian(
+    ctx.getImageData(0, 0, width, height),
+    width,
+    height,
+  );
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", jpegQuality));
+  if (!blob) return null;
+  return {
+    blob,
+    sourceWidth,
+    sourceHeight,
+    width,
+    height,
+    clientLaplacianVariance,
+    frameSource: "getUserMedia",
+  };
+}
+
+async function encodeXrCameraFrame(maxDimension, jpegQuality) {
+  if (!state.webXrActive || !webXrNav?.grabFrameBlob) return null;
+  try {
+    const blob = await webXrNav.grabFrameBlob({ maxDim: maxDimension, quality: jpegQuality });
+    if (!blob) return null;
+    return {
+      blob,
+      sourceWidth: 0,
+      sourceHeight: 0,
+      width: 0,
+      height: 0,
+      clientLaplacianVariance: 999, // skip blur gate — XR frames already gated by device
+      frameSource: "webxr-camera",
+    };
+  } catch (err) {
+    console.debug("xr camera frame", err?.message || err);
+    return null;
+  }
+}
+
+async function captureVprPosition({ trigger = "manual", applyBlurGuard = false } = {}) {
+  const maxDimension = Number(ui.captureMaxDimension.value) || 1280;
   const jpegQuality = Number(ui.captureJpegQuality.value) || 0.8;
+
+  // during AR floor change: XR passthrough → PnP (same /localize as camera-nav)
+  let frame = null;
+  if (state.webXrActive && state.inFloorTransition) {
+    frame = await encodeXrCameraFrame(maxDimension, jpegQuality);
+  }
+  if (!frame) {
+    frame = await encodeCameraViewFrame(maxDimension, jpegQuality);
+  }
+  if (!frame && state.webXrActive) {
+    frame = await encodeXrCameraFrame(maxDimension, jpegQuality);
+  }
+  if (!frame) throw new Error("Camera frame is not ready yet.");
+
   const diagnostics = {
     trigger,
     motion_score: state.motion.cumulativeMotion,
-    client_laplacian_variance: clientLaplacianVariance,
-    source_width: sourceWidth,
-    source_height: sourceHeight,
-    encoded_width: width,
-    encoded_height: height,
+    client_laplacian_variance: frame.clientLaplacianVariance,
+    source_width: frame.sourceWidth,
+    source_height: frame.sourceHeight,
+    encoded_width: frame.width,
+    encoded_height: frame.height,
     jpeg_quality: jpegQuality,
+    frame_source: frame.frameSource,
     screen_orientation: screen.orientation?.type || "unknown",
   };
 
-  if (applyBlurGuard && ui.blurGuardEnabled.checked && clientLaplacianVariance < 80) {
+  // elevator: don't drop frames — PnP needs a shot at the landing floor
+  const blurFloor = state.inFloorTransition ? 40 : 80;
+  if (
+    applyBlurGuard
+    && frame.frameSource !== "webxr-camera"
+    && ui.blurGuardEnabled.checked
+    && frame.clientLaplacianVariance < blurFloor
+  ) {
     await logClientDiagnostic({ event: "frame_skipped_blur", ...diagnostics });
     return { skipped: true, diagnostics };
   }
 
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", jpegQuality));
-  if (!blob) throw new Error("Browser failed to encode the camera frame.");
-
   const form = new FormData();
-  form.append("image", blob, "parking-frame.jpg");
+  form.append("image", frame.blob, "parking-frame.jpg");
   const groundTruth = ui.groundTruthLocationId.value.trim();
   if (groundTruth) form.append("ground_truth_location_id", groundTruth);
-  // during elevator: bias VPR to landing floor (camera-nav auto-advance depends on this)
+  // during elevator: bias PnP/VPR to landing floor (camera-nav auto-advance)
   let priorFloor = state.position?.floor ?? state.route?.floor;
   if (state.inFloorTransition) {
     const tf = activeRouteLeg()?.floor_transition
@@ -1526,7 +1592,7 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
   }
   for (const [key, value] of Object.entries(diagnostics)) form.append(key, String(value));
 
-  // lock ARCore frame at the moment of this VPR fix
+  // lock ARCore frame at the moment of this fix
   try {
     if (await ensureArVio()) {
       const pose = await ArVio.getPose();
@@ -1872,12 +1938,11 @@ async function startWebXrNav() {
 
 async function runLiveVprCaptureLoop() {
   const minimumIntervalMs = 300;
-  const maximumIntervalMs = 2000;
   const motionThreshold = 1.5;
   const stillnessWindowMs = 350;
 
   while (state.liveVpr.running) {
-    // keep VPR during elevator so landing floor can unlock the next banner
+    // keep /localize during elevator so PnP can unlock the next banner
     if (state.webXrActive && !state.inFloorTransition) {
       await new Promise((r) => setTimeout(r, 200));
       continue;
@@ -1886,34 +1951,42 @@ async function runLiveVprCaptureLoop() {
       stopLiveVprCapture();
       return;
     }
-    // WebXR owns the camera — still allow VPR while in a floor change
-    if (!state.stream && !state.webXrActive) {
+    const canXrGrab = state.webXrActive && Boolean(webXrNav?.grabFrameBlob);
+    if (!state.stream && !canXrGrab) {
       stopLiveVprCapture();
       return;
     }
 
     const now = performance.now();
     const elapsed = now - state.liveVpr.lastCaptureTime;
+    // elevator: poll faster so PnP hits landing floor soon after doors open
+    const maximumIntervalMs = state.inFloorTransition ? 1200 : 2000;
     const movedEnough = state.motion.cumulativeMotion >= motionThreshold;
     const intervalElapsed = elapsed >= maximumIntervalMs;
     const triggerMode = ui.captureTriggerMode.value;
     const triggerAfterStillness = triggerMode === "motion_then_stillness"
       && now - state.motion.lastMeaningfulMotionAt >= stillnessWindowMs;
     const motionReady = movedEnough && (triggerMode !== "motion_then_stillness" || triggerAfterStillness);
+    const floorPoll = state.inFloorTransition && elapsed >= 800;
 
     if (
       !state.liveVpr.requestInFlight
       && elapsed >= minimumIntervalMs
       && now >= state.liveVpr.nextCaptureAllowedAt
-      && (motionReady || intervalElapsed)
+      && (motionReady || intervalElapsed || floorPoll)
     ) {
       state.liveVpr.requestInFlight = true;
-      const trigger = intervalElapsed && !motionReady
-        ? "max_interval"
-        : triggerMode === "motion_then_stillness" ? "motion_then_stillness" : "motion";
+      const trigger = floorPoll
+        ? "floor_detect"
+        : (intervalElapsed && !motionReady
+          ? "max_interval"
+          : triggerMode === "motion_then_stillness" ? "motion_then_stillness" : "motion");
 
       try {
-        const capture = await captureVprPosition({ trigger, applyBlurGuard: true });
+        const capture = await captureVprPosition({
+          trigger,
+          applyBlurGuard: !state.inFloorTransition,
+        });
         if (capture.skipped) {
           state.liveVpr.nextCaptureAllowedAt = performance.now() + 400;
           setStatusMsg(`Skipped blurry frame (sharpness ${capture.diagnostics.client_laplacian_variance.toFixed(1)})`);
@@ -1925,19 +1998,30 @@ async function runLiveVprCaptureLoop() {
         if (!state.liveVpr.running) return;
 
         if (!fix.tracking || fix.confidence <= 0) {
-          setStatusMsg("VPR miss — continuing with VIO/PDR until next fix");
+          setStatusMsg(
+            state.inFloorTransition
+              ? "Looking for Floor lock (PnP)…"
+              : "VPR miss — continuing with VIO/PDR until next fix",
+          );
         } else {
+          const via = localizeMethodLabel(fix.method);
           applyVprFix(fix);
           try {
             await updateRouteForSlot(ui.slotInput.value.trim());
           } catch (error) {
-            setStatusMsg(`VPR ok, route refresh failed: ${error.message}`);
+            setStatusMsg(`${via} ok, route refresh failed: ${error.message}`);
           }
-          setStatusMsg("Live guidance active · VPR + VIO/PDR");
+          if (!state.inFloorTransition) {
+            setStatusMsg(`Live guidance active · ${via} + VIO/PDR`);
+          }
         }
       } catch (error) {
-        console.warn("Live VPR capture failed; PDR will continue.", error);
-        setStatusMsg(`Live VPR unavailable — VIO/PDR continues. ${error.message}`);
+        console.warn("Live localize failed; PDR will continue.", error);
+        setStatusMsg(
+          state.inFloorTransition
+            ? `Floor detect retry… ${error.message}`
+            : `Live VPR unavailable — VIO/PDR continues. ${error.message}`,
+        );
       } finally {
         state.liveVpr.requestInFlight = false;
       }
@@ -2197,7 +2281,7 @@ function updateRouteProgress() {
     const tf = leg.floor_transition;
     const msg = tf.instruction
       || `Take ${connectorLabel(tf)} (${tf.connector_id || ""}) to Floor ${tf.to_floor}`;
-    // auto-detect landing (VPR) — same idea as camera-nav before WebXR
+    // auto-detect landing via /localize (PnP first) — same as camera-nav
     startFloorDetectVpr();
     const dwell = performance.now() - (state.floorTransitionAt || performance.now());
     const walkedOut = state.motion.cumulativeMotion >= ELEVATOR_WALK_MOTION;
@@ -2208,7 +2292,7 @@ function updateRouteProgress() {
     setHint(msg, true);
     setStatusMsg(
       dwell > 2500
-        ? `${msg} · detecting Floor ${tf.to_floor}…`
+        ? `${msg} · PnP detecting Floor ${tf.to_floor}…`
         : msg,
     );
     updateTurnHud(0);

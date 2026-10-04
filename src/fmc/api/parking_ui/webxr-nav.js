@@ -439,6 +439,13 @@ export class WebXrNav {
     this.fwd = new THREE.Vector3();
     this.pulseT = 0;
     this.legs = opts.legs || legsFromWaypoints(opts.waypoints || []);
+    // raw camera for PnP/VPR during floor change (chrome android)
+    this.capturePending = null;
+    this._capBusy = false;
+    this._capFb = null;
+    this._capCanvas = null;
+    this._capSrcCanvas = null;
+    this.hasCameraAccess = false;
   }
 
   async start() {
@@ -452,14 +459,14 @@ export class WebXrNav {
     try {
       session = await xr.requestSession("immersive-ar", {
         requiredFeatures: ["hit-test", "dom-overlay"],
-        optionalFeatures: ["local-floor", "anchors"],
+        optionalFeatures: ["local-floor", "anchors", "camera-access"],
         domOverlay: { root: this.opts.overlayRoot },
       });
     } catch {
       try {
         session = await xr.requestSession("immersive-ar", {
           requiredFeatures: ["hit-test"],
-          optionalFeatures: ["local-floor", "dom-overlay"],
+          optionalFeatures: ["local-floor", "dom-overlay", "camera-access"],
           domOverlay: { root: this.opts.overlayRoot },
         });
       } catch {
@@ -469,6 +476,10 @@ export class WebXrNav {
     }
 
     this.session = session;
+    this.hasCameraAccess = Boolean(
+      session.enabledFeatures?.has?.("camera-access")
+      || (Array.isArray(session.enabledFeatures) && session.enabledFeatures.includes("camera-access")),
+    );
     this.renderer.xr.setReferenceSpaceType("local-floor");
     await this.renderer.xr.setSession(session);
 
@@ -509,11 +520,147 @@ export class WebXrNav {
     this.session = null;
     this.calibrated = false;
     this.path = [];
+    this.hasCameraAccess = false;
+    this._capBusy = false;
+    if (this.capturePending) {
+      clearTimeout(this.capturePending.timer);
+      this.capturePending.reject?.(new Error("xr ended"));
+      this.capturePending = null;
+    }
+    const gl = this.renderer?.getContext?.();
+    if (gl && this._capFb) {
+      try { gl.deleteFramebuffer(this._capFb); } catch (_) { /* ignore */ }
+    }
+    this._capFb = null;
+    this._capCanvas = null;
     if (this.pathLine) {
       this.scene.remove(this.pathLine);
       this.pathLine.geometry.dispose();
       this.pathLine = null;
     }
+  }
+
+  /** jpeg blob from XR camera — for /localize (PnP) while AR owns the cam */
+  grabFrameBlob({ maxDim = 1280, quality = 0.8 } = {}) {
+    if (!this.session) {
+      return Promise.reject(new Error("no xr session"));
+    }
+    if (this.capturePending) {
+      return Promise.reject(new Error("capture busy"));
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.capturePending?.timer === timer) {
+          this.capturePending = null;
+          this._capBusy = false;
+          reject(new Error("xr camera capture timeout"));
+        }
+      }, 1800);
+      this.capturePending = { resolve, reject, maxDim, quality, timer };
+    });
+  }
+
+  _finishCapture(blob) {
+    const pending = this.capturePending;
+    if (!pending) {
+      this._capBusy = false;
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.capturePending = null;
+    this._capBusy = false;
+    if (blob) pending.resolve(blob);
+    else pending.reject(new Error("xr camera frame empty"));
+  }
+
+  /** sync gl read → async jpeg; returns false if camera not ready this frame */
+  _tryCameraCapture(pose) {
+    if (!this.capturePending || this._capBusy || !pose?.views?.length) return false;
+    const gl = this.renderer.getContext();
+    if (!gl || typeof XRWebGLBinding === "undefined") return false;
+
+    let binding = null;
+    try {
+      binding = this.renderer.xr.getBinding?.() || new XRWebGLBinding(this.session, gl);
+    } catch {
+      return false;
+    }
+
+    let cam = null;
+    let tex = null;
+    for (const view of pose.views) {
+      if (!view.camera) continue;
+      try {
+        tex = binding.getCameraImage(view.camera);
+      } catch {
+        tex = null;
+      }
+      if (tex) {
+        cam = view.camera;
+        break;
+      }
+    }
+    // no camera-access grant yet — keep waiting until timeout
+    if (!cam || !tex) return false;
+
+    const w = cam.width | 0;
+    const h = cam.height | 0;
+    if (w < 8 || h < 8) return false;
+
+    const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    if (!this._capFb) this._capFb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._capFb);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      tex,
+      0,
+    );
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
+      gl.bindTexture(gl.TEXTURE_2D, prevTex);
+      return false;
+    }
+
+    const pixels = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
+    gl.bindTexture(gl.TEXTURE_2D, prevTex);
+
+    // gl origin is bottom-left — flip for PnP
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    const row = w * 4;
+    for (let y = 0; y < h; y += 1) {
+      const src = (h - 1 - y) * row;
+      rgba.set(pixels.subarray(src, src + row), y * row);
+    }
+
+    const pending = this.capturePending;
+    const { maxDim, quality } = pending;
+    this._capBusy = true;
+    const scale = Math.min(1, maxDim / Math.max(w, h));
+    const dw = Math.max(1, Math.round(w * scale));
+    const dh = Math.max(1, Math.round(h * scale));
+    if (!this._capCanvas) this._capCanvas = document.createElement("canvas");
+    if (!this._capSrcCanvas) this._capSrcCanvas = document.createElement("canvas");
+    const canvas = this._capCanvas;
+    const srcCanvas = this._capSrcCanvas;
+    srcCanvas.width = w;
+    srcCanvas.height = h;
+    srcCanvas.getContext("2d").putImageData(new ImageData(rgba, w, h), 0, 0);
+    canvas.width = dw;
+    canvas.height = dh;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      this._finishCapture(null);
+      return true;
+    }
+    ctx.drawImage(srcCanvas, 0, 0, dw, dh);
+    canvas.toBlob((blob) => this._finishCapture(blob), "image/jpeg", quality);
+    return true;
   }
 
   /**
@@ -591,6 +738,11 @@ export class WebXrNav {
       return;
     }
     this.opts.handlers?.onTracking?.(true);
+
+    // snag passthrough frame for PnP while elevator / floor detect is active
+    if (this.capturePending && !this._capBusy) {
+      this._tryCameraCapture(pose);
+    }
 
     const pos = pose.transform.position;
     this.tmp.set(pos.x, pos.y, pos.z);
