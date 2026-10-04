@@ -398,3 +398,79 @@ def delete_site_db(site: SiteConfig) -> None:
                 p.unlink()
             except OSError as e:
                 logger.warning("[H2GIS] Could not remove %s: %s", p, e)
+
+
+def delete_landmarks_where(
+    site: SiteConfig,
+    *,
+    floor: Optional[str] = None,
+    ids: Optional[list[int]] = None,
+    x_min: Optional[float] = None,
+    x_max: Optional[float] = None,
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
+    z_min: Optional[float] = None,
+    z_max: Optional[float] = None,
+) -> int:
+    """Delete matching landmarks from H2GIS. Returns number of deleted rows."""
+    from fmc.floors import normalize_floor_id
+
+    if (
+        floor is None
+        and not ids
+        and x_min is None and x_max is None
+        and y_min is None and y_max is None
+        and z_min is None and z_max is None
+    ):
+        raise ValueError("refuse full wipe — pass floor, ids, and/or bbox filters")
+
+    db_file = db_file_for_site(site)
+    mv = Path(str(db_file) + ".mv.db")
+    if not mv.exists() and not Path(str(db_file) + ".db").exists() and not db_file.exists():
+        return 0
+
+    clauses: list[str] = []
+    params: list = []
+    if floor is not None:
+        clauses.append("CAST(floor_id AS VARCHAR) = ?")
+        params.append(normalize_floor_id(floor))
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        clauses.append(f"landmark_id IN ({placeholders})")
+        params.extend(int(i) for i in ids)
+    if x_min is not None:
+        clauses.append("x >= ?")
+        params.append(float(x_min))
+    if x_max is not None:
+        clauses.append("x <= ?")
+        params.append(float(x_max))
+    if y_min is not None:
+        clauses.append("y >= ?")
+        params.append(float(y_min))
+    if y_max is not None:
+        clauses.append("y <= ?")
+        params.append(float(y_max))
+    if z_min is not None:
+        clauses.append("z >= ?")
+        params.append(float(z_min))
+    if z_max is not None:
+        clauses.append("z <= ?")
+        params.append(float(z_max))
+
+    where = " AND ".join(clauses)
+    conn = connect(db_file)
+    try:
+        _ensure_schema(conn)
+        cur = conn.cursor()
+        try:
+            cur.execute(f"SELECT COUNT(*) FROM map_landmarks WHERE {where}", tuple(params))
+            n = int(cur.fetchone()[0] or 0)
+            if n:
+                cur.execute(f"DELETE FROM map_landmarks WHERE {where}", tuple(params))
+                conn.commit()
+            logger.info("[H2GIS] Deleted %s landmarks (%s)", n, where)
+            return n
+        finally:
+            cur.close()
+    finally:
+        conn.close()

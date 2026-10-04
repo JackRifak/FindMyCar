@@ -87,6 +87,7 @@ async function pushMapFloor(floor) {
     } catch (err) {
         logDebug('Failed to set map floor on server', 'warn');
     }
+    refreshSessionStrip();
 }
 
 async function addMapFloor() {
@@ -154,6 +155,44 @@ if (btnAddFloor) btnAddFloor.addEventListener('click', addMapFloor);
 if (btnRenameFloor) btnRenameFloor.addEventListener('click', renameMapFloor);
 const btnSaveServer = document.getElementById('btn-save-server');
 const btnToggleFeatures = document.getElementById('btn-toggle-features');
+const btnToggleSettings = document.getElementById('btn-toggle-settings');
+const settingsPanel = document.getElementById('settings-panel');
+const sessionDot = document.getElementById('session-dot');
+const sessionLabel = document.getElementById('session-label');
+const sessionMeta = document.getElementById('session-meta');
+
+if (btnToggleSettings && settingsPanel) {
+    btnToggleSettings.addEventListener('click', () => {
+        const open = settingsPanel.classList.toggle('is-open');
+        btnToggleSettings.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+}
+
+function setElHidden(el, hide) {
+    if (!el) return;
+    el.classList.toggle('hidden', !!hide);
+}
+
+function refreshSessionStrip() {
+    const floor = selectedMapFloor() || '—';
+    const kf = typeof keyframeCount === 'number' ? keyframeCount : 0;
+    if (sessionMeta) {
+        sessionMeta.textContent = `Floor ${floor} · ${kf} kf`;
+    }
+    if (!sessionLabel || !sessionDot) return;
+    if (typeof isMapping !== 'undefined' && isMapping) {
+        sessionLabel.textContent = 'Mapping';
+        sessionDot.classList.add('is-live');
+        sessionDot.classList.remove('is-paused');
+    } else if (typeof sessionActive !== 'undefined' && sessionActive) {
+        sessionLabel.textContent = 'Paused';
+        sessionDot.classList.add('is-paused');
+        sessionDot.classList.remove('is-live');
+    } else {
+        sessionLabel.textContent = 'Idle';
+        sessionDot.classList.remove('is-live', 'is-paused');
+    }
+}
 
 // Real-Time Feature Overlay Elements
 const featCanvas = document.getElementById('features-canvas');
@@ -171,8 +210,7 @@ if (btnToggleFeatures) {
     btnToggleFeatures.onclick = () => {
         showFeaturesOverlay = !showFeaturesOverlay;
         btnToggleFeatures.innerText = showFeaturesOverlay ? "Features: ON" : "Features: OFF";
-        btnToggleFeatures.style.color = showFeaturesOverlay ? "#34c759" : "#888";
-        btnToggleFeatures.style.borderColor = showFeaturesOverlay ? "#34c759" : "#555";
+        btnToggleFeatures.classList.toggle('is-on', showFeaturesOverlay);
         if (featuresBadge) {
             featuresBadge.style.display = showFeaturesOverlay && (activeFeatures.detected.length || activeFeatures.tracked.length) ? 'inline-block' : 'none';
         }
@@ -671,6 +709,7 @@ async function uploadKeyframeBlob(blob) {
         const level = data.new_landmarks > 0 ? "success" : "info";
         logDebug(`[Server] Frame #${keyframeCount} (ID: ${data.frame_id}): +${data.new_landmarks} 3D points (${data.tracked_features ? data.tracked_features.length : 0} inliers) | Map Total: ${data.total_landmarks} points across ${data.total_keyframes} frames`, level);
         statusEl.innerText = `Keyframe #${keyframeCount} | +${data.new_landmarks} 3D pts | Total Map: ${data.total_landmarks} landmarks`;
+        refreshSessionStrip();
     } catch (err) {
         console.error(err);
         statusEl.innerText = "Upload failed: " + err.message;
@@ -713,13 +752,14 @@ async function requestMotionPerms() {
 
 function setWalkButtons(running) {
     isMapping = running;
-    btnStart.style.display = running ? 'none' : 'block';
-    btnStop.style.display = running ? 'block' : 'none';
-    btnShowTag.style.display = 'block';
-    btnFinalize.style.display = 'block';
-    if (btnNewWalk) btnNewWalk.style.display = 'block';
-    if (btnClearMap) btnClearMap.style.display = 'block';
+    setElHidden(btnStart, running);
+    setElHidden(btnStop, !running);
+    setElHidden(btnShowTag, false);
+    setElHidden(btnFinalize, false);
+    setElHidden(btnNewWalk, false);
+    setElHidden(btnClearMap, false);
     btnStart.innerText = sessionActive ? 'Resume Walk' : 'Start AR Mapping';
+    refreshSessionStrip();
 }
 
 async function beginWalk(mode) {
@@ -739,6 +779,7 @@ async function beginWalk(mode) {
         drawFloorplanTags();
         mapContainer.querySelectorAll('.tag-dot').forEach((el) => el.remove());
         logDebug("Cleared all mapping sessions", "warn");
+        refreshSessionStrip();
     } else if (mode === 'new-session') {
         try {
             const floor = selectedMapFloor();
@@ -810,6 +851,59 @@ if (btnClearMap) {
         await beginWalk('clear');
     };
 }
+
+const btnPruneFloor = document.getElementById('btn-prune-floor');
+const btnViewerPruneFloor = document.getElementById('btn-viewer-prune-floor');
+const btnSelectRegion = document.getElementById('btn-select-region');
+const btnClearSelection = document.getElementById('btn-clear-selection');
+const btnDeleteSelection = document.getElementById('btn-delete-selection');
+const selectRectEl = document.getElementById('select-rect');
+
+async function pruneLandmarks(body, label, opts = {}) {
+    const reload = opts.reload !== false;
+    try {
+        const res = await fetch(getApiUrl('/map/landmarks/prune'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const detail = data.detail;
+            const msg = Array.isArray(detail)
+                ? detail.map((d) => d.msg || JSON.stringify(d)).join('; ')
+                : (detail || data.error || `HTTP ${res.status}`);
+            throw new Error(msg);
+        }
+        const msg = `${label}: deleted ${data.deleted ?? 0}, remaining ${data.remaining ?? '?'}`;
+        logDebug(msg, data.deleted ? 'warn' : 'info');
+        statusEl.innerText = msg;
+        if (reload && document.getElementById('viewer-modal')?.style.display === 'flex') {
+            clearCloudSelection();
+            await loadPLY();
+        }
+        return data;
+    } catch (err) {
+        logDebug(`Prune failed: ${err.message}`, 'error');
+        alert('Delete failed: ' + err.message);
+        return null;
+    }
+}
+
+async function pruneSelectedFloor() {
+    const floor = selectedMapFloor();
+    if (!floor) {
+        alert('Select a floor first.');
+        return;
+    }
+    if (!confirm(`Delete 3D point cloud + feature DB for floor "${floor}" only?\nOther floors stay intact.`)) {
+        return;
+    }
+    await pruneLandmarks({ floor }, `Floor ${floor}`);
+}
+
+if (btnPruneFloor) btnPruneFloor.onclick = () => pruneSelectedFloor();
+if (btnViewerPruneFloor) btnViewerPruneFloor.onclick = () => pruneSelectedFloor();
 
 btnShowTag.onclick = () => {
     if (!transform) {
@@ -938,6 +1032,8 @@ btnView3d.onclick = () => {
 
 btnCloseViewer.onclick = () => {
     stopPosePolling();
+    setSelectMode(false);
+    clearCloudSelection();
     viewerModal.style.display = 'none';
 };
 
@@ -955,6 +1051,13 @@ let viewerFrame = null; // { center, scale, floorY, floorOrder, stackM }
 let posePollTimer = null;
 let lastCloudData = null; // last /map/cloud-layers payload for re-stack
 let viewerStackM = null; // UI override (meters); null = use server/config
+let cloudPickLayers = []; // { mesh, floor, fac: Float32Array xyz, ids: Int32Array|null }
+let selectHighlight = null;
+let selectMode = false;
+let selectDrag = null; // { x0, y0, x1, y1, pointerId } container-local px
+let selectedCloud = []; // { floor, fx, fy, fz, id }
+let selectBound = false;
+let selectPointers = new Set(); // active pointer ids on viewer canvas
 const btnToggle3DLandmarks = document.getElementById('btn-toggle-3d-landmarks');
 const stackMInput = document.getElementById('stack-m-input');
 const stackMVal = document.getElementById('stack-m-val');
@@ -979,11 +1082,20 @@ if (stackMInput) {
 if (btnToggle3DLandmarks) {
     btnToggle3DLandmarks.onclick = () => {
         show3DLandmarks = !show3DLandmarks;
-        btnToggle3DLandmarks.innerText = show3DLandmarks ? "📍 Landmarks: ON" : "📍 Landmarks: OFF";
-        btnToggle3DLandmarks.style.background = show3DLandmarks ? "#ff9500" : "#444";
-        btnToggle3DLandmarks.style.color = show3DLandmarks ? "#000" : "#ccc";
+        btnToggle3DLandmarks.innerText = show3DLandmarks ? 'Tags: ON' : 'Tags: OFF';
+        btnToggle3DLandmarks.classList.toggle('is-on', show3DLandmarks);
         if (landmarkGroup) landmarkGroup.visible = show3DLandmarks;
     };
+}
+
+if (btnSelectRegion) {
+    btnSelectRegion.onclick = () => setSelectMode(!selectMode);
+}
+if (btnClearSelection) {
+    btnClearSelection.onclick = () => clearCloudSelection();
+}
+if (btnDeleteSelection) {
+    btnDeleteSelection.onclick = () => deleteInteractiveSelection();
 }
 
 function floorStackOffset(floorId, frame) {
@@ -1335,10 +1447,12 @@ function show3DViewer() {
             }, false);
 
             viewerContainer.appendChild(renderer.domElement);
+            if (selectRectEl) viewerContainer.appendChild(selectRectEl);
 
             controls = new THREE.OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
             controls.dampingFactor = 0.08;
+            bindSelectPointerHandlers();
 
             const gridHelper = new THREE.GridHelper(10, 20, 0x007aff, 0x222233);
             gridHelper.position.y = -0.01;
@@ -1392,10 +1506,292 @@ const FLOOR_TINTS = [
 ];
 
 function clearCloudScene() {
+    clearCloudSelection(false);
+    cloudPickLayers = [];
     if (currentPoints && scene) scene.remove(currentPoints);
     currentPoints = null;
     if (floorDeckGroup && scene) scene.remove(floorDeckGroup);
     floorDeckGroup = null;
+}
+
+function clearSelectHighlight() {
+    if (selectHighlight && scene) {
+        scene.remove(selectHighlight);
+        if (selectHighlight.geometry) selectHighlight.geometry.dispose();
+        if (selectHighlight.material) selectHighlight.material.dispose();
+    }
+    selectHighlight = null;
+}
+
+function clearCloudSelection(updateUi = true) {
+    selectedCloud = [];
+    clearSelectHighlight();
+    if (selectRectEl) selectRectEl.style.display = 'none';
+    selectDrag = null;
+    if (updateUi) syncSelectionUi();
+}
+
+function syncSelectionUi() {
+    const n = selectedCloud.length;
+    if (btnDeleteSelection) {
+        btnDeleteSelection.disabled = n === 0;
+        btnDeleteSelection.textContent = n ? `Delete (${n})` : 'Delete Selected';
+    }
+    setElHidden(btnClearSelection, !n);
+    if (viewerStats && viewerStats.dataset.base) {
+        viewerStats.innerText = n
+            ? `${viewerStats.dataset.base} · Selected: ${n}`
+            : viewerStats.dataset.base;
+    }
+}
+
+function applySelectControls() {
+    if (!controls) return;
+    // keep zoom/pinch alive in select mode; only block orbit/pan so 1-finger drag can box-select
+    controls.enabled = true;
+    controls.enableZoom = true;
+    controls.enableRotate = !selectMode;
+    controls.enablePan = !selectMode;
+}
+
+function abortSelectDrag() {
+    selectDrag = null;
+    if (selectRectEl) selectRectEl.style.display = 'none';
+}
+
+function setSelectMode(on) {
+    selectMode = !!on;
+    if (viewerModal) viewerModal.classList.toggle('select-mode', selectMode);
+    applySelectControls();
+    if (btnSelectRegion) {
+        btnSelectRegion.textContent = selectMode ? 'Selecting…' : 'Select';
+        btnSelectRegion.classList.toggle('is-active', selectMode);
+        btnSelectRegion.classList.toggle('btn-soft', !selectMode);
+    }
+    if (!selectMode && selectRectEl) selectRectEl.style.display = 'none';
+    selectDrag = null;
+    if (selectMode) {
+        logDebug('Select mode: 1-finger drag = box · pinch/scroll = zoom', 'info');
+        if (viewerStats) {
+            const base = viewerStats.dataset.base || viewerStats.innerText;
+            viewerStats.dataset.base = base;
+            viewerStats.innerText = base + ' · Drag box · Pinch zoom';
+        }
+    } else {
+        syncSelectionUi();
+    }
+}
+
+function containerPointerPos(evt) {
+    const box = viewerContainer.getBoundingClientRect();
+    return {
+        x: evt.clientX - box.left,
+        y: evt.clientY - box.top,
+        w: box.width,
+        h: box.height,
+    };
+}
+
+function paintSelectRect() {
+    if (!selectRectEl || !selectDrag) return;
+    const left = Math.min(selectDrag.x0, selectDrag.x1);
+    const top = Math.min(selectDrag.y0, selectDrag.y1);
+    const w = Math.abs(selectDrag.x1 - selectDrag.x0);
+    const h = Math.abs(selectDrag.y1 - selectDrag.y0);
+    selectRectEl.style.display = 'block';
+    selectRectEl.style.left = left + 'px';
+    selectRectEl.style.top = top + 'px';
+    selectRectEl.style.width = w + 'px';
+    selectRectEl.style.height = h + 'px';
+}
+
+function pickCloudInScreenRect(x0, y0, x1, y1) {
+    if (!camera || !cloudPickLayers.length) return [];
+    const left = Math.min(x0, x1);
+    const right = Math.max(x0, x1);
+    const top = Math.min(y0, y1);
+    const bottom = Math.max(y0, y1);
+    if (right - left < 4 || bottom - top < 4) return [];
+
+    const box = viewerContainer.getBoundingClientRect();
+    const w = box.width;
+    const h = box.height;
+    const v = new THREE.Vector3();
+    const out = [];
+
+    for (const layer of cloudPickLayers) {
+        const pos = layer.mesh.geometry.attributes.position;
+        const n = pos.count;
+        layer.mesh.updateMatrixWorld(true);
+        for (let i = 0; i < n; i++) {
+            v.fromBufferAttribute(pos, i);
+            v.applyMatrix4(layer.mesh.matrixWorld);
+            v.project(camera);
+            if (v.z < -1 || v.z > 1) continue;
+            const sx = (v.x * 0.5 + 0.5) * w;
+            const sy = (-v.y * 0.5 + 0.5) * h;
+            if (sx < left || sx > right || sy < top || sy > bottom) continue;
+            out.push({
+                floor: layer.floor,
+                fx: layer.fac[i * 3],
+                fy: layer.fac[i * 3 + 1],
+                fz: layer.fac[i * 3 + 2],
+                id: layer.ids ? layer.ids[i] : null,
+                sx: pos.getX(i),
+                sy: pos.getY(i),
+                sz: pos.getZ(i),
+            });
+        }
+    }
+    return out;
+}
+
+function showSelectionHighlight(pts) {
+    clearSelectHighlight();
+    if (!scene || !pts.length) return;
+    const arr = new Float32Array(pts.length * 3);
+    const cols = new Float32Array(pts.length * 3);
+    for (let i = 0; i < pts.length; i++) {
+        arr[i * 3] = pts[i].sx;
+        arr[i * 3 + 1] = pts[i].sy;
+        arr[i * 3 + 2] = pts[i].sz;
+        cols[i * 3] = 1.0;
+        cols[i * 3 + 1] = 0.2;
+        cols[i * 3 + 2] = 0.15;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    const mat = new THREE.PointsMaterial({
+        size: 0.14,
+        vertexColors: true,
+        map: circleTexture,
+        transparent: true,
+        alphaTest: 0.1,
+        sizeAttenuation: true,
+        depthTest: false,
+    });
+    selectHighlight = new THREE.Points(geo, mat);
+    selectHighlight.renderOrder = 10;
+    scene.add(selectHighlight);
+}
+
+function applyCloudSelection(pts) {
+    selectedCloud = pts;
+    showSelectionHighlight(pts);
+    syncSelectionUi();
+    logDebug(`Selected ${pts.length} points — tap Delete Selected to prune feature DB`, pts.length ? 'warn' : 'info');
+}
+
+function bindSelectPointerHandlers() {
+    if (selectBound || !renderer) return;
+    const el = renderer.domElement;
+    selectBound = true;
+
+    el.addEventListener('pointerdown', (evt) => {
+        selectPointers.add(evt.pointerId);
+        // second finger → pinch zoom; release capture so OrbitControls can dolly
+        if (selectPointers.size > 1) {
+            if (selectDrag && selectDrag.pointerId != null) {
+                try { el.releasePointerCapture(selectDrag.pointerId); } catch (_) {}
+            }
+            abortSelectDrag();
+            applySelectControls();
+            return;
+        }
+        if (!selectMode || evt.button !== 0) return;
+        const p = containerPointerPos(evt);
+        selectDrag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, pointerId: evt.pointerId };
+        paintSelectRect();
+        try { el.setPointerCapture(evt.pointerId); } catch (_) {}
+    });
+
+    el.addEventListener('pointermove', (evt) => {
+        if (!selectMode || !selectDrag) return;
+        if (selectPointers.size > 1) {
+            abortSelectDrag();
+            return;
+        }
+        if (selectDrag.pointerId != null && evt.pointerId !== selectDrag.pointerId) return;
+        const p = containerPointerPos(evt);
+        selectDrag.x1 = p.x;
+        selectDrag.y1 = p.y;
+        paintSelectRect();
+    });
+
+    const endDrag = (evt) => {
+        selectPointers.delete(evt.pointerId);
+        if (!selectDrag) return;
+        if (selectDrag.pointerId != null && evt.pointerId !== selectDrag.pointerId) return;
+        // ignore tiny taps / aborted multi-touch
+        if (selectMode && selectPointers.size === 0) {
+            const pts = pickCloudInScreenRect(
+                selectDrag.x0, selectDrag.y0, selectDrag.x1, selectDrag.y1
+            );
+            if (pts.length || Math.hypot(selectDrag.x1 - selectDrag.x0, selectDrag.y1 - selectDrag.y0) >= 8) {
+                applyCloudSelection(pts);
+            }
+        }
+        abortSelectDrag();
+        try { el.releasePointerCapture(evt.pointerId); } catch (_) {}
+    };
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
+    el.addEventListener('lostpointercapture', (evt) => {
+        selectPointers.delete(evt.pointerId);
+    });
+}
+
+async function deleteInteractiveSelection() {
+    if (!selectedCloud.length) {
+        alert('Drag a box over points first (Select mode).');
+        return;
+    }
+    const byFloor = {};
+    for (const p of selectedCloud) {
+        const f = String(p.floor || '');
+        if (!byFloor[f]) byFloor[f] = [];
+        byFloor[f].push(p);
+    }
+    const floors = Object.keys(byFloor);
+    const n = selectedCloud.length;
+    if (!confirm(
+        `Delete selected region (${n} visible pts) on floor(s) ${floors.join(', ')}?\n` +
+        'Updates H2GIS / NPZ / PLY feature DB for that area.'
+    )) return;
+
+    // pad so subsampled edges still catch nearby dense landmarks
+    const pad = 0.25;
+    let deleted = 0;
+    let remaining = null;
+    for (const floor of floors) {
+        const pts = byFloor[floor];
+        let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+        for (const p of pts) {
+            if (p.fx < xMin) xMin = p.fx;
+            if (p.fx > xMax) xMax = p.fx;
+            if (p.fy < yMin) yMin = p.fy;
+            if (p.fy > yMax) yMax = p.fy;
+        }
+        // facility bbox covers full density under the selection (viewer may subsample)
+        const body = {
+            floor: floor || null,
+            x_min: xMin - pad,
+            x_max: xMax + pad,
+            y_min: yMin - pad,
+            y_max: yMax + pad,
+        };
+        const res = await pruneLandmarks(body, `Select ${floor || '?'}`, { reload: false });
+        if (res) {
+            deleted += res.deleted || 0;
+            remaining = res.remaining;
+        }
+    }
+    setSelectMode(false);
+    clearCloudSelection();
+    await loadPLY();
+    statusEl.innerText = `Selection prune: deleted ${deleted}` +
+        (remaining != null ? `, remaining ${remaining}` : '');
 }
 
 function rotCloudPt(x, y, z) {
@@ -1462,10 +1858,23 @@ function renderStackedCloud(data) {
     // transform all pts; center from combined cloud before stacking
     const rawLayers = layers.map((layer) => {
         const pts = [];
+        const fac = [];
+        const ids = Array.isArray(layer.ids) ? layer.ids : [];
         (layer.positions || []).forEach((p) => {
             pts.push(rotCloudPt(p[0], p[1], p[2]));
+            fac.push(p[0], p[1], p[2]);
         });
-        return { floor: String(layer.floor), pts };
+        return {
+            floor: String(layer.floor),
+            pts,
+            fac: new Float32Array(fac),
+            ids: ids.length === pts.length
+                ? ids.map((v) => {
+                    const n = Number(v);
+                    return Number.isFinite(n) ? (n | 0) : -1;
+                })
+                : null,
+        };
     });
 
     let minX = Infinity, minY = Infinity, minZ = Infinity;
@@ -1502,9 +1911,12 @@ function renderStackedCloud(data) {
     const gap = stackM * scale;
     currentPoints = new THREE.Group();
     floorDeckGroup = new THREE.Group();
+    cloudPickLayers = [];
 
     const byFloor = {};
-    rawLayers.forEach((layer) => { byFloor[layer.floor] = layer.pts; });
+    rawLayers.forEach((layer) => {
+        byFloor[layer.floor] = { pts: layer.pts, ids: layer.ids || [], fac: layer.fac };
+    });
     // always stack every configured floor, even if cloud is missing
     const stackFloors = floorOrder.slice();
     rawLayers.forEach((layer) => {
@@ -1539,7 +1951,8 @@ function renderStackedCloud(data) {
     stackFloors.forEach((fid, level) => {
         const yOff = level * gap;
         const tint = tintForFloor(level);
-        const pts = byFloor[fid] || [];
+        const layerData = byFloor[fid] || { pts: [], fac: new Float32Array(0), ids: null };
+        const pts = layerData.pts;
         const n = pts.length;
         const deckY = floorY + yOff;
 
@@ -1571,7 +1984,14 @@ function renderStackedCloud(data) {
                 alphaTest: 0.1,
                 sizeAttenuation: true
             });
-            currentPoints.add(new THREE.Points(geo, mat));
+            const mesh = new THREE.Points(geo, mat);
+            currentPoints.add(mesh);
+            cloudPickLayers.push({
+                mesh,
+                floor: fid,
+                fac: layerData.fac,
+                ids: layerData.ids ? new Int32Array(layerData.ids) : null,
+            });
         }
 
         const deckGeo = new THREE.PlaneGeometry(deckW, deckD);
@@ -1645,10 +2065,11 @@ function renderStackedCloud(data) {
     }
 
     if (viewerStats) {
-        const base = `Points: ${nAll.toLocaleString()} · ${nLevels} floors stacked · Orbit: Drag · Zoom: Pinch`;
+        const base = `Points: ${nAll.toLocaleString()} · ${nLevels} floors stacked · Orbit: Drag · Zoom: Pinch · Select to prune`;
         viewerStats.dataset.base = base;
-        viewerStats.innerText = base;
+        viewerStats.innerText = selectMode ? base + ' · Drag to select' : base;
     }
+    syncSelectionUi();
     logDebug(`[Viewer] Stacked ${nLevels} floors (${nAll.toLocaleString()} pts)`, "success");
     startPosePolling();
 }

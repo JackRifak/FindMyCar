@@ -55,9 +55,69 @@ async function api(method, path, body) {
 
 function setStatus(msg, isError) {
   const el = document.getElementById("statusMsg");
+  if (!el) return;
   el.textContent = msg || "";
-  el.style.color = isError ? "#ff6b6b" : "#ffd479";
-  if (msg) setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 6000);
+  el.classList.toggle("is-error", !!isError);
+  el.classList.toggle("is-ok", !!msg && !isError);
+  if (msg) {
+    setTimeout(() => {
+      if (el.textContent === msg) {
+        el.textContent = "";
+        el.classList.remove("is-error", "is-ok");
+      }
+    }, 6000);
+  }
+}
+
+const MODE_HINTS = {
+  view: "Click the plan to read facility X/Y",
+  control_points: "Click corners on the plan, then enter real metres",
+  segments: "Click path endpoints in pairs along corridors",
+  slots: "Click each parking bay, then set ID / zone",
+  capture_locations: "Click empty space for a new location, or a marker to edit",
+  query: "Upload a photo to test localization on this floor",
+};
+
+function updateModeContext() {
+  const el = document.getElementById("modeContext");
+  if (el) el.textContent = MODE_HINTS[state.mode] || "";
+}
+
+function updateWorkspaceTitle() {
+  const el = document.getElementById("workspaceTitle");
+  if (!el) return;
+  if (state.siteId && state.floor != null && state.floor !== "") {
+    el.textContent = `${state.siteId} · floor ${state.floor}`;
+  } else if (state.siteId) {
+    el.textContent = `${state.siteId} · pick a floor`;
+  } else {
+    el.textContent = "Floor plan canvas";
+  }
+}
+
+function showCanvasHint(html) {
+  const hint = document.getElementById("canvasHint");
+  if (!hint) return;
+  hint.innerHTML = html;
+  hint.style.display = "flex";
+}
+
+function hideCanvasHint() {
+  const hint = document.getElementById("canvasHint");
+  if (!hint) return;
+  hint.style.display = "none";
+}
+
+function zoomBy(factor) {
+  if (!state.img) return;
+  const mx = canvas.width / 2;
+  const my = canvas.height / 2;
+  const before = screenToImage(mx, my);
+  state.zoom = Math.max(0.05, Math.min(20, state.zoom * factor));
+  const after = imageToScreen(before.x, before.y);
+  state.panX += mx - after.x;
+  state.panY += my - after.y;
+  draw();
 }
 
 function floorBase() {
@@ -385,10 +445,23 @@ document.querySelectorAll(".mode-btn").forEach((btn) => {
     document.getElementById("newLocationForm").style.display = "none";
     document.querySelectorAll(".panel").forEach((p) => (p.style.display = "none"));
     document.getElementById("panel-" + state.mode).style.display = "block";
+    updateModeContext();
     if (state.mode === "capture_locations") loadCaptureLocations();
     draw();
   });
 });
+
+const zoomInBtn = document.getElementById("zoomInBtn");
+const zoomOutBtn = document.getElementById("zoomOutBtn");
+const zoomFitBtn = document.getElementById("zoomFitBtn");
+if (zoomInBtn) zoomInBtn.addEventListener("click", () => zoomBy(1.2));
+if (zoomOutBtn) zoomOutBtn.addEventListener("click", () => zoomBy(1 / 1.2));
+if (zoomFitBtn) {
+  zoomFitBtn.addEventListener("click", () => {
+    fitToCanvas();
+    draw();
+  });
+}
 
 document.getElementById("toggleLocations").addEventListener("change", (e) => { state.overlays.locations = e.target.checked; draw(); });
 document.getElementById("toggleSegments").addEventListener("change", (e) => { state.overlays.segments = e.target.checked; draw(); });
@@ -504,6 +577,7 @@ document.getElementById("siteSelect").addEventListener("change", (e) => selectSi
 
 async function selectSite(siteId) {
   state.siteId = siteId;
+  updateWorkspaceTitle();
   const floors = await api("GET", `/api/sites/${siteId}/floors`);
   const sel = document.getElementById("floorSelect");
   sel.innerHTML = floors.map((f) => `<option value="${f}">${f}</option>`).join("");
@@ -546,6 +620,7 @@ async function selectFloor(floor) {
   const fitEl = document.getElementById("fitResult");
   if (fitEl) fitEl.innerHTML = "";
   document.getElementById("saveTransformBtn").disabled = true;
+  updateWorkspaceTitle();
   renderControlPointsPanel();
   renderSegmentsPanel();
   renderSlotsPanel();
@@ -589,17 +664,16 @@ async function loadFloorplanImage() {
       state.img = img;
       state.imgW = img.width;
       state.imgH = img.height;
-      const hint = document.getElementById("canvasHint");
-      hint.style.display = "none";
-      hint.textContent = "Load a site and render a floor plan to begin. Scroll to zoom, right-drag to pan.";
+      hideCanvasHint();
       fitToCanvas();
       resolve();
     };
     img.onerror = () => {
       state.img = null;
-      const hint = document.getElementById("canvasHint");
-      hint.style.display = "block";
-      hint.textContent = `No floor plan for floor ${state.floor} yet. Upload/render a PDF for this floor.`;
+      showCanvasHint(
+        `<strong>No plan for floor ${state.floor}</strong>` +
+        `<span>Upload a PDF and tap Render plan for this floor.</span>`
+      );
       resolve();
     };
     img.src = `${base}/floorplan/image?_=${Date.now()}`;
@@ -1024,5 +1098,7 @@ document.getElementById("runRouteBtn").addEventListener("click", async () => {
 
 // ---------------------------------------------------------------- init
 
+updateModeContext();
+updateWorkspaceTitle();
 refreshSites();
 draw();

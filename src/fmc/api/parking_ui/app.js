@@ -3,6 +3,10 @@ const ARRIVE_SLOT_M = 8.0; // euclidean to slot (bays sit off the walkable line)
 const LEG_ADVANCE_M = 0.7; // snap to next walk leg
 const ENTER_CONNECTOR_M = 3.0; // enter lift/stairs guidance (PDR freezes in elevator)
 const SKIP_CALIBRATION = true; // temporarily bypass phone calibration UI
+const AR_TRACK_MS = 100; // ARCore pose → guidance refresh
+const NAV_TICK_MS = 100; // PDR / HUD tick when AR is cold
+const WALK_SPEED_MPS = 1.3; // continuous walk integration between VPR fixes
+const WALK_MOTION_HOLD_MS = 400; // keep integrating briefly after last shake
 
 const state = {
   deviceId: "parking-mobile-" + Math.random().toString(36).slice(2, 8),
@@ -543,7 +547,11 @@ function updateWorkflowControls() {
 
 let liveHeartbeatTimer = null;
 let arTrackTimer = null;
+let navTickTimer = null;
 let arVioStarted = false;
+let lastArPoseAt = 0;
+let lastNavTickAt = 0;
+let lastFullRouteUiAt = 0;
 
 function endLiveLocalization() {
   if (liveHeartbeatTimer) {
@@ -591,10 +599,12 @@ function stopArTracking() {
     clearInterval(arTrackTimer);
     arTrackTimer = null;
   }
+  stopNavGuidanceTick();
 }
 
 function startArTracking() {
   stopArTracking();
+  startNavGuidanceTick();
   arTrackTimer = setInterval(async () => {
     if (!state.hasLocalizedPosition || state.workflowStep !== "navigation") return;
     if (!window.ArVio || !arVioStarted) return;
@@ -619,6 +629,7 @@ function startArTracking() {
       if (!res.ok) return;
       const pos = await res.json();
       if (!pos.tracking) return;
+      lastArPoseAt = performance.now();
       state.position = {
         floor: pos.floor,
         x: pos.x,
@@ -631,9 +642,44 @@ function startArTracking() {
       if (ui.positionState) ui.positionState.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}`;
       ui.metricCoords.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`;
       ui.metricHeading.textContent = `${Math.round(pos.heading)}°`;
-      updateRouteStatus();
+      updateGuidanceFast();
     } catch (_) { /* keep last */ }
-  }, 200);
+  }, AR_TRACK_MS);
+}
+
+function stopNavGuidanceTick() {
+  if (navTickTimer) {
+    clearInterval(navTickTimer);
+    navTickTimer = null;
+  }
+}
+
+function startNavGuidanceTick() {
+  if (navTickTimer) return;
+  lastNavTickAt = performance.now();
+  navTickTimer = setInterval(() => {
+    const now = performance.now();
+    const dt = Math.min(0.25, (now - lastNavTickAt) / 1000);
+    lastNavTickAt = now;
+    if (state.workflowStep !== "navigation" || !state.hasLocalizedPosition || !state.route) return;
+    if (state.arrivedShown) return;
+
+    // ARCore already pushes poses — don't also integrate PDR
+    const arFresh = arVioStarted && (now - lastArPoseAt) < 250;
+    if (!arFresh && !state.inFloorTransition) {
+      const walking = (now - (state.motion.lastMeaningfulMotionAt || 0)) <= WALK_MOTION_HOLD_MS;
+      if (walking) {
+        const speed = WALK_SPEED_MPS * (state.calibration.strideScaleFactor || 1);
+        const heading = (Number(state.position.heading) || 0) * Math.PI / 180;
+        state.position.x += speed * dt * Math.sin(heading);
+        state.position.y += speed * dt * Math.cos(heading);
+        state.position.tracking = true;
+        state.position.confidence = Math.max(0.08, state.position.confidence * 0.999);
+        setStatusChip("Tracking (PDR)", "live");
+      }
+    }
+    updateGuidanceFast();
+  }, NAV_TICK_MS);
 }
 
 function setWorkflowStep(step, moveFocus = false) {
@@ -646,6 +692,7 @@ function setWorkflowStep(step, moveFocus = false) {
   if (state.workflowStep === "navigation" && step !== "navigation") {
     stopLiveVprCapture({ keepCamera: true });
     endLiveLocalization();
+    stopNavGuidanceTick();
   }
 
   state.workflowStep = step;
@@ -673,7 +720,11 @@ function setWorkflowStep(step, moveFocus = false) {
       ? "Localized. Start nav for live guidance on the camera."
       : "Camera ready. Tap Localize to lock your position.");
     ensureCamera().catch(() => {});
-    ensureArVio().catch(() => {});
+    ensureArVio().then((ok) => {
+      if (ok) startArTracking();
+      else startNavGuidanceTick();
+    }).catch(() => startNavGuidanceTick());
+    if (state.hasLocalizedPosition) startNavGuidanceTick();
   }
 
   if (moveFocus) {
@@ -827,7 +878,11 @@ function detectNavigationStep(dynamicAcceleration, now) {
 
   motion.stepArmed = false;
   motion.lastStepTime = now;
-  advancePositionByStep(0.7 * state.calibration.strideScaleFactor);
+  // continuous nav tick handles walk integration; keep a light step nudge only if AR/tick cold
+  const arFresh = arVioStarted && (now - lastArPoseAt) < 250;
+  if (!arFresh && !navTickTimer) {
+    advancePositionByStep(0.7 * state.calibration.strideScaleFactor);
+  }
 }
 
 function advancePositionByStep(stepLength) {
@@ -1182,7 +1237,9 @@ function applyVprFix(pos) {
   startLiveHeartbeat();
   ensureArVio().then((ok) => {
     if (ok) startArTracking();
+    else startNavGuidanceTick();
   });
+  startNavGuidanceTick();
   updateRouteStatus();
 }
 
@@ -1461,6 +1518,7 @@ async function navigateToSlot() {
 
   try {
     await updateRouteForSlot(slotId);
+    startNavGuidanceTick();
     const camOk = state.stream || await ensureCamera();
     if (camOk) {
       startLiveVprCapture();
@@ -1484,13 +1542,69 @@ async function navigateToSlot() {
   }
 }
 
-function updateRouteStatus() {
+function updateGuidanceFast() {
+  // high-frequency path: distance / turn banner only (skip heavy instruction list rebuild)
   if (ui.positionState) ui.positionState.textContent = `${state.position.x.toFixed(2)}, ${state.position.y.toFixed(2)}`;
   ui.metricCoords.textContent = `${state.position.x.toFixed(2)}, ${state.position.y.toFixed(2)} m`;
   ui.metricFloor.textContent = state.position.floor ?? "—";
   ui.metricHeading.textContent = `${Math.round(state.position.heading)}°`;
+  if (!state.route) {
+    ui.metricDistance.textContent = "—";
+    return;
+  }
+  syncActiveLeg();
+  const leg = activeRouteLeg();
+  if (state.inFloorTransition && leg?.floor_transition) {
+    const tf = leg.floor_transition;
+    const msg = tf.instruction
+      || `Take ${connectorLabel(tf)} (${tf.connector_id || ""}) to Floor ${tf.to_floor}`;
+    setHint(msg, true);
+    if (ui.turnBanner) {
+      ui.turnBanner.hidden = false;
+      if (ui.turnLabel) ui.turnLabel.textContent = msg;
+      if (ui.turnDistance) ui.turnDistance.textContent = "Now";
+    }
+    ui.metricDistance.textContent = "Now";
+    return;
+  }
+  const guideWps = leg?.waypoints?.length ? leg.waypoints : state.route.waypoints;
+  const progress = guideWps?.length
+    ? routeProgressForWaypoints(guideWps)
+    : routeProgress();
+  ui.metricDistance.textContent = `${progress.remainingDistance.toFixed(1)} m`;
+  updateTurnHud(progress.distanceAlongRoute);
+
+  // enter lift early / arrival checks at tick rate
+  const upcoming = nextTransitionLeg((state.activeLegIndex || 0) + 1);
+  const lastWp = guideWps?.[guideWps.length - 1];
+  const distLift = lastWp
+    ? Math.hypot(state.position.x - lastWp[0], state.position.y - lastWp[1])
+    : Infinity;
+  const nearConnector = Boolean(upcoming?.floor_transition)
+    && (progress.remainingDistance <= ENTER_CONNECTOR_M || distLift <= ENTER_CONNECTOR_M);
+  if (!leg?.floor_transition && !state.inFloorTransition && !onDestFloor() && nearConnector) {
+    if (enterConnectorLeg()) {
+      updateGuidanceFast();
+      return;
+    }
+  }
+  if (hasReachedDestination(progress)) {
+    showArrivalCelebration(ui.slotInput?.value?.trim() || "");
+    return;
+  }
+
+  // rebuild heavier UI occasionally
+  const now = performance.now();
+  if (now - lastFullRouteUiAt > 400) {
+    lastFullRouteUiAt = now;
+    updateRouteProgress();
+  }
+}
+
+function updateRouteStatus() {
   if (ui.confidenceState) ui.confidenceState.textContent = state.position.confidence.toFixed(2);
-  ui.metricDistance.textContent = state.route ? `${routeProgress().remainingDistance.toFixed(1)} m` : "—";
+  startNavGuidanceTick();
+  updateGuidanceFast();
   updateRouteProgress();
 }
 

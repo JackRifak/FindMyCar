@@ -599,6 +599,18 @@ class FloorRenameBody(BaseModel):
     new_floor: str
 
 
+class LandmarkPruneBody(BaseModel):
+    """Selective delete for 3D landmarks / feature DB (not a full map wipe)."""
+    floor: str | None = None
+    ids: list[int] | None = None
+    x_min: float | None = None
+    x_max: float | None = None
+    y_min: float | None = None
+    y_max: float | None = None
+    z_min: float | None = None
+    z_max: float | None = None
+
+
 def _persist_live_tags() -> None:
     tags_path = _site.index_dir / "tags.json"
     tags_data = _global_mapper.get_tags_3d()
@@ -711,6 +723,244 @@ def map_reset():
         except Exception as e:
             logger.warning("[API /map/reset] PnP reload failed: %s", e)
     return {"status": "success", "message": "all mapping sessions cleared"}
+
+
+def _prune_filters_ok(body: LandmarkPruneBody) -> bool:
+    return bool(
+        body.floor is not None
+        or body.ids
+        or body.x_min is not None or body.x_max is not None
+        or body.y_min is not None or body.y_max is not None
+        or body.z_min is not None or body.z_max is not None
+    )
+
+
+def _load_map_arrays():
+    """Load (pos, desc, ids, colors, floors, aligned) for prune rewrite."""
+    from fmc.floors import coerce_floor_array
+    from fmc.storage.h2gis_store import load_landmarks
+
+    npz_path = _site.index_dir / "map_landmarks.npz"
+    if npz_path.exists():
+        try:
+            data = np.load(npz_path, allow_pickle=True)
+            pos = np.asarray(data["positions"], dtype=np.float32)
+            desc = np.asarray(data["descriptors"], dtype=np.uint8)
+            ids = np.asarray(data["ids"], dtype=np.int32)
+            colors = (
+                np.asarray(data["colors"], dtype=np.uint8)
+                if "colors" in data.files
+                else np.tile(np.array([52, 199, 89], dtype=np.uint8), (len(ids), 1))
+            )
+            floors = coerce_floor_array(
+                data["floors"] if "floors" in data.files else None, n=len(ids)
+            )
+            aligned = False
+            if "aligned" in data.files:
+                try:
+                    aligned = bool(np.asarray(data["aligned"]).ravel()[0])
+                except Exception:
+                    aligned = False
+            return pos, desc, ids, colors, np.array(floors, dtype=object), aligned
+        except Exception as e:
+            logger.warning("[API prune] NPZ load failed: %s", e)
+
+    loaded = None
+    try:
+        loaded = load_landmarks(_site)
+    except Exception as e:
+        logger.warning("[API prune] H2GIS load failed: %s", e)
+    if loaded is None:
+        return None
+    pos, desc, ids, floors = loaded
+    colors = np.tile(np.array([52, 199, 89], dtype=np.uint8), (len(ids), 1))
+    aligned = bool(getattr(_global_mapper, "_is_aligned", False))
+    return pos, desc, ids, colors, np.asarray(floors, dtype=object), aligned
+
+
+def _keep_mask(pos, ids, floors, body: LandmarkPruneBody) -> np.ndarray:
+    """True = keep landmark. Filters AND together."""
+    n = len(ids)
+    drop = np.ones(n, dtype=bool)
+    if body.ids:
+        id_set = {int(i) for i in body.ids}
+        drop &= np.array([int(i) in id_set for i in ids], dtype=bool)
+    if body.floor is not None:
+        fid = normalize_floor_id(body.floor)
+        drop &= np.array(
+            [normalize_floor_id(f) == fid for f in floors.tolist()], dtype=bool
+        )
+    if body.x_min is not None:
+        drop &= pos[:, 0] >= float(body.x_min)
+    if body.x_max is not None:
+        drop &= pos[:, 0] <= float(body.x_max)
+    if body.y_min is not None:
+        drop &= pos[:, 1] >= float(body.y_min)
+    if body.y_max is not None:
+        drop &= pos[:, 1] <= float(body.y_max)
+    if body.z_min is not None:
+        drop &= pos[:, 2] >= float(body.z_min)
+    if body.z_max is not None:
+        drop &= pos[:, 2] <= float(body.z_max)
+    return ~drop
+
+
+def _write_ply_xyzrgb(path: Path, pos: np.ndarray, colors: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("ply\nformat ascii 1.0\n")
+        f.write(f"element vertex {len(pos)}\n")
+        f.write("property float x\nproperty float y\nproperty float z\n")
+        f.write("property uchar red\nproperty uchar green\nproperty uchar blue\n")
+        f.write("end_header\n")
+        for i in range(len(pos)):
+            x, y, z = float(pos[i, 0]), float(pos[i, 1]), float(pos[i, 2])
+            r, g, b = int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2])
+            f.write(f"{x:.4f} {y:.4f} {z:.4f} {r} {g} {b}\n")
+
+
+def _clear_landmark_artifacts() -> None:
+    for name in ("pointcloud.ply", "map_landmarks.npz"):
+        p = _site.index_dir / name
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError as e:
+                logger.warning("[API prune] Could not remove %s: %s", name, e)
+    for p in _site.index_dir.glob("map_landmarks_f*.npz"):
+        try:
+            p.unlink()
+        except OSError as e:
+            logger.warning("[API prune] Could not remove %s: %s", p, e)
+    try:
+        from fmc.storage.h2gis_store import delete_site_db
+        delete_site_db(_site)
+    except Exception as e:
+        logger.warning("[API prune] H2GIS wipe failed: %s", e)
+
+
+def _rewrite_landmark_artifacts(pos, desc, ids, colors, floors, aligned: bool) -> None:
+    import re
+    from fmc.storage.h2gis_store import replace_landmarks
+
+    out_dir = _site.index_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for p in out_dir.glob("map_landmarks_f*.npz"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+    replace_landmarks(
+        _site, pos, desc, ids, colors,
+        floors=floors, aligned=aligned,
+    )
+    np.savez_compressed(
+        out_dir / "map_landmarks.npz",
+        positions=pos,
+        descriptors=desc,
+        ids=ids,
+        colors=colors,
+        floors=floors,
+        aligned=np.array([aligned]),
+        frame="facility_xy_height",
+    )
+    for fid in sorted({str(f) for f in floors.tolist()}):
+        mask = np.array([str(f) == fid for f in floors.tolist()])
+        if not np.any(mask):
+            continue
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", fid)
+        np.savez_compressed(
+            out_dir / f"map_landmarks_f{safe}.npz",
+            positions=pos[mask],
+            descriptors=desc[mask],
+            ids=ids[mask],
+            colors=colors[mask],
+            floors=floors[mask],
+            aligned=np.array([aligned]),
+            frame="facility_xy_height",
+        )
+    _write_ply_xyzrgb(out_dir / "pointcloud.ply", pos, colors)
+
+
+@app.post("/map/landmarks/prune")
+def map_landmarks_prune(body: LandmarkPruneBody):
+    """Delete landmarks by floor, id list, and/or facility-frame bbox; rewrite feature DB."""
+    if not _prune_filters_ok(body):
+        raise HTTPException(
+            status_code=400,
+            detail="pass floor, ids, and/or bbox (x_min/x_max/y_min/y_max/z_min/z_max)",
+        )
+
+    arrays = _load_map_arrays()
+    if arrays is None:
+        # still drop any in-memory matches
+        n_mem = _global_mapper.drop_landmarks(
+            floor=body.floor,
+            ids=set(body.ids) if body.ids else None,
+            x_min=body.x_min, x_max=body.x_max,
+            y_min=body.y_min, y_max=body.y_max,
+            z_min=body.z_min, z_max=body.z_max,
+        )
+        return {
+            "status": "success",
+            "deleted": n_mem,
+            "remaining": len(_global_mapper.landmarks),
+            "message": "no on-disk landmarks",
+        }
+
+    pos, desc, ids, colors, floors, aligned = arrays
+    keep = _keep_mask(pos, ids, floors, body)
+    n_del = int((~keep).sum())
+    if n_del == 0:
+        return {
+            "status": "success",
+            "deleted": 0,
+            "remaining": int(len(ids)),
+            "message": "no landmarks matched filters",
+        }
+
+    # memory first so a later finalize cannot resurrect deleted points
+    _global_mapper.drop_landmarks(
+        floor=body.floor,
+        ids=set(body.ids) if body.ids else None,
+        x_min=body.x_min, x_max=body.x_max,
+        y_min=body.y_min, y_max=body.y_max,
+        z_min=body.z_min, z_max=body.z_max,
+    )
+    # also drop by id from keep mask (covers NPZ-only ids not in memory filters edge cases)
+    drop_ids = {int(i) for i in ids[~keep].tolist()}
+    for lid in drop_ids:
+        _global_mapper.landmarks.pop(lid, None)
+
+    n_keep = int(keep.sum())
+    if n_keep == 0:
+        _clear_landmark_artifacts()
+    else:
+        try:
+            _rewrite_landmark_artifacts(
+                pos[keep], desc[keep], ids[keep], colors[keep], floors[keep], aligned,
+            )
+        except Exception as e:
+            logger.error("[API /map/landmarks/prune] rewrite failed: %s", e)
+            raise HTTPException(status_code=500, detail="could not update feature db") from e
+
+    if _vpr_pipeline is not None:
+        try:
+            _vpr_pipeline.reload_map_index()
+        except Exception as e:
+            logger.warning("[API /map/landmarks/prune] PnP reload failed: %s", e)
+
+    logger.info(
+        "[API /map/landmarks/prune] deleted=%s remaining=%s floor=%s ids=%s",
+        n_del, n_keep, body.floor, len(body.ids or []),
+    )
+    return {
+        "status": "success",
+        "deleted": n_del,
+        "remaining": n_keep,
+        "floor": normalize_floor_id(body.floor) if body.floor is not None else None,
+    }
 
 
 @app.post("/map/keyframe")
@@ -1011,13 +1261,14 @@ def get_cloud_layers(max_per_floor: int = 8000):
                 data = np.load(npz)
                 pos = data["positions"]
                 fls = data["floors"] if "floors" in data.files else np.array(["1"] * len(pos))
-                loaded = (pos, None, None, fls)
+                lids = data["ids"] if "ids" in data.files else None
+                loaded = (pos, None, lids, fls)
             except Exception as e:
                 logger.warning("[API /map/cloud-layers] NPZ load failed: %s", e)
     if loaded is None:
         raise HTTPException(status_code=404, detail="No map landmarks for cloud layers")
 
-    positions, _desc, _ids, floors_arr = loaded
+    positions, _desc, ids_arr, floors_arr = loaded
     from fmc.floors import coerce_floor_array, normalize_floor_id
 
     labels = coerce_floor_array(floors_arr, n=len(positions))
@@ -1036,7 +1287,12 @@ def get_cloud_layers(max_per_floor: int = 8000):
             step = max(1, len(idxs) // max_n)
             idxs = idxs[::step][:max_n]
         pts = [[float(positions[i][0]), float(positions[i][1]), float(positions[i][2])] for i in idxs]
-        layers.append({"floor": fid, "positions": pts, "count": len(pts)})
+        ids = (
+            [int(ids_arr[i]) for i in idxs]
+            if ids_arr is not None
+            else []
+        )
+        layers.append({"floor": fid, "positions": pts, "ids": ids, "count": len(pts)})
         total += len(pts)
 
     aligned = False

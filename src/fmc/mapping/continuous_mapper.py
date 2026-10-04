@@ -835,6 +835,56 @@ class ContinuousMapper:
             })
         return results
 
+    def drop_landmarks(
+        self,
+        *,
+        floor: Optional[str] = None,
+        ids: Optional[set[int]] = None,
+        x_min: Optional[float] = None,
+        x_max: Optional[float] = None,
+        y_min: Optional[float] = None,
+        y_max: Optional[float] = None,
+        z_min: Optional[float] = None,
+        z_max: Optional[float] = None,
+    ) -> int:
+        """Remove matching landmarks from memory (AND of provided filters)."""
+        from fmc.floors import normalize_floor_id
+
+        floor_id = normalize_floor_id(floor) if floor is not None else None
+        id_set = {int(i) for i in ids} if ids else None
+        if (
+            floor_id is None
+            and id_set is None
+            and x_min is None and x_max is None
+            and y_min is None and y_max is None
+            and z_min is None and z_max is None
+        ):
+            return 0
+
+        drop: list[int] = []
+        for lid, lm in self.landmarks.items():
+            if id_set is not None and int(lid) not in id_set:
+                continue
+            if floor_id is not None and normalize_floor_id(getattr(lm, "floor", "1")) != floor_id:
+                continue
+            pt = lm.position
+            if x_min is not None and float(pt[0]) < x_min:
+                continue
+            if x_max is not None and float(pt[0]) > x_max:
+                continue
+            if y_min is not None and float(pt[1]) < y_min:
+                continue
+            if y_max is not None and float(pt[1]) > y_max:
+                continue
+            if z_min is not None and float(pt[2]) < z_min:
+                continue
+            if z_max is not None and float(pt[2]) > z_max:
+                continue
+            drop.append(int(lid))
+        for lid in drop:
+            self.landmarks.pop(lid, None)
+        return len(drop)
+
     def _export_to_ply(self, filepath: str) -> None:
         """Export the 3D landmarks to a standard Polygon File Format (.ply) point cloud with RGB color."""
         valid_landmarks = [

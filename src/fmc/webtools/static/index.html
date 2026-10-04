@@ -4,61 +4,109 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Find My Car — Floor Plan Editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
 <header id="topbar">
   <div class="brand">
-    <span class="brand-mark" aria-hidden="true">⌖</span>
-    <div><strong>Find My Car</strong><span>Floor plan editor</span></div>
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <strong>Floor Plan Editor</strong>
+      <span>Calibrate · paths · slots · survey</span>
+    </div>
   </div>
 
   <div class="topbar-actions">
     <div class="topbar-group">
-      <span class="group-label">Location</span>
-      <label>Site <select id="siteSelect" aria-label="Current site"></select></label>
-      <input id="newSiteId" type="text" placeholder="New site ID" aria-label="New site ID">
-      <button id="createSiteBtn" class="secondary-btn">Create site</button>
-      <label>Floor <select id="floorSelect" aria-label="Current floor"></select></label>
-      <input id="newFloorNum" type="text" placeholder="e.g. G, B1, 1" aria-label="New floor name" maxlength="16" style="width:7em;">
-      <button id="createFloorBtn" class="secondary-btn">Add floor</button>
+      <span class="group-label">Site</span>
+      <label class="field">
+        <span>Site</span>
+        <select id="siteSelect" aria-label="Current site"></select>
+      </label>
+      <input id="newSiteId" type="text" placeholder="new-site-id" aria-label="New site ID">
+      <button id="createSiteBtn" type="button" class="btn-ghost">Create</button>
+    </div>
+
+    <div class="topbar-group">
+      <span class="group-label">Floor</span>
+      <label class="field">
+        <span>Floor</span>
+        <select id="floorSelect" aria-label="Current floor"></select>
+      </label>
+      <input id="newFloorNum" type="text" placeholder="G, B1…" aria-label="New floor name" maxlength="16">
+      <button id="createFloorBtn" type="button" class="btn-ghost">Add</button>
     </div>
 
     <div class="topbar-group import-group">
-      <span class="group-label">Floor plan</span>
-      <label class="file-label">PDF <input id="pdfFile" type="file" accept="application/pdf"></label>
-      <label>Page <input id="pdfPage" type="number" value="0"></label>
-      <label>DPI <input id="pdfDpi" type="number" value="200"></label>
-      <button id="uploadPdfBtn">Render plan for floor</button>
+      <span class="group-label">Import</span>
+      <label class="file-label btn-ghost">PDF<input id="pdfFile" type="file" accept="application/pdf"></label>
+      <label class="field field--num">
+        <span>Page</span>
+        <input id="pdfPage" type="number" value="0" aria-label="PDF page">
+      </label>
+      <label class="field field--num">
+        <span>DPI</span>
+        <input id="pdfDpi" type="number" value="200" aria-label="Render DPI">
+      </label>
+      <button id="uploadPdfBtn" type="button" class="btn-accent">Render plan</button>
     </div>
   </div>
 </header>
 
 <nav id="modebar">
-  <div class="mode-tabs" aria-label="Editor mode">
-    <button class="mode-btn active" data-mode="view">Overview</button>
-    <button class="mode-btn" data-mode="control_points">1. Calibrate</button>
-    <button class="mode-btn" data-mode="segments">2. Paths</button>
-    <button class="mode-btn" data-mode="slots">3. Slots</button>
-    <button class="mode-btn" data-mode="capture_locations">4. Locations</button>
-    <button class="mode-btn" data-mode="query">5. Test</button>
+  <div class="mode-tabs" role="tablist" aria-label="Editor mode">
+    <button type="button" class="mode-btn active" data-mode="view">
+      <span class="mode-num">0</span><span class="mode-txt">Overview</span>
+    </button>
+    <button type="button" class="mode-btn" data-mode="control_points">
+      <span class="mode-num">1</span><span class="mode-txt">Calibrate</span>
+    </button>
+    <button type="button" class="mode-btn" data-mode="segments">
+      <span class="mode-num">2</span><span class="mode-txt">Paths</span>
+    </button>
+    <button type="button" class="mode-btn" data-mode="slots">
+      <span class="mode-num">3</span><span class="mode-txt">Slots</span>
+    </button>
+    <button type="button" class="mode-btn" data-mode="capture_locations">
+      <span class="mode-num">4</span><span class="mode-txt">Locations</span>
+    </button>
+    <button type="button" class="mode-btn" data-mode="query">
+      <span class="mode-num">5</span><span class="mode-txt">Test</span>
+    </button>
   </div>
-  <span id="statusMsg" role="status" aria-live="polite"></span>
+  <div class="modebar-right">
+    <span id="modeContext" class="mode-context">Click the plan to read facility X/Y</span>
+    <span id="statusMsg" class="status-msg" role="status" aria-live="polite"></span>
+  </div>
 </nav>
 
 <main>
   <section id="workspace" aria-label="Floor plan workspace">
     <div class="workspace-heading">
-      <div><span class="eyebrow">Workspace</span><strong>Floor plan canvas</strong></div>
+      <div>
+        <span class="eyebrow">Workspace</span>
+        <strong id="workspaceTitle">Floor plan canvas</strong>
+      </div>
       <div class="workspace-meta">
         <span id="coordReadout" class="coord-readout" aria-live="polite">Click the plan to read real X/Y</span>
-        <span class="canvas-help">Scroll to zoom · right-drag to pan</span>
+        <div class="canvas-tools">
+          <button type="button" id="zoomOutBtn" class="tool-btn" title="Zoom out">−</button>
+          <button type="button" id="zoomFitBtn" class="tool-btn" title="Fit plan">Fit</button>
+          <button type="button" id="zoomInBtn" class="tool-btn" title="Zoom in">+</button>
+          <span class="canvas-help">Scroll zoom · right-drag pan</span>
+        </div>
       </div>
     </div>
     <div id="canvasWrap">
-    <canvas id="mapCanvas" width="900" height="700"></canvas>
-    <div id="canvasHint">Load a site and render a floor plan to begin. Scroll to zoom, right-drag to pan.</div>
+      <canvas id="mapCanvas" width="900" height="700"></canvas>
+      <div id="canvasHint">
+        <strong>No plan loaded</strong>
+        <span>Pick a site &amp; floor, then render a PDF page to begin.</span>
+      </div>
     </div>
   </section>
 
@@ -67,11 +115,13 @@
     <section id="panel-view" class="panel">
       <p class="panel-kicker">Overview</p>
       <h3>Map layers</h3>
-      <label><input type="checkbox" id="toggleLocations" checked> Ingested capture locations</label>
-      <label><input type="checkbox" id="toggleSegments" checked> Walkable paths</label>
-      <label><input type="checkbox" id="toggleSlots" checked> Parking slots</label>
-      <h3 style="margin-top:1.1em">Selected point</h3>
-      <p class="hint">Click anywhere on the floor plan to convert that pixel through the saved transform into facility metres.</p>
+      <p class="hint">Toggle overlays and click the plan to convert a pixel into facility metres.</p>
+      <div class="toggle-list">
+        <label class="toggle"><input type="checkbox" id="toggleLocations" checked><span>Capture locations</span></label>
+        <label class="toggle"><input type="checkbox" id="toggleSegments" checked><span>Walkable paths</span></label>
+        <label class="toggle"><input type="checkbox" id="toggleSlots" checked><span>Parking slots</span></label>
+      </div>
+      <h3 class="panel-sub">Selected point</h3>
       <div id="probeCoords" class="probe-coords">
         <div><span>Pixel</span><strong id="probePx">—</strong></div>
         <div><span>Real X</span><strong id="probeX">—</strong></div>
@@ -81,58 +131,69 @@
     </section>
 
     <section id="panel-control_points" class="panel" style="display:none">
-      <p class="panel-kicker">Step 1 · Calibrate</p><h3>Control points</h3>
-      <p class="hint">Per-floor calibration. Click points on this floor's plan and enter REAL-WORLD
-      coordinates (metres). Need 3+ non-collinear points, ideally 4+. Switching floors loads that
-      floor's own control points / transform.</p>
-      <div id="controlPointsList"></div>
-      <button id="saveControlPointsBtn">Save points</button>
-      <button id="fitTransformBtn">Fit &amp; Check</button>
+      <p class="panel-kicker">Step 1 · Calibrate</p>
+      <h3>Control points</h3>
+      <p class="hint">Click 3+ non-collinear points on this floor’s plan and enter real-world metres. Prefer 4+ corners. Each floor has its own transform.</p>
+      <div id="controlPointsList" class="list-stack"></div>
+      <div class="action-row">
+        <button type="button" id="saveControlPointsBtn" class="btn-secondary">Save points</button>
+        <button type="button" id="fitTransformBtn">Fit &amp; check</button>
+      </div>
       <div id="fitResult"></div>
-      <button id="saveTransformBtn" disabled>Save Transform</button>
+      <div class="action-row sticky-actions">
+        <button type="button" id="saveTransformBtn" class="btn-accent" disabled>Save transform</button>
+      </div>
     </section>
 
     <section id="panel-segments" class="panel" style="display:none">
-      <p class="panel-kicker">Step 2 · Map</p><h3>Walkable paths</h3>
-      <p class="hint">Click pairs of points along each corridor centerline (click one end, then the
-      other). Click connected pairs so segments share corners — small gaps (&lt;0.3m) auto-merge.</p>
-      <div id="segmentsList"></div>
-      <button id="undoSegmentBtn">Undo last</button>
-      <button id="saveSegmentsBtn">Save segments</button>
+      <p class="panel-kicker">Step 2 · Paths</p>
+      <h3>Walkable paths</h3>
+      <p class="hint">Click corridor endpoints in pairs. Shared corners within ~0.3&nbsp;m auto-merge.</p>
+      <div id="segmentsList" class="list-stack"></div>
+      <div class="action-row">
+        <button type="button" id="undoSegmentBtn" class="btn-secondary">Undo last</button>
+        <button type="button" id="saveSegmentsBtn" class="btn-accent">Save segments</button>
+      </div>
     </section>
 
     <section id="panel-slots" class="panel" style="display:none">
-      <p class="panel-kicker">Step 3 · Mark</p><h3>Parking slots</h3>
-      <p class="hint">Click a slot location, then fill in its ID and zone.</p>
-      <div id="slotsList"></div>
-      <button id="saveSlotsBtn">Save slots</button>
+      <p class="panel-kicker">Step 3 · Slots</p>
+      <h3>Parking slots</h3>
+      <p class="hint">Click a bay on the plan, then set its ID and zone.</p>
+      <div id="slotsList" class="list-stack"></div>
+      <div class="action-row sticky-actions">
+        <button type="button" id="saveSlotsBtn" class="btn-accent">Save slots</button>
+      </div>
     </section>
 
     <section id="panel-capture_locations" class="panel" style="display:none">
-      <p class="panel-kicker">Step 4 · Survey</p><h3>Capture locations &amp; photos</h3>
-      <p class="hint">Click an existing marker to select it, or click empty space to create a new
-      capture location. Each location holds multiple reference photos, each with its own heading
-      (0-360°, clockwise from facility north).</p>
+      <p class="panel-kicker">Step 4 · Survey</p>
+      <h3>Capture locations</h3>
+      <p class="hint">Click a marker to edit photos, or empty space to create a location. Each photo has its own heading (0–360° from facility north).</p>
 
       <div class="embedding-build-panel">
-        <p class="hint">Build or refresh the site-wide search index after adding or removing reference photos.</p>
-        <button id="buildIndexBtn">Build embeddings</button>
+        <p class="hint">Refresh the site-wide search index after photo changes.</p>
+        <button type="button" id="buildIndexBtn">Build embeddings</button>
         <div id="buildIndexStatus" class="hint" role="status" aria-live="polite"></div>
       </div>
 
       <div id="newLocationForm" style="display:none">
-        <p class="hint" style="margin-top:0">New location at the point you clicked:</p>
-        <label>ID <input type="text" id="newLocationId" placeholder="e.g. loc_05"></label>
-        <label>Zone <input type="text" id="newLocationZone" placeholder="e.g. Zone_A"></label>
-        <button id="createLocationBtn">Create</button>
-        <button id="cancelNewLocationBtn" class="secondary-btn">Cancel</button>
+        <p class="hint" style="margin-top:0">New location at the clicked point:</p>
+        <label class="stack-label">ID <input type="text" id="newLocationId" placeholder="e.g. loc_05"></label>
+        <label class="stack-label">Zone <input type="text" id="newLocationZone" placeholder="e.g. Zone_A"></label>
+        <div class="action-row">
+          <button type="button" id="createLocationBtn" class="btn-accent">Create</button>
+          <button type="button" id="cancelNewLocationBtn" class="btn-secondary">Cancel</button>
+        </div>
       </div>
 
       <div id="selectedLocationPanel" style="display:none">
         <div class="selected-location-header">
-          <strong id="selectedLocationId"></strong>
-          <span id="selectedLocationZone" class="hint"></span>
-          <button id="deleteLocationBtn" class="danger-btn" title="Delete this location and all its photos">Delete location</button>
+          <div>
+            <strong id="selectedLocationId"></strong>
+            <span id="selectedLocationZone" class="hint"></span>
+          </div>
+          <button type="button" id="deleteLocationBtn" class="danger-btn" title="Delete this location and all its photos">Delete</button>
         </div>
 
         <div id="photoGrid"></div>
@@ -145,15 +206,22 @@
     </section>
 
     <section id="panel-query" class="panel" style="display:none">
-      <p class="panel-kicker">Step 5 · Verify</p><h3>Test query</h3>
-      <p class="hint">Upload a real photo to see where VPR thinks it is.</p>
-      <input type="file" id="queryFile" accept="image/*">
-      <button id="runQueryBtn">Localize</button>
+      <p class="panel-kicker">Step 5 · Test</p>
+      <h3>Localize a photo</h3>
+      <p class="hint">Upload a query image to see where VPR places it on this floor.</p>
+      <label class="file-label btn-secondary">Choose image
+        <input type="file" id="queryFile" accept="image/*">
+      </label>
+      <div class="action-row">
+        <button type="button" id="runQueryBtn" class="btn-accent">Localize</button>
+      </div>
       <div id="queryResult"></div>
 
-      <h4>Route to slot</h4>
-      <select id="routeSlotSelect"></select>
-      <button id="runRouteBtn" disabled>Show route</button>
+      <h4 class="panel-sub">Route to slot</h4>
+      <select id="routeSlotSelect" aria-label="Destination slot"></select>
+      <div class="action-row">
+        <button type="button" id="runRouteBtn" class="btn-secondary" disabled>Show route</button>
+      </div>
       <div id="routeResult"></div>
     </section>
 

@@ -2,150 +2,630 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Find My Car - 3D Mapper</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Find My Car — Mapper</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 0; background: #111; color: white; }
-        .video-container { position: relative; width: 100vw; height: 60vh; background: #000; overflow: hidden; }
-        video { width: 100%; height: 100%; object-fit: cover; }
+        :root {
+            --bg: #0e1116;
+            --bg-elev: #161b22;
+            --bg-panel: #1a212b;
+            --line: #2a3340;
+            --text: #e8edf4;
+            --muted: #8b97a8;
+            --accent: #3db8a8;
+            --accent-dim: rgba(61, 184, 168, 0.16);
+            --blue: #3b82f6;
+            --warn: #e8a23a;
+            --danger: #e5484d;
+            --ok: #3ecf8e;
+            --radius: 10px;
+            --safe-b: env(safe-area-inset-bottom, 0px);
+            --safe-t: env(safe-area-inset-top, 0px);
+        }
+
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            font-family: "IBM Plex Sans", system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .hidden { display: none !important; }
+
+        /* ── top bar ── */
+        .topbar {
+            padding: calc(8px + var(--safe-t)) 12px 8px;
+            background: linear-gradient(180deg, #141a22 0%, #10151c 100%);
+            border-bottom: 1px solid var(--line);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .topbar__row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .brand {
+            font-weight: 700;
+            font-size: 15px;
+            letter-spacing: -0.02em;
+            color: var(--accent);
+            white-space: nowrap;
+            padding-right: 4px;
+        }
+        .chip-field {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--bg-elev);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 4px 8px;
+            min-width: 0;
+        }
+        .chip-field label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .chip-field select,
+        .chip-field input {
+            background: transparent;
+            border: none;
+            color: var(--text);
+            font: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            outline: none;
+            min-width: 0;
+        }
+        .chip-field select { max-width: 5.5rem; }
+        .chip-field input { width: 3.6rem; font-weight: 500; color: var(--muted); }
+        .chip-field input::placeholder { color: #5a6575; }
+
+        .btn-ghost {
+            flex: none;
+            padding: 7px 10px;
+            font-size: 12px;
+            font-weight: 600;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            background: var(--bg-elev);
+            color: var(--text);
+            cursor: pointer;
+        }
+        .btn-ghost:active { background: #222a35; }
+
+        .settings-panel {
+            display: none;
+            gap: 8px;
+            align-items: center;
+            padding-top: 2px;
+        }
+        .settings-panel.is-open { display: flex; }
+        .settings-panel input[type="text"] {
+            flex: 1;
+            background: var(--bg-elev);
+            border: 1px solid var(--line);
+            color: var(--text);
+            padding: 8px 10px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-family: "IBM Plex Mono", monospace;
+        }
+
+        /* ── camera ── */
+        .video-container {
+            position: relative;
+            width: 100%;
+            height: min(52vh, 420px);
+            background:
+                radial-gradient(ellipse at 30% 20%, rgba(61,184,168,0.08), transparent 50%),
+                #05070a;
+            overflow: hidden;
+        }
+        video, #ar-preview {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        #ar-preview {
+            display: none;
+            position: absolute;
+            inset: 0;
+            background: #000;
+        }
         canvas { display: none; }
-        #features-canvas { display: block !important; position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
-        .controls { padding: 15px; display: flex; flex-direction: column; gap: 10px; }
-        .row { display: flex; gap: 10px; }
-        button { flex: 1; padding: 15px; border-radius: 8px; border: none; font-size: 16px; font-weight: bold; cursor: pointer; }
-        .primary { background: #007aff; color: white; }
-        .danger { background: #ff3b30; color: white; }
-        .success { background: #34c759; color: white; }
-        
-        /* Modal for Floorplan picker */
-        #map-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 100; flex-direction: column; }
+        #features-canvas {
+            display: block !important;
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 5;
+        }
+
+        .hud-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .hud-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+        .badge {
+            display: inline-block;
+            padding: 5px 9px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            backdrop-filter: blur(8px);
+        }
+        .badge-success { background: rgba(62, 207, 142, 0.92); color: #062016; }
+        .badge-warning { background: rgba(232, 162, 58, 0.92); color: #1a1204; }
+        .badge-info { background: rgba(61, 184, 168, 0.92); color: #041512; }
+        .hud-telemetry {
+            background: rgba(10, 14, 20, 0.78);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 11px;
+            line-height: 1.45;
+            color: var(--accent);
+            max-width: 20rem;
+        }
+
+        /* ── session strip ── */
+        .session-strip {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 8px 14px;
+            background: var(--bg-elev);
+            border-bottom: 1px solid var(--line);
+            font-size: 12px;
+        }
+        .session-strip__left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            color: var(--muted);
+        }
+        .session-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #4a5568;
+            flex: none;
+        }
+        .session-dot.is-live {
+            background: var(--ok);
+            box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.25);
+        }
+        .session-dot.is-paused { background: var(--warn); }
+        #session-label { font-weight: 600; color: var(--text); }
+        #session-meta {
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 11px;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        /* ── controls ── */
+        .controls {
+            padding: 12px 12px calc(16px + var(--safe-b));
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .panel {
+            background: var(--bg-panel);
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .panel__head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .panel__title {
+            margin: 0;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+        .panel__hint {
+            margin: 0;
+            font-size: 11px;
+            color: #6b7687;
+        }
+        .row { display: flex; gap: 8px; }
+        .row--wrap { flex-wrap: wrap; }
+
+        button {
+            flex: 1;
+            padding: 13px 12px;
+            border-radius: var(--radius);
+            border: none;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.08s ease, opacity 0.15s ease, background 0.15s ease;
+        }
+        button:active { transform: scale(0.98); }
+        button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+        .btn-primary { background: var(--blue); color: #fff; }
+        .btn-accent { background: var(--accent); color: #06241f; }
+        .btn-danger { background: var(--danger); color: #fff; }
+        .btn-success { background: var(--ok); color: #062016; }
+        .btn-soft {
+            background: #222a35;
+            color: var(--text);
+            border: 1px solid var(--line);
+        }
+        .btn-soft.is-on {
+            background: var(--accent-dim);
+            color: var(--accent);
+            border-color: rgba(61, 184, 168, 0.45);
+        }
+        .btn-warn-outline {
+            background: transparent;
+            color: var(--warn);
+            border: 1px solid rgba(232, 162, 58, 0.45);
+        }
+        .btn-danger-outline {
+            background: transparent;
+            color: var(--danger);
+            border: 1px solid rgba(229, 72, 77, 0.45);
+        }
+        .btn-lg { padding: 16px 14px; font-size: 16px; }
+
+        /* legacy class hooks used by older JS paths */
+        .primary { background: var(--blue); color: #fff; }
+        .danger { background: var(--danger); color: #fff; }
+        .success { background: var(--ok); color: #062016; }
+
+        #status {
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 12px;
+            color: var(--muted);
+            padding: 0 2px;
+            word-break: break-word;
+            line-height: 1.4;
+        }
+
+        details.debug {
+            background: var(--bg-elev);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        details.debug > summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 10px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--muted);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            user-select: none;
+        }
+        details.debug > summary::-webkit-details-marker { display: none; }
+        details.debug[open] > summary { border-bottom: 1px solid var(--line); color: var(--accent); }
+        .debug__body { padding: 10px 12px 12px; }
+        .debug__toolbar {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 6px;
+        }
+        #debug-log-entries {
+            max-height: 130px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column-reverse;
+            gap: 3px;
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 11px;
+            color: #b0bac8;
+        }
+
+        /* ── modals ── */
+        #map-modal, #viewer-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 100;
+            flex-direction: column;
+            background: #000;
+        }
+        #viewer-modal { z-index: 200; background: #0a0c10; }
+        #map-modal { background: rgba(0,0,0,0.94); }
         #map-container { flex: 1; overflow: auto; position: relative; }
         #floorplan-canvas { cursor: crosshair; display: block; }
-        #map-marker { position: absolute; width: 12px; height: 12px; background: red; border-radius: 50%; transform: translate(-50%, -50%); display: none; pointer-events: none; border: 2px solid white; }
-        .modal-controls { padding: 15px; background: #222; display: flex; gap: 10px; flex-shrink: 0; padding-bottom: max(15px, env(safe-area-inset-bottom)); }
-        
-        /* Modal for 3D Viewer */
-        #viewer-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 200; flex-direction: column; }
-        #viewer-container { flex: 1; overflow: hidden; position: relative; }
-        
-        /* Telemetry HUD & Badges */
-        .hud-overlay { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; z-index: 10; }
-        .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; width: fit-content; text-transform: uppercase; letter-spacing: 0.5px; }
-        .badge-success { background: #34c759; color: black; }
-        .badge-warning { background: #ff9500; color: black; }
-        .badge-info { background: #007aff; color: white; }
-        .hud-telemetry { background: rgba(0, 0, 0, 0.75); border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 8px 10px; font-family: monospace; font-size: 11px; line-height: 1.4; color: #34c759; text-shadow: 0 0 2px rgba(52, 199, 89, 0.5); backdrop-filter: blur(4px); }
-        
-        /* Server config bar */
-        .config-bar { padding: 8px 15px; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; display: flex; gap: 8px; align-items: center; font-size: 12px; }
-        .config-bar input { flex: 1; background: #2a2a2a; border: 1px solid #444; color: white; padding: 6px 8px; border-radius: 4px; font-size: 12px; }
-        .config-bar button { padding: 6px 12px; font-size: 12px; border-radius: 4px; border: none; cursor: pointer; background: #444; color: white; }
-        
-        #status { font-family: monospace; font-size: 12px; color: #aaa; margin-top: 10px; word-break: break-all; }
+        #map-marker {
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            background: var(--danger);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+            pointer-events: none;
+            border: 2px solid #fff;
+            box-shadow: 0 0 0 4px rgba(229, 72, 77, 0.25);
+        }
+
+        .modal-controls {
+            padding: 12px 12px calc(12px + var(--safe-b));
+            background: #141a22;
+            border-top: 1px solid var(--line);
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        #viewer-container {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: hidden;
+            position: relative;
+            touch-action: none;
+        }
+        #select-rect {
+            display: none;
+            position: absolute;
+            z-index: 215;
+            border: 2px solid var(--danger);
+            background: rgba(229, 72, 77, 0.16);
+            pointer-events: none;
+            box-sizing: border-box;
+            border-radius: 2px;
+        }
+        #viewer-modal.select-mode #viewer-container { cursor: crosshair; }
+
+        .viewer-topbar {
+            flex: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: calc(10px + var(--safe-t)) 12px 10px;
+            background: #141a22;
+            border-bottom: 1px solid var(--line);
+            z-index: 220;
+        }
+        #viewer-stats {
+            flex: 1;
+            min-width: 0;
+            background: rgba(10, 14, 20, 0.55);
+            padding: 8px 10px;
+            border-radius: 8px;
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 11px;
+            color: var(--accent);
+            border: 1px solid rgba(255,255,255,0.1);
+            line-height: 1.35;
+        }
+        #btn-close-viewer {
+            flex: 0 0 auto;
+            min-width: 5.5rem;
+            padding: 12px 16px;
+            font-size: 14px;
+        }
+        .viewer-toolbar {
+            flex: none;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+            justify-content: flex-start;
+            background: #141a22;
+            border-top: 1px solid var(--line);
+            padding: 10px 12px calc(10px + var(--safe-b));
+            z-index: 220;
+        }
+        .viewer-toolbar .gap-ctl {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            font-size: 11px;
+            color: var(--muted);
+            flex: 1 1 140px;
+            min-width: 140px;
+        }
+        .viewer-toolbar .gap-ctl input[type="range"] { flex: 1; min-width: 70px; }
+        .viewer-toolbar .gap-ctl span {
+            color: var(--accent);
+            font-family: "IBM Plex Mono", monospace;
+            min-width: 2.6em;
+        }
+        .viewer-toolbar button {
+            flex: 0 0 auto;
+            padding: 10px 12px;
+            font-size: 12px;
+            border-radius: 8px;
+            box-shadow: none;
+        }
+        .viewer-toolbar button.is-active {
+            background: var(--danger);
+            color: #fff;
+        }
+        #btn-delete-selection:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        @media (min-width: 720px) {
+            .video-container { height: min(58vh, 520px); }
+            .controls { max-width: 720px; margin: 0 auto; }
+        }
     </style>
 </head>
 <body>
-    <div class="config-bar">
-        <label for="server-url">Server:</label>
-        <input type="text" id="server-url" placeholder="Backend URL (leave empty for current host)">
-        <button id="btn-save-server">Set</button>
-        <label for="map-floor" style="margin-left:8px;">Floor:</label>
-        <select id="map-floor" title="Active mapping floor"></select>
-        <input id="new-floor-name" type="text" placeholder="G, B1…" maxlength="16" title="New floor label" style="flex:0 0 4.5em; width:4.5em;">
-        <button id="btn-add-floor" title="Add floor to site config">Add</button>
-        <button id="btn-rename-floor" title="Rename selected floor">Rename</button>
-    </div>
+    <header class="topbar">
+        <div class="topbar__row">
+            <div class="brand">Mapper</div>
+            <div class="chip-field" style="flex:1;">
+                <label for="map-floor">Floor</label>
+                <select id="map-floor" title="Active mapping floor"></select>
+                <input id="new-floor-name" type="text" placeholder="G, B1…" maxlength="16" title="New floor label">
+            </div>
+            <button type="button" class="btn-ghost" id="btn-add-floor" title="Add floor">Add</button>
+            <button type="button" class="btn-ghost" id="btn-rename-floor" title="Rename selected floor">Rename</button>
+            <button type="button" class="btn-ghost" id="btn-toggle-settings" title="Server settings" aria-expanded="false">Server</button>
+        </div>
+        <div class="settings-panel" id="settings-panel">
+            <input type="text" id="server-url" placeholder="Backend URL (empty = this host)">
+            <button type="button" class="btn-ghost" id="btn-save-server">Save</button>
+        </div>
+    </header>
 
     <div class="video-container">
         <video id="video" autoplay playsinline muted></video>
-        <img id="ar-preview" alt="" style="display:none; width:100%; height:100%; object-fit:cover; position:absolute; inset:0; background:#000;">
+        <img id="ar-preview" alt="">
         <canvas id="features-canvas"></canvas>
         <canvas id="canvas"></canvas>
         <div class="hud-overlay">
-            <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
-                <div id="tracking-badge" class="badge badge-warning">WebXR: Initializing...</div>
-                <div id="features-badge" class="badge badge-info" style="display: none; background: rgba(0, 220, 255, 0.9); color: black;">Features: 0</div>
+            <div class="hud-row">
+                <div id="tracking-badge" class="badge badge-warning">Tracking…</div>
+                <div id="features-badge" class="badge badge-info" style="display:none;">Features: 0</div>
             </div>
-            <div id="pose-hud" class="hud-telemetry" style="display: none;">
-                <div><strong>AR Pose (6-DOF):</strong></div>
+            <div id="pose-hud" class="hud-telemetry" style="display:none;">
+                <div><strong>AR pose</strong></div>
                 <div id="hud-pos">X: 0.000m | Y: 0.000m | Z: 0.000m</div>
-                <div id="hud-rot" style="color: #888;">Q: [0, 0, 0, 1]</div>
+                <div id="hud-rot" style="color:#8b97a8;">Q: [0, 0, 0, 1]</div>
             </div>
         </div>
+    </div>
+
+    <div class="session-strip">
+        <div class="session-strip__left">
+            <span class="session-dot" id="session-dot"></span>
+            <span id="session-label">Idle</span>
+        </div>
+        <div id="session-meta">Floor — · 0 kf</div>
     </div>
 
     <div class="controls">
-        <div class="row">
-            <button id="btn-start" class="primary">Start AR Mapping</button>
-            <button id="btn-stop" class="danger" style="display:none;">Pause Mapping</button>
-        </div>
-        
-        <div class="row">
-            <button id="btn-show-tag" class="primary" style="display:none;">Drop Tag</button>
-            <button id="btn-finalize" class="success" style="display:none;">Finalize 3D Map</button>
-        </div>
-        <div class="row">
-            <button id="btn-new-walk" style="display:none; background:#333; color:#ff9500; border:1px solid #ff9500;">New Session</button>
-            <button id="btn-clear-map" style="display:none; background:#333; color:#ff3b30; border:1px solid #ff3b30;">Clear Map</button>
-        </div>
-        <div class="row">
-            <button id="btn-view-3d" class="primary">View 3D Point Cloud</button>
-            <button id="btn-toggle-features" style="background: #222; color: #34c759; border: 1px solid #34c759;">Features: ON</button>
-        </div>
-        
-        <div id="status">Ready. Tap 'Start Mapping' to begin.</div>
-        
-        <!-- Live Debug Log Panel for Mobile Diagnostic Visibility -->
-        <div style="margin-top: 8px; background: #18191c; border: 1px solid #2e3035; border-radius: 6px; padding: 10px; font-family: monospace; font-size: 11px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; color: #888;">
-                <span style="font-weight: bold; color: #34c759;">LIVE DEBUG LOG:</span>
-                <button id="btn-clear-log" style="flex: none; padding: 3px 8px; font-size: 10px; background: #333; color: #bbb; border-radius: 4px; border: none; cursor: pointer;">Clear</button>
+        <section class="panel">
+            <div class="panel__head">
+                <h2 class="panel__title">Walk</h2>
+                <p class="panel__hint">Capture keyframes while walking</p>
             </div>
-            <div id="debug-log-entries" style="max-height: 120px; overflow-y: auto; display: flex; flex-direction: column-reverse; gap: 3px; color: #ccc;">
-                <div style="color: #666;">System ready.</div>
+            <div class="row">
+                <button id="btn-start" class="btn-primary btn-lg">Start AR Mapping</button>
+                <button id="btn-stop" class="btn-danger btn-lg hidden">Pause</button>
             </div>
-        </div>
+            <div class="row">
+                <button id="btn-show-tag" class="btn-soft hidden">Drop Tag</button>
+                <button id="btn-finalize" class="btn-success hidden">Finalize Map</button>
+            </div>
+            <div class="row">
+                <button id="btn-new-walk" class="btn-warn-outline hidden">New Session</button>
+                <button id="btn-clear-map" class="btn-danger-outline hidden">Clear Map</button>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel__head">
+                <h2 class="panel__title">Point cloud</h2>
+                <p class="panel__hint">Inspect &amp; prune in 3D</p>
+            </div>
+            <div class="row">
+                <button id="btn-view-3d" class="btn-accent">View 3D Cloud</button>
+                <button id="btn-toggle-features" class="btn-soft is-on">Features: ON</button>
+            </div>
+            <div class="row">
+                <button id="btn-prune-floor" class="btn-danger-outline">Delete Floor Cloud</button>
+            </div>
+        </section>
+
+        <div id="status">Ready. Choose a floor, then start mapping.</div>
+
+        <details class="debug">
+            <summary>
+                <span>Debug log</span>
+                <span style="font-weight:500; opacity:0.7;">tap to expand</span>
+            </summary>
+            <div class="debug__body">
+                <div class="debug__toolbar">
+                    <button type="button" id="btn-clear-log" class="btn-ghost" style="padding:4px 10px; font-size:11px;">Clear</button>
+                </div>
+                <div id="debug-log-entries">
+                    <div style="color:#5a6575;">System ready.</div>
+                </div>
+            </div>
+        </details>
     </div>
 
-    <!-- Map Picker Modal -->
+    <!-- Map picker -->
     <div id="map-modal">
         <div id="map-container">
             <canvas id="floorplan-canvas"></canvas>
             <div id="map-marker"></div>
         </div>
         <div class="modal-controls">
-            <button id="btn-cancel-tag" class="danger">Cancel</button>
-            <button id="btn-submit-tag" class="success" disabled>Confirm Location</button>
+            <button id="btn-cancel-tag" class="btn-danger">Cancel</button>
+            <button id="btn-submit-tag" class="btn-success" disabled>Confirm Location</button>
         </div>
     </div>
 
-    <!-- 3D Viewer Modal -->
+    <!-- 3D viewer -->
     <div id="viewer-modal">
-        <div style="position: absolute; top: 15px; left: 15px; right: 15px; z-index: 210; display: flex; justify-content: space-between; align-items: center; pointer-events: none;">
-            <div id="viewer-stats" style="background: rgba(0,0,0,0.8); padding: 8px 12px; border-radius: 6px; font-family: monospace; font-size: 12px; color: #34c759; border: 1px solid rgba(255,255,255,0.2);">Loading 3D Point Cloud...</div>
-            <div style="display:flex; gap:8px; align-items:center; pointer-events:auto;">
-                <label for="stack-m-input" style="display:flex; align-items:center; gap:6px; background:rgba(0,0,0,0.8); padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.2); font-size:11px; color:#ccc;">
-                    Floor gap
-                    <input id="stack-m-input" type="range" min="1" max="20" step="0.5" value="4" style="width:90px;">
-                    <span id="stack-m-val" style="color:#34c759; font-family:monospace; min-width:2.5em;">4.0m</span>
-                </label>
-                <button id="btn-toggle-3d-landmarks" style="padding: 7px 14px; font-size: 12px; font-weight: bold; background: #ff9500; color: #000; border: none; border-radius: 6px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.5);">📍 Landmarks: ON</button>
-            </div>
+        <div class="viewer-topbar">
+            <div id="viewer-stats">Loading 3D point cloud…</div>
+            <button type="button" id="btn-close-viewer" class="btn-danger">Back</button>
         </div>
-        <div id="viewer-container"></div>
-        <div class="modal-controls">
-            <button id="btn-close-viewer" class="danger">Close 3D View</button>
+        <div id="viewer-container">
+            <div id="select-rect"></div>
+        </div>
+        <div class="viewer-toolbar">
+            <label class="gap-ctl" for="stack-m-input">
+                Gap
+                <input id="stack-m-input" type="range" min="1" max="20" step="0.5" value="4">
+                <span id="stack-m-val">4.0m</span>
+            </label>
+            <button type="button" id="btn-select-region" class="btn-soft">Select</button>
+            <button type="button" id="btn-clear-selection" class="btn-soft hidden">Clear</button>
+            <button type="button" id="btn-delete-selection" class="btn-danger" disabled>Delete Selected</button>
+            <button type="button" id="btn-viewer-prune-floor" class="btn-danger-outline">Delete Floor</button>
+            <button type="button" id="btn-toggle-3d-landmarks" class="btn-soft is-on">Tags: ON</button>
         </div>
     </div>
 
-    <!-- Three.js Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-
-    <!-- ARCore 6-DOF bridge (Capacitor native); no-op in plain browser -->
     <script src="ar-vio.js"></script>
-    <!-- Cache-buster to ensure the latest JS is loaded on mobile -->
     <script>
         const script = document.createElement('script');
         script.src = 'mapping.js?v=' + Date.now();
