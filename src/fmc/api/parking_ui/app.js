@@ -2,6 +2,9 @@ const ARRIVE_M = 2.0; // along-route remaining / approach-node threshold
 const ARRIVE_SLOT_M = 8.0; // euclidean to slot (bays sit off the walkable line)
 const LEG_ADVANCE_M = 0.7; // snap to next walk leg
 const ENTER_CONNECTOR_M = 3.0; // enter lift/stairs guidance (PDR freezes in elevator)
+/** after this + walk motion, assume user exited lift (camera-nav used VPR; XR often can't) */
+const ELEVATOR_AUTO_MS = 7000;
+const ELEVATOR_WALK_MOTION = 1.6;
 const SKIP_CALIBRATION = true; // temporarily bypass phone calibration UI
 
 const state = {
@@ -26,6 +29,7 @@ const state = {
   routeScreenPoint: null,
   activeLegIndex: 0,
   inFloorTransition: false,
+  floorTransitionAt: 0, // when elevator/stairs guidance started
   arrivedShown: false,
   liveVpr: {
     running: false,
@@ -110,6 +114,7 @@ const ui = {
   arriveOverlay: document.getElementById("arriveOverlay"),
   arriveSlot: document.getElementById("arriveSlot"),
   arriveDismissBtn: document.getElementById("arriveDismissBtn"),
+  floorContinueBtn: document.getElementById("floorContinueBtn"),
   arStage: document.getElementById("arStage"),
   arCanvas: document.getElementById("arCanvas"),
   floorArrows: document.getElementById("floorArrows"),
@@ -179,15 +184,53 @@ function hideArrivalCelebration() {
   if (ui.arriveOverlay) ui.arriveOverlay.hidden = true;
 }
 
+function normFloor(f) {
+  const s = String(f ?? "").trim();
+  return s || "1";
+}
+
+function sameFloor(a, b) {
+  return normFloor(a).toLowerCase() === normFloor(b).toLowerCase();
+}
+
 function destFloorId() {
   if (!state.route) return null;
-  return String(state.route.dest_floor ?? state.route.floor);
+  return normFloor(state.route.dest_floor ?? state.route.floor);
 }
 
 function onDestFloor() {
   const dest = destFloorId();
   if (!dest) return false;
-  return String(state.position.floor ?? "") === dest;
+  return sameFloor(state.position.floor, dest);
+}
+
+function setFloorContinueVisible(on, toFloor = "") {
+  // fallback only — primary path auto-detects like camera-nav VPR
+  const btn = ui.floorContinueBtn;
+  if (!btn) return;
+  btn.hidden = !on;
+  if (on) {
+    btn.textContent = toFloor
+      ? `I'm on Floor ${toFloor} — continue`
+      : "I've left the elevator — continue";
+  }
+  ui.turnBanner?.classList.toggle("turn-banner--action", Boolean(on));
+}
+
+/** resume live VPR during XR elevator so landing floor is detected automatically */
+function startFloorDetectVpr() {
+  if (!state.hasLocalizedPosition || !state.route) return;
+  if (state.liveVpr.running) return;
+  // keep / reopen camera for VPR frames (same idea as pre-AR camera nav)
+  ensureCamera().then((ok) => {
+    if (!ok || !state.stream) return;
+    if (state.liveVpr.running) return;
+    state.liveVpr.running = true;
+    state.liveVpr.lastCaptureTime = 0; // capture soon
+    state.motion.cumulativeMotion = 0;
+    state.motion.lastMeaningfulMotionAt = performance.now();
+    runLiveVprCaptureLoop();
+  }).catch((err) => console.warn("floor-detect camera", err));
 }
 
 function routeDestPoint() {
@@ -298,25 +341,123 @@ function connectorLabel(tf) {
 function enterConnectorLeg() {
   if (!state.route?.legs?.length) return false;
   const from = state.activeLegIndex || 0;
+  let entered = false;
   for (let i = from; i < state.route.legs.length; i += 1) {
     if (state.route.legs[i]?.floor_transition) {
       state.activeLegIndex = i;
       state.inFloorTransition = true;
-      return true;
+      state.floorTransitionAt = performance.now();
+      state.motion.cumulativeMotion = 0;
+      entered = true;
+      break;
     }
   }
-  // also allow looking slightly ahead of current walk leg
-  for (let i = 0; i < state.route.legs.length; i += 1) {
-    if (state.route.legs[i]?.floor_transition) {
-      const tf = state.route.legs[i].floor_transition;
-      if (String(tf.from_floor) === String(state.position.floor ?? "")) {
-        state.activeLegIndex = i;
-        state.inFloorTransition = true;
-        return true;
+  if (!entered) {
+    for (let i = 0; i < state.route.legs.length; i += 1) {
+      if (state.route.legs[i]?.floor_transition) {
+        const tf = state.route.legs[i].floor_transition;
+        if (sameFloor(tf.from_floor, state.position.floor)) {
+          state.activeLegIndex = i;
+          state.inFloorTransition = true;
+          state.floorTransitionAt = performance.now();
+          state.motion.cumulativeMotion = 0;
+          entered = true;
+          break;
+        }
       }
     }
   }
-  return false;
+  if (entered) {
+    // same as camera-nav: keep localizing so new floor unlocks next banner
+    startFloorDetectVpr();
+  }
+  return entered;
+}
+
+/** mutate state onto the walk leg for toFloor (no HUD refresh) */
+function landOnFloor(toFloor, transitionIdx = state.activeLegIndex || 0) {
+  if (!state.route?.legs?.length) return false;
+  const dest = normFloor(toFloor || destFloorId());
+  state.position.floor = dest;
+  if (ui.metricFloor) ui.metricFloor.textContent = dest;
+
+  let walkIdx = -1;
+  for (let i = Math.max(0, transitionIdx); i < state.route.legs.length; i += 1) {
+    const leg = state.route.legs[i];
+    if (leg?.floor_transition) continue;
+    if (sameFloor(leg.floor, dest) && (leg.waypoints?.length || 0) > 0) {
+      walkIdx = i;
+      break;
+    }
+  }
+  if (walkIdx < 0) {
+    walkIdx = state.route.legs.findIndex((leg) => (
+      !leg.floor_transition
+      && sameFloor(leg.floor, dest)
+      && (leg.waypoints?.length || 0) > 0
+    ));
+  }
+  state.activeLegIndex = walkIdx >= 0
+    ? walkIdx
+    : Math.min(transitionIdx + 1, state.route.legs.length - 1);
+  state.inFloorTransition = false;
+  state.floorTransitionAt = 0;
+  state.arrivedShown = false;
+  hideArrivalCelebration();
+  setFloorContinueVisible(false);
+  return true;
+}
+
+function refreshPathAfterFloorChange({ redraw = false } = {}) {
+  const leg = activeRouteLeg();
+  const wps = leg?.waypoints?.length ? leg.waypoints : [];
+  if (redraw && wps.length >= 2) {
+    drawRoute(wps, ui.slotInput?.value?.trim() || "");
+  }
+
+  // refresh WebXR path on this floor without a new session
+  if (webXrNav && state.webXrActive && wps.length >= 2) {
+    webXrNav.opts.waypoints = wps;
+    webXrNav.opts.facilityPose = {
+      x: Number(state.position.x),
+      y: Number(state.position.y),
+      heading: Number(state.position.heading),
+    };
+    if (window.ParkingWebXr?.legsFromWaypoints) {
+      webXrNav.legs = window.ParkingWebXr.legsFromWaypoints(wps);
+      webXrNav.opts.legs = webXrNav.legs;
+    }
+    webXrNav.calibrated = false;
+    webXrNav.arrived = false;
+    webXrNav.progressM = 0;
+    webXrNav.maxProgressM = 0;
+  }
+
+  const fl = normFloor(state.position.floor);
+  setStatusChip(`Floor ${fl}`, "live");
+  setStatusMsg(`Floor ${fl} — follow the path to your bay`);
+  setHint("Follow the arrows to your parking bay", true);
+}
+
+/** leave elevator/stairs — show next floor walk banner + AR path */
+function exitFloorTransition(forcedFloor = null) {
+  if (!state.route?.legs?.length) return false;
+
+  let idx = state.activeLegIndex || 0;
+  let tf = state.route.legs[idx]?.floor_transition || null;
+  if (!tf) {
+    const upcoming = nextTransitionLeg(idx);
+    tf = upcoming?.floor_transition || null;
+    if (upcoming) {
+      const found = state.route.legs.indexOf(upcoming);
+      if (found >= 0) idx = found;
+    }
+  }
+  const toFloor = normFloor(forcedFloor || tf?.to_floor || destFloorId());
+  if (!landOnFloor(toFloor, idx)) return false;
+  refreshPathAfterFloorChange({ redraw: true });
+  updateRouteProgress();
+  return true;
 }
 
 function syncActiveLeg() {
@@ -330,24 +471,17 @@ function syncActiveLeg() {
   if (state.inFloorTransition) {
     let cur = state.route.legs[state.activeLegIndex];
     if (!cur?.floor_transition) {
-      // repair index if needed
       enterConnectorLeg();
       cur = state.route.legs[state.activeLegIndex];
     }
     if (cur?.floor_transition) {
-      const userFloor = String(state.position.floor ?? "");
-      const toFloor = String(cur.floor_transition.to_floor);
-      const fromFloor = String(cur.floor_transition.from_floor);
-      if (userFloor === toFloor) {
-        const walkIdx = state.route.legs.findIndex((leg, i) => (
-          i > state.activeLegIndex
-          && String(leg.floor) === userFloor
-          && (leg.waypoints?.length || 0) > 0
-        ));
-        state.activeLegIndex = walkIdx >= 0 ? walkIdx : state.activeLegIndex + 1;
-        state.inFloorTransition = false;
-      } else if (userFloor && userFloor !== fromFloor && userFloor !== toFloor) {
-        // unexpected floor — drop sticky and resync
+      const userFloor = normFloor(state.position.floor);
+      const toFloor = normFloor(cur.floor_transition.to_floor);
+      const fromFloor = normFloor(cur.floor_transition.from_floor);
+      if (sameFloor(userFloor, toFloor)) {
+        landOnFloor(toFloor, state.activeLegIndex);
+        // fall through — pick walk leg + let updateRouteProgress paint banner
+      } else if (userFloor && !sameFloor(userFloor, fromFloor) && !sameFloor(userFloor, toFloor)) {
         state.inFloorTransition = false;
       } else {
         return; // still riding the connector
@@ -357,10 +491,10 @@ function syncActiveLeg() {
 
   if (state.inFloorTransition) return;
 
-  const userFloor = String(state.position.floor ?? "1");
+  const userFloor = normFloor(state.position.floor);
   let idx = state.route.legs.findIndex((leg) => {
     if (leg.floor_transition) return false;
-    return String(leg.floor) === userFloor && (leg.waypoints?.length || 0) > 0;
+    return sameFloor(leg.floor, userFloor) && (leg.waypoints?.length || 0) > 0;
   });
   if (idx < 0) idx = Math.max(0, state.activeLegIndex || 0);
   state.activeLegIndex = idx;
@@ -1378,8 +1512,15 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
   form.append("image", blob, "parking-frame.jpg");
   const groundTruth = ui.groundTruthLocationId.value.trim();
   if (groundTruth) form.append("ground_truth_location_id", groundTruth);
-  // prefer active route floor for PnP map selection
-  const priorFloor = activeRouteLeg()?.floor ?? state.position?.floor ?? state.route?.floor;
+  // during elevator: bias VPR to landing floor (camera-nav auto-advance depends on this)
+  let priorFloor = state.position?.floor ?? state.route?.floor;
+  if (state.inFloorTransition) {
+    const tf = activeRouteLeg()?.floor_transition
+      || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
+    priorFloor = tf?.to_floor ?? priorFloor;
+  } else {
+    priorFloor = activeRouteLeg()?.floor ?? priorFloor;
+  }
   if (priorFloor != null && priorFloor !== "") {
     form.append("prior_floor", String(priorFloor));
   }
@@ -1420,6 +1561,11 @@ function localizeMethodLabel(method) {
 }
 
 function applyVprFix(pos) {
+  const prevFloor = state.position.floor;
+  const landed = state.inFloorTransition
+    && sameFloor(pos.floor, activeRouteLeg()?.floor_transition?.to_floor
+      || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition?.to_floor);
+
   state.position = {
     floor: pos.floor,
     x: pos.x,
@@ -1444,9 +1590,11 @@ function applyVprFix(pos) {
   const isPnp = String(pos.method || "").toLowerCase() === "pnp";
   setStatusChip(isPnp ? "PnP fix" : "VPR fix", "live");
   setStatusMsg(
-    `${via} lock · ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`
-    + (isPnp && pos.num_inliers != null ? ` · ${pos.num_inliers} inliers` : "")
-    + " · VIO/PDR between fixes",
+    landed
+      ? `Floor ${pos.floor} detected — continuing to your bay`
+      : (`${via} lock · ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`
+        + (isPnp && pos.num_inliers != null ? ` · ${pos.num_inliers} inliers` : "")
+        + " · VIO/PDR between fixes"),
   );
   ui.localizeBtn.textContent = "Relocalize";
   ui.routeBtn.disabled = false;
@@ -1460,6 +1608,15 @@ function applyVprFix(pos) {
     if (ok) startArTracking();
   });
   updateRouteStatus();
+
+  // camera-nav style: floor change after lift → next banner automatically
+  if (landed || (state.inFloorTransition && !sameFloor(prevFloor, pos.floor))) {
+    const tf = activeRouteLeg()?.floor_transition
+      || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
+    if (tf && sameFloor(pos.floor, tf.to_floor)) {
+      exitFloorTransition(tf.to_floor);
+    }
+  }
 }
 
 async function localizeParkingPosition() {
@@ -1514,7 +1671,7 @@ async function localizeParkingPosition() {
 function startLiveVprCapture() {
   if (
     state.liveVpr.running
-    || state.webXrActive
+    || (state.webXrActive && !state.inFloorTransition)
     || !state.hasLocalizedPosition
     || !state.route
     || !state.stream
@@ -1526,7 +1683,11 @@ function startLiveVprCapture() {
   state.motion.lastMeaningfulMotionAt = performance.now();
   state.motion.cumulativeMotion = 0;
   const via = localizeMethodLabel(state.lastLocalizeMethod);
-  setStatusMsg(`Live guidance · ${via} + VIO/PDR between fixes`);
+  setStatusMsg(
+    state.inFloorTransition
+      ? "Detecting your floor after the lift…"
+      : `Live guidance · ${via} + VIO/PDR between fixes`,
+  );
   runLiveVprCaptureLoop();
 }
 
@@ -1716,11 +1877,17 @@ async function runLiveVprCaptureLoop() {
   const stillnessWindowMs = 350;
 
   while (state.liveVpr.running) {
-    if (state.webXrActive) {
+    // keep VPR during elevator so landing floor can unlock the next banner
+    if (state.webXrActive && !state.inFloorTransition) {
       await new Promise((r) => setTimeout(r, 200));
       continue;
     }
-    if (state.workflowStep !== "navigation" || !state.route || !state.stream) {
+    if (state.workflowStep !== "navigation" || !state.route) {
+      stopLiveVprCapture();
+      return;
+    }
+    // WebXR owns the camera — still allow VPR while in a floor change
+    if (!state.stream && !state.webXrActive) {
       stopLiveVprCapture();
       return;
     }
@@ -1867,12 +2034,24 @@ async function updateRouteForSlot(slotId) {
   }
 
   const route = await response.json();
+  const keepNav = state.navActive || state.webXrActive;
   state.route = route;
-  state.activeLegIndex = 0;
-  state.inFloorTransition = false;
-  state.arrivedShown = false;
-  hideArrivalCelebration();
+  if (!keepNav) {
+    state.activeLegIndex = 0;
+    state.inFloorTransition = false;
+    state.arrivedShown = false;
+    hideArrivalCelebration();
+  }
   syncActiveLeg();
+  if (keepNav && state.inFloorTransition === false && onDestFloor()) {
+    // route refresh after landing — snap to dest walk leg
+    const walkIdx = state.route.legs.findIndex((leg) => (
+      !leg.floor_transition
+      && sameFloor(leg.floor, state.position.floor)
+      && (leg.waypoints?.length || 0) > 0
+    ));
+    if (walkIdx >= 0) state.activeLegIndex = walkIdx;
+  }
   if (ui.routeBadge) {
     ui.routeBadge.classList.remove("neutral", "warning");
     ui.routeBadge.classList.add("success");
@@ -2006,19 +2185,40 @@ function updateRouteProgress() {
     return;
   }
 
+  const wasInTransition = state.inFloorTransition;
   syncActiveLeg();
+  // just landed via VPR floor change — refresh dest-floor AR path once
+  if (wasInTransition && !state.inFloorTransition) {
+    refreshPathAfterFloorChange({ redraw: false });
+  }
+
   const leg = activeRouteLeg();
   if (state.inFloorTransition && leg?.floor_transition) {
     const tf = leg.floor_transition;
     const msg = tf.instruction
       || `Take ${connectorLabel(tf)} (${tf.connector_id || ""}) to Floor ${tf.to_floor}`;
+    // auto-detect landing (VPR) — same idea as camera-nav before WebXR
+    startFloorDetectVpr();
+    const dwell = performance.now() - (state.floorTransitionAt || performance.now());
+    const walkedOut = state.motion.cumulativeMotion >= ELEVATOR_WALK_MOTION;
+    if (dwell >= ELEVATOR_AUTO_MS && walkedOut) {
+      exitFloorTransition(tf.to_floor);
+      return;
+    }
     setHint(msg, true);
-    setStatusMsg(msg);
+    setStatusMsg(
+      dwell > 2500
+        ? `${msg} · detecting Floor ${tf.to_floor}…`
+        : msg,
+    );
     updateTurnHud(0);
-    // at the connector — never show elevator penalty as "left" distance
+    // manual fallback only if auto-detect is slow (camera-nav rarely needs this)
+    setFloorContinueVisible(dwell >= 18000, tf.to_floor);
     ui.metricDistance.textContent = "Now";
     return;
   }
+
+  setFloorContinueVisible(false);
 
   const guideWps = leg?.waypoints?.length ? leg.waypoints : state.route.waypoints;
   const progress = guideWps?.length
@@ -2252,6 +2452,11 @@ ui.routeBtn.addEventListener("click", () => {
 ui.arriveDismissBtn?.addEventListener("click", () => {
   hideArrivalCelebration();
   setHint("Tap Slot to navigate somewhere else", true);
+});
+ui.floorContinueBtn?.addEventListener("click", () => {
+  const tf = activeRouteLeg()?.floor_transition
+    || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
+  exitFloorTransition(tf?.to_floor || destFloorId());
 });
 ui.slotInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
