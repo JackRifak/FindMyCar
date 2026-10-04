@@ -4,8 +4,9 @@ docs/04_survey_ingestion_workflow.md.
 
 This is deliberately a thin HTTP layer over the SAME modules the CLI
 scripts use (fmc.georeference, fmc.config, fmc.navigation, fmc.vpr) --
-every file this reads or writes (control_points.csv, transform.json,
-config.yaml, locations.csv) is byte-for-byte the same format the CLI
+every file this reads or writes (per-floor control_points.csv /
+transform.json / floorplan.png under floorplan/<floor>/, plus
+config.yaml and locations.csv) is byte-for-byte the same format the CLI
 scripts produce and consume. You can start a site with the CLI tools and
 finish it in the browser, or vice versa, interchangeably.
 
@@ -33,7 +34,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from fmc.config import DATA_ROOT, SiteConfig, get_or_create_floor, load_site_config, save_site_config
+from fmc.config import DATA_ROOT, SiteConfig, get_or_create_floor, load_site_config, rename_floor, save_site_config
+from fmc.floors import (
+    floorplan_dir,
+    normalize_floor_id,
+    resolve_floorplan_asset,
+)
 from fmc.dataset.build_index import build_index
 from fmc.dataset.capture import next_sequence_for_site, register_capture
 from fmc.dataset.locations import delete_location, get_location, load_locations_csv, upsert_location
@@ -56,7 +62,8 @@ app = FastAPI(title="Find My Car — Floor Plan Editor")
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_PHOTO_CONTENT_TYPES = {"image/jpeg", "image/png"}
-_IMAGE_ID_HEADING_SUFFIX = re.compile(r"^(F\d{2}_Z.+_\d{5})_\d{3}$")
+# F{floorToken}_Z{zone}_{seq}_{heading} — floor token is free-form (1, G, B1, …)
+_IMAGE_ID_HEADING_SUFFIX = re.compile(r"^(F[^_]+_Z.+_\d{5})_\d{3}$")
 
 
 # ---------------------------------------------------------------- helpers
@@ -71,24 +78,35 @@ def get_site_or_404(site_id: str) -> SiteConfig:
     return load_site_config(site_id)
 
 
-def _control_points_path(site: SiteConfig) -> Path:
-    return site.data_dir / "floorplan" / "control_points.csv"
-
-
-def _transform_path(site: SiteConfig) -> Path:
-    return site.data_dir / "floorplan" / "transform.json"
-
-
-def _floorplan_image_path(site: SiteConfig) -> Path:
-    return site.data_dir / "floorplan" / "floorplan.png"
-
-
 def _locations_csv_path(site: SiteConfig) -> Path:
     return site.index_dir / "locations.csv"
 
 
-def _load_transform_or_none(site: SiteConfig) -> FloorPlanTransform | None:
-    path = _transform_path(site)
+def _prep_floor_assets(site: SiteConfig, floor) -> str:
+    return normalize_floor_id(floor)
+
+
+def _control_points_path(site: SiteConfig, floor, *, for_write: bool = False) -> Path:
+    return resolve_floorplan_asset(
+        site.data_dir, floor, "control_points.csv", for_write=for_write,
+    )
+
+
+def _transform_path(site: SiteConfig, floor, *, for_write: bool = False) -> Path:
+    return resolve_floorplan_asset(
+        site.data_dir, floor, "transform.json", for_write=for_write,
+    )
+
+
+def _floorplan_image_path(site: SiteConfig, floor, *, for_write: bool = False) -> Path:
+    return resolve_floorplan_asset(
+        site.data_dir, floor, "floorplan.png", for_write=for_write,
+    )
+
+
+def _load_transform_or_none(site: SiteConfig, floor) -> FloorPlanTransform | None:
+    fid = _prep_floor_assets(site, floor)
+    path = _transform_path(site, fid)
     if not path.exists():
         return None
     return FloorPlanTransform.load(path)
@@ -118,7 +136,7 @@ class SlotIn(BaseModel):
 
 
 class RouteRequest(BaseModel):
-    floor: int
+    floor: str = "1"
     start_x: float
     start_y: float
     slot_id: str
@@ -155,69 +173,103 @@ def create_site(site_id: str):
 @app.get("/api/sites/{site_id}/floors")
 def list_floors(site_id: str):
     site = get_site_or_404(site_id)
-    return sorted(f["floor"] for f in site.raw["floors"])
+    return site.floor_ids()
 
 
 @app.post("/api/sites/{site_id}/floors/{floor}")
-def create_floor(site_id: str, floor: int):
+def create_floor(site_id: str, floor: str):
     site = get_site_or_404(site_id)
-    get_or_create_floor(site, floor)
+    fid = normalize_floor_id(floor)
+    get_or_create_floor(site, fid)
     save_site_config(site)
-    return {"floor": floor}
+    return {"floor": fid}
 
 
-# ---------------------------------------------------------------- floor plan
+class FloorRenameIn(BaseModel):
+    new_floor: str
 
-@app.post("/api/sites/{site_id}/floorplan")
-async def upload_floorplan(site_id: str, page: int = 0, dpi: int = 200, file: UploadFile = File(...)):
+
+@app.patch("/api/sites/{site_id}/floors/{floor}")
+def rename_floor_api(site_id: str, floor: str, body: FloorRenameIn):
     site = get_site_or_404(site_id)
-    pdf_path = site.data_dir / "floorplan" / "source.pdf"
-    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    old_id = normalize_floor_id(floor)
+    new_id = normalize_floor_id(body.new_floor)
+    try:
+        rename_floor(site, old_id, new_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    # keep per-floor floorplan assets with the renamed label
+    old_dir = floorplan_dir(site.data_dir, old_id)
+    new_dir = floorplan_dir(site.data_dir, new_id)
+    if old_dir.exists() and old_dir != new_dir and not new_dir.exists():
+        old_dir.rename(new_dir)
+    save_site_config(site)
+    return {"floor": new_id, "floors": site.floor_ids()}
+
+
+# ---------------------------------------------------------------- floor plan (per floor)
+
+@app.post("/api/sites/{site_id}/floors/{floor}/floorplan")
+async def upload_floorplan(
+    site_id: str,
+    floor: str,
+    page: int = 0,
+    dpi: int = 200,
+    file: UploadFile = File(...),
+):
+    site = get_site_or_404(site_id)
+    fid = _prep_floor_assets(site, floor)
+    get_or_create_floor(site, fid)
+    save_site_config(site)
+
+    pdf_path = resolve_floorplan_asset(site.data_dir, fid, "source.pdf", for_write=True)
     with open(pdf_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
+    out_png = _floorplan_image_path(site, fid, for_write=True)
     try:
-        width, height = render_pdf_page(pdf_path, page, dpi, _floorplan_image_path(site))
+        width, height = render_pdf_page(pdf_path, page, dpi, out_png)
     except Exception as exc:
         raise HTTPException(400, f"Could not render PDF: {exc}") from exc
 
-    return {"width": width, "height": height, "page": page, "dpi": dpi}
+    return {"width": width, "height": height, "page": page, "dpi": dpi, "floor": fid}
 
 
-@app.get("/api/sites/{site_id}/floorplan/image")
-def get_floorplan_image(site_id: str):
+@app.get("/api/sites/{site_id}/floors/{floor}/floorplan/image")
+def get_floorplan_image(site_id: str, floor: str):
     site = get_site_or_404(site_id)
-    path = _floorplan_image_path(site)
+    fid = _prep_floor_assets(site, floor)
+    path = _floorplan_image_path(site, fid)
     if not path.exists():
-        raise HTTPException(404, "No floor plan uploaded yet for this site")
+        raise HTTPException(404, f"No floor plan uploaded yet for floor '{fid}'")
     return FileResponse(path, media_type="image/png")
 
 
-# ---------------------------------------------------------------- control points / transform
+# ---------------------------------------------------------------- control points / transform (per floor)
 
-@app.get("/api/sites/{site_id}/control-points")
-def get_control_points(site_id: str):
+@app.get("/api/sites/{site_id}/floors/{floor}/control-points")
+def get_control_points(site_id: str, floor: str):
     site = get_site_or_404(site_id)
-    points = load_control_points_csv(_control_points_path(site))
+    fid = _prep_floor_assets(site, floor)
+    points = load_control_points_csv(_control_points_path(site, fid))
     return [{"px": p.px, "py": p.py, "x": p.x, "y": p.y} for p in points]
 
 
-@app.put("/api/sites/{site_id}/control-points")
-def put_control_points(site_id: str, points: list[ControlPointIn]):
+@app.put("/api/sites/{site_id}/floors/{floor}/control-points")
+def put_control_points(site_id: str, floor: str, points: list[ControlPointIn]):
     site = get_site_or_404(site_id)
+    fid = _prep_floor_assets(site, floor)
     control_points = [ControlPoint(px=p.px, py=p.py, x=p.x, y=p.y) for p in points]
-    save_control_points_csv(_control_points_path(site), control_points)
-    return {"saved": len(control_points)}
+    save_control_points_csv(_control_points_path(site, fid, for_write=True), control_points)
+    return {"saved": len(control_points), "floor": fid}
 
 
-@app.post("/api/sites/{site_id}/control-points/fit")
-def fit_control_points(site_id: str):
-    """Preview-only: fits from whatever is currently saved in
-    control_points.csv and returns the fit quality, but does NOT persist
-    transform.json -- call /control-points/fit/save once you've reviewed
-    the residuals and implied scale and are happy with them."""
+@app.post("/api/sites/{site_id}/floors/{floor}/control-points/fit")
+def fit_control_points(site_id: str, floor: str):
+    """Preview-only fit for this floor's control_points.csv."""
     site = get_site_or_404(site_id)
-    control_points = load_control_points_csv(_control_points_path(site))
+    fid = _prep_floor_assets(site, floor)
+    control_points = load_control_points_csv(_control_points_path(site, fid))
     if len(control_points) < 3:
         raise HTTPException(400, f"Need at least 3 control points to fit a transform, have {len(control_points)}")
 
@@ -242,6 +294,7 @@ def fit_control_points(site_id: str):
         )
 
     return {
+        "floor": fid,
         "transform": transform.__dict__,
         "residuals": residuals,
         "max_residual": max(residuals),
@@ -251,52 +304,56 @@ def fit_control_points(site_id: str):
     }
 
 
-@app.post("/api/sites/{site_id}/control-points/fit/save")
-def save_transform(site_id: str):
-    """Re-fits from control_points.csv (the on-disk source of truth,
-    guaranteeing the saved transform always matches saved points) and
-    persists transform.json."""
+@app.post("/api/sites/{site_id}/floors/{floor}/control-points/fit/save")
+def save_transform(site_id: str, floor: str):
+    """Persist this floor's transform.json from its control points."""
     site = get_site_or_404(site_id)
-    control_points = load_control_points_csv(_control_points_path(site))
+    fid = _prep_floor_assets(site, floor)
+    control_points = load_control_points_csv(_control_points_path(site, fid))
     if len(control_points) < 3:
         raise HTTPException(400, f"Need at least 3 control points to fit a transform, have {len(control_points)}")
     transform = fit_transform(control_points)
-    transform.save(_transform_path(site))
-    return {"saved": True, "transform": transform.__dict__}
+    transform.save(_transform_path(site, fid, for_write=True))
+    return {"saved": True, "floor": fid, "transform": transform.__dict__}
 
 
-@app.get("/api/sites/{site_id}/transform")
-def get_transform(site_id: str):
+@app.get("/api/sites/{site_id}/floors/{floor}/transform")
+def get_transform(site_id: str, floor: str):
     site = get_site_or_404(site_id)
-    transform = _load_transform_or_none(site)
+    fid = _prep_floor_assets(site, floor)
+    transform = _load_transform_or_none(site, fid)
     if transform is None:
-        raise HTTPException(404, "No transform saved yet for this site")
+        raise HTTPException(404, f"No transform saved yet for floor '{fid}'")
     return transform.__dict__
 
 
-# ---------------------------------------------------------------- overlays (read-only)
+# ---------------------------------------------------------------- overlays (read-only, per floor)
 
-@app.get("/api/sites/{site_id}/locations")
-def get_locations(site_id: str):
-    """Already-ingested capture locations, converted to pixel coordinates
-    for overlay -- read-only in this tool; capture locations come from
-    real survey photos via scripts/ingest_survey_locations.py, not from
-    clicking in the browser."""
+@app.get("/api/sites/{site_id}/floors/{floor}/locations")
+def get_locations(site_id: str, floor: str):
+    """Ingested capture locations on this floor, in pixel coords for overlay."""
     site = get_site_or_404(site_id)
+    fid = _prep_floor_assets(site, floor)
     path = _locations_csv_path(site)
     if not path.exists():
         return []
 
-    transform = _load_transform_or_none(site)
+    transform = _load_transform_or_none(site, fid)
     result = []
-    with open(path, "r", encoding="utf-8-sig", newline="") as f:
-        for row in csv.DictReader(f):
-            x, y = float(row["x"]), float(row["y"])
-            entry = {"location_id": row["location_id"], "floor": int(row["floor"]), "zone": row["zone"], "x": x, "y": y}
-            if transform is not None:
-                px, py = transform.world_to_pixel(x, y)
-                entry["px"], entry["py"] = px, py
-            result.append(entry)
+    for row in load_locations_csv(path):
+        if normalize_floor_id(row["floor"]) != fid:
+            continue
+        entry = {
+            "location_id": row["location_id"],
+            "floor": fid,
+            "zone": row["zone"],
+            "x": row["x"],
+            "y": row["y"],
+        }
+        if transform is not None:
+            px, py = transform.world_to_pixel(row["x"], row["y"])
+            entry["px"], entry["py"] = px, py
+        result.append(entry)
     return result
 
 
@@ -336,17 +393,18 @@ def _photo_json(site_id: str, record, transform: FloorPlanTransform | None) -> d
 
 
 @app.get("/api/sites/{site_id}/floors/{floor}/capture-locations")
-def list_capture_locations(site_id: str, floor: int):
+def list_capture_locations(site_id: str, floor: str):
     site = get_site_or_404(site_id)
-    transform = _load_transform_or_none(site)
+    want = _prep_floor_assets(site, floor)
+    transform = _load_transform_or_none(site, want)
     all_records = load_records(site.dataset_jsonl_path)
 
     result = []
     for row in load_locations_csv(_locations_csv_path(site)):
-        if row["floor"] != floor:
+        if normalize_floor_id(row["floor"]) != want:
             continue
         photo_count = sum(1 for r in all_records if r.location_id == row["location_id"])
-        entry = dict(row, photo_count=photo_count)
+        entry = dict(row, photo_count=photo_count, floor=want)
         if transform is not None:
             entry["px"], entry["py"] = transform.world_to_pixel(row["x"], row["y"])
         result.append(entry)
@@ -354,20 +412,21 @@ def list_capture_locations(site_id: str, floor: int):
 
 
 @app.post("/api/sites/{site_id}/floors/{floor}/capture-locations")
-def create_or_move_capture_location(site_id: str, floor: int, loc: CaptureLocationIn):
+def create_or_move_capture_location(site_id: str, floor: str, loc: CaptureLocationIn):
     """Create a new capture location, or reposition/re-zone an existing one
     if location_id already exists (upsert -- lets a user re-click roughly
     the same spot without erroring)."""
     site = get_site_or_404(site_id)
-    transform = _load_transform_or_none(site)
+    fid = _prep_floor_assets(site, floor)
+    transform = _load_transform_or_none(site, fid)
     if transform is None:
-        raise HTTPException(400, "No transform saved yet -- fit and save control points first")
+        raise HTTPException(400, f"No transform saved yet for floor '{fid}' — fit & save control points first")
     location_id = loc.location_id.strip()
     if not location_id:
         raise HTTPException(400, "location_id is required")
 
     x, y = transform.pixel_to_world(loc.px, loc.py)
-    row = upsert_location(_locations_csv_path(site), location_id, floor, loc.zone.strip(), x, y)
+    row = upsert_location(_locations_csv_path(site), location_id, fid, loc.zone.strip(), x, y)
     row["px"], row["py"] = loc.px, loc.py
     row["photo_count"] = len(records_for_location(site.dataset_jsonl_path, location_id))
     return row
@@ -392,7 +451,9 @@ def delete_capture_location(site_id: str, location_id: str):
 @app.get("/api/sites/{site_id}/capture-locations/{location_id}/photos")
 def list_location_photos(site_id: str, location_id: str):
     site = get_site_or_404(site_id)
-    transform = _load_transform_or_none(site)
+    loc = get_location(_locations_csv_path(site), location_id)
+    floor = loc["floor"] if loc else "1"
+    transform = _load_transform_or_none(site, floor)
     photos = records_for_location(site.dataset_jsonl_path, location_id)
     return [_photo_json(site_id, record, transform) for record in photos]
 
@@ -439,7 +500,7 @@ async def add_location_photo(
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    transform = _load_transform_or_none(site)
+    transform = _load_transform_or_none(site, loc["floor"])
     return _photo_json(site_id, record, transform)
 
 
@@ -484,7 +545,9 @@ def update_location_photo(site_id: str, location_id: str, image_id: str, body: H
             new_path.replace(old_path)
         raise
 
-    transform = _load_transform_or_none(site)
+    loc = get_location(_locations_csv_path(site), location_id)
+    floor = (loc or {}).get("floor") or updated_record.floor
+    transform = _load_transform_or_none(site, floor)
     return _photo_json(site_id, updated_record, transform)
 
 
@@ -539,13 +602,17 @@ def get_photo(site_id: str, image_id: str):
 # ---------------------------------------------------------------- geometry (segments + slots)
 
 @app.get("/api/sites/{site_id}/floors/{floor}/geometry")
-def get_geometry(site_id: str, floor: int):
+def get_geometry(site_id: str, floor: str):
     site = get_site_or_404(site_id)
-    segments = site.walkable_segments(floor)
-    floor_entry = next((f for f in site.raw["floors"] if f["floor"] == floor), None)
+    fid = _prep_floor_assets(site, floor)
+    segments = site.walkable_segments(fid)
+    floor_entry = next(
+        (f for f in site.raw["floors"] if normalize_floor_id(f.get("floor")) == fid),
+        None,
+    )
     slots = floor_entry.get("vehicle_slots", []) if floor_entry else []
 
-    transform = _load_transform_or_none(site)
+    transform = _load_transform_or_none(site, fid)
 
     seg_out = []
     for seg in segments:
@@ -566,11 +633,12 @@ def get_geometry(site_id: str, floor: int):
 
 
 @app.put("/api/sites/{site_id}/floors/{floor}/segments")
-def put_segments(site_id: str, floor: int, segments: list[SegmentIn]):
+def put_segments(site_id: str, floor: str, segments: list[SegmentIn]):
     site = get_site_or_404(site_id)
-    transform = _load_transform_or_none(site)
+    fid = _prep_floor_assets(site, floor)
+    transform = _load_transform_or_none(site, fid)
     if transform is None:
-        raise HTTPException(400, "No transform saved yet -- fit and save control points first")
+        raise HTTPException(400, f"No transform saved yet for floor '{fid}' — fit & save control points first")
 
     world_segments = []
     for seg in segments:
@@ -578,25 +646,26 @@ def put_segments(site_id: str, floor: int, segments: list[SegmentIn]):
         x2, y2 = transform.pixel_to_world(seg.px2, seg.py2)
         world_segments.append({"x1": round(x1, 3), "y1": round(y1, 3), "x2": round(x2, 3), "y2": round(y2, 3)})
 
-    floor_entry = get_or_create_floor(site, floor)
+    floor_entry = get_or_create_floor(site, fid)
     floor_entry["walkable_segments"] = world_segments
     save_site_config(site)
     return {"saved": len(world_segments)}
 
 
 @app.put("/api/sites/{site_id}/floors/{floor}/slots")
-def put_slots(site_id: str, floor: int, slots: list[SlotIn]):
+def put_slots(site_id: str, floor: str, slots: list[SlotIn]):
     site = get_site_or_404(site_id)
-    transform = _load_transform_or_none(site)
+    fid = _prep_floor_assets(site, floor)
+    transform = _load_transform_or_none(site, fid)
     if transform is None:
-        raise HTTPException(400, "No transform saved yet -- fit and save control points first")
+        raise HTTPException(400, f"No transform saved yet for floor '{fid}' — fit & save control points first")
 
     world_slots = []
     for slot in slots:
         x, y = transform.pixel_to_world(slot.px, slot.py)
         world_slots.append({"slot_id": slot.slot_id, "zone": slot.zone, "x": round(x, 3), "y": round(y, 3)})
 
-    floor_entry = get_or_create_floor(site, floor)
+    floor_entry = get_or_create_floor(site, fid)
     floor_entry["vehicle_slots"] = world_slots
     save_site_config(site)
     return {"saved": len(world_slots)}
@@ -636,7 +705,7 @@ async def query_position(site_id: str, file: UploadFile = File(...)):
         "similarity": result.similarity,
         "inlier_ratio": result.inlier_ratio,
     }
-    transform = _load_transform_or_none(site)
+    transform = _load_transform_or_none(site, r.floor)
     if transform is not None:
         response["px"], response["py"] = transform.world_to_pixel(r.x, r.y)
     return response
@@ -649,14 +718,15 @@ def get_route(site_id: str, req: RouteRequest):
     the map -- same fmc.navigation.routing + fmc.fusion.map_matching the
     position API uses."""
     site = get_site_or_404(site_id)
-    segments = site.walkable_segments(req.floor)
+    floor = normalize_floor_id(req.floor)
+    segments = site.walkable_segments(floor)
     if not segments:
-        raise HTTPException(400, f"No walkable_segments for floor {req.floor}")
+        raise HTTPException(400, f"No walkable_segments for floor {floor}")
 
     slot = site.vehicle_slot(req.slot_id)
     if slot is None:
         raise HTTPException(404, f"Unknown slot_id: {req.slot_id}")
-    if slot["floor"] != req.floor:
+    if normalize_floor_id(slot["floor"]) != floor:
         raise HTTPException(400, "Cross-floor routing isn't implemented yet")
 
     snapped_x, snapped_y = snap_to_walkable(req.start_x, req.start_y, segments)
@@ -664,7 +734,7 @@ def get_route(site_id: str, req: RouteRequest):
     if route is None:
         raise HTTPException(404, "No route found -- the walkable graph may be disconnected between these points")
 
-    transform = _load_transform_or_none(site)
+    transform = _load_transform_or_none(site, floor)
     waypoints_px = None
     if transform is not None:
         waypoints_px = [transform.world_to_pixel(x, y) for x, y in route.waypoints]

@@ -8,11 +8,13 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+from fmc.floors import normalize_floor_id
+
 LOCATIONS_CSV_FIELDNAMES = ["location_id", "floor", "zone", "x", "y"]
 
 
 def load_locations_csv(path: Path) -> list[dict]:
-    """Rows as {"location_id": str, "floor": int, "zone": str, "x": float, "y": float}.
+    """Rows as {"location_id": str, "floor": str, "zone": str, "x": float, "y": float}.
     Returns [] if the file doesn't exist. utf-8-sig transparently handles a
     leading BOM (common after editing the file in Excel/LibreOffice)."""
     if not path.exists():
@@ -21,7 +23,7 @@ def load_locations_csv(path: Path) -> list[dict]:
         return [
             {
                 "location_id": row["location_id"].strip(),
-                "floor": int(row["floor"]),
+                "floor": normalize_floor_id(row["floor"]),
                 "zone": row["zone"].strip(),
                 "x": float(row["x"]),
                 "y": float(row["y"]),
@@ -36,20 +38,27 @@ def save_locations_csv(path: Path, rows: list[dict]) -> None:
         writer = csv.DictWriter(f, fieldnames=LOCATIONS_CSV_FIELDNAMES)
         writer.writeheader()
         for row in rows:
-            writer.writerow({k: row[k] for k in LOCATIONS_CSV_FIELDNAMES})
+            writer.writerow({
+                "location_id": row["location_id"],
+                "floor": normalize_floor_id(row["floor"]),
+                "zone": row["zone"],
+                "x": row["x"],
+                "y": row["y"],
+            })
 
 
-def upsert_location(path: Path, location_id: str, floor: int, zone: str, x: float, y: float) -> dict:
+def upsert_location(path: Path, location_id: str, floor, zone: str, x: float, y: float) -> dict:
     """Add a new location, or update floor/zone/x/y if location_id already
     exists (lets a user re-click roughly the same spot, or deliberately
     reposition a location, without erroring). Returns the resulting row."""
+    fid = normalize_floor_id(floor)
     rows = load_locations_csv(path)
     for row in rows:
         if row["location_id"] == location_id:
-            row.update({"floor": floor, "zone": zone, "x": round(x, 3), "y": round(y, 3)})
+            row.update({"floor": fid, "zone": zone, "x": round(x, 3), "y": round(y, 3)})
             save_locations_csv(path, rows)
             return row
-    new_row = {"location_id": location_id, "floor": floor, "zone": zone, "x": round(x, 3), "y": round(y, 3)}
+    new_row = {"location_id": location_id, "floor": fid, "zone": zone, "x": round(x, 3), "y": round(y, 3)}
     rows.append(new_row)
     save_locations_csv(path, rows)
     return new_row

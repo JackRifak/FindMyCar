@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CameraInfo(BaseModel):
@@ -20,7 +20,7 @@ class CameraInfo(BaseModel):
 
 class ReferenceImage(BaseModel):
     image_id: str
-    floor: int
+    floor: str = "1"
     zone: str
     x: float
     y: float
@@ -33,6 +33,12 @@ class ReferenceImage(BaseModel):
     # field existed (CLI-ingested records predating the web editor's
     # location-photo feature) -- those can still be queried by floor/zone/x/y,
     # just not directly by location_id.
+
+    @field_validator("floor", mode="before")
+    @classmethod
+    def _floor_label(cls, v):
+        from fmc.floors import normalize_floor_id
+        return normalize_floor_id(v)
 
 
 def append_record(dataset_jsonl_path: Path, record: ReferenceImage) -> None:

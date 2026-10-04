@@ -31,7 +31,7 @@ class GeoreferencedTag:
     timestamp: float
     facility_x: float
     facility_y: float
-    facility_floor: int
+    facility_floor: str = "1"
     session_id: int = 0
 
 
@@ -51,6 +51,7 @@ class Keyframe:
     # OpenCV-cam → world (X right, Y up, Z fwd); None → yaw-only fallback
     R_wc: Optional[np.ndarray] = None
     session_id: int = 0
+    floor: str = "1"
     # local keypoint index -> global landmark id
     landmark_ids: Dict[int, int] = field(default_factory=dict) 
 
@@ -68,6 +69,7 @@ class Landmark3D:
     # ORB descriptor for 2D-to-3D localization (PnP)
     descriptor: Optional[np.ndarray] = None
     session_id: int = 0
+    floor: str = "1"
 
 
 class ContinuousMapper:
@@ -90,10 +92,17 @@ class ContinuousMapper:
         self._disk_hydrated = False
         self._vo_x = 0.0
         self._vo_z = 0.0
+        self._map_floor = "1"
         self.last_new_landmarks = 0
         self.last_detected_keypoints: List[List[float]] = []
         self.last_tracked_keypoints: List[List[float]] = []
         logger.info("[Mapper] Full reset — all sessions cleared.")
+
+    def set_map_floor(self, floor) -> None:
+        """Active floor label for new keyframes / landmarks (1, G, B1, …)."""
+        from fmc.floors import normalize_floor_id
+        self._map_floor = normalize_floor_id(floor)
+        logger.info("[Mapper] Active map floor set to %s", self._map_floor)
 
     def _next_free_session_id(self) -> int:
         ids = [self._session_id]
@@ -113,14 +122,14 @@ class ContinuousMapper:
         added = 0
 
         # --- landmarks: H2GIS first, then NPZ ---
-        positions = descriptors = ids = colors = None
+        positions = descriptors = ids = colors = floors_arr = None
         aligned_disk = False
         try:
             from fmc.storage.h2gis_store import load_landmarks
 
             loaded = load_landmarks(site)
             if loaded is not None:
-                positions, descriptors, ids = loaded
+                positions, descriptors, ids, floors_arr = loaded
                 aligned_disk = True
         except Exception as e:
             logger.warning("[Mapper] H2GIS hydrate failed: %s", e)
@@ -133,6 +142,7 @@ class ContinuousMapper:
                 descriptors = data["descriptors"]
                 ids = data["ids"]
                 colors = data["colors"] if "colors" in data.files else None
+                floors_arr = data["floors"] if "floors" in data.files else None
                 if "aligned" in data.files:
                     aligned_disk = bool(np.asarray(data["aligned"]).reshape(-1)[0])
                 else:
@@ -143,6 +153,11 @@ class ContinuousMapper:
         if positions is not None and len(positions) > 0:
             if colors is None:
                 colors = np.tile(np.array([52, 199, 89], dtype=np.uint8), (len(positions), 1))
+            from fmc.floors import coerce_floor_array, normalize_floor_id
+            if floors_arr is None:
+                floor_labels = ["1"] * len(positions)
+            else:
+                floor_labels = coerce_floor_array(floors_arr, n=len(positions))
             for i in range(len(positions)):
                 lid = int(ids[i])
                 if lid in self.landmarks:
@@ -156,6 +171,7 @@ class ContinuousMapper:
                     color=col,
                     descriptor=desc,
                     session_id=COMMITTED_SESSION,
+                    floor=normalize_floor_id(floor_labels[i]),
                 )
                 added += 1
             if aligned_disk:
@@ -186,7 +202,7 @@ class ContinuousMapper:
                             timestamp=ts,
                             facility_x=fx,
                             facility_y=fy,
-                            facility_floor=int(raw.get("floor", 1)),
+                            facility_floor=str(raw.get("floor", "1")),
                             session_id=sid,
                         )
                     )
@@ -266,11 +282,12 @@ class ContinuousMapper:
             map_z=float(vio_pose.z),
             R_wc=R_wc,
             session_id=self._session_id,
+            floor=str(getattr(self, "_map_floor", "1")),
             landmark_ids={}
         )
         
         logger.info(
-            f"[Mapper] Keyframe #{frame.frame_id} sess={self._session_id}: "
+            f"[Mapper] Keyframe #{frame.frame_id} sess={self._session_id} floor={frame.floor}: "
             f"extracted {len(kpts_cv)} ORB features | "
             f"VIO: ({vio_pose.x:.2f}, {vio_pose.y:.2f}, {vio_pose.z:.2f}) "
             f"Q: [{vio_pose.qw:.2f}, {vio_pose.qx:.2f}, {vio_pose.qy:.2f}, {vio_pose.qz:.2f}] "
@@ -295,13 +312,23 @@ class ContinuousMapper:
         
         return frame.frame_id
 
-    def add_tag(self, timestamp: float, x: float, y: float, floor: int) -> None:
+    def add_tag(self, timestamp: float, x: float, y: float, floor) -> None:
         """Add a manual ground-truth anchor from the user."""
+        from fmc.floors import normalize_floor_id
+        floor = normalize_floor_id(floor)
+        self._map_floor = floor
         tag = GeoreferencedTag(timestamp, x, y, floor, session_id=self._session_id)
         self.user_tags.append(tag)
+        # stamp recent same-session landmarks/keyframes with this floor
+        for kf in self.keyframes:
+            if kf.session_id == self._session_id:
+                kf.floor = floor
+        for lm in self.landmarks.values():
+            if lm.session_id == self._session_id:
+                lm.floor = floor
         logger.info(
-            "Added georeferenced tag at (%.2f, %.2f) sess=%s",
-            x, y, self._session_id,
+            "Added georeferenced tag at (%.2f, %.2f) floor=%s sess=%s",
+            x, y, floor, self._session_id,
         )
 
     def _yaw_from_pose(self, pose: SixDofPose) -> float:
@@ -539,6 +566,7 @@ class ContinuousMapper:
                     color=pt_color,
                     descriptor=desc,
                     session_id=curr_frame.session_id,
+                    floor=str(getattr(curr_frame, "floor", getattr(self, "_map_floor", "1"))),
                 )
                 self.landmarks[lm_id] = landmark
                 prev_frame.landmark_ids[idx_prev] = lm_id
@@ -799,7 +827,7 @@ class ContinuousMapper:
                 "timestamp": tag.timestamp,
                 "facility_x": float(tag.facility_x),
                 "facility_y": float(tag.facility_y),
-                "floor": int(tag.facility_floor),
+                "floor": str(tag.facility_floor),
                 "aligned": bool(tag_aligned),
                 "x": round(tag_x, 3),
                 "y": round(tag_y, 3),
@@ -864,7 +892,7 @@ class ContinuousMapper:
                 site_obj = load_site_config(out_dir.parent.name)
             loaded = load_landmarks(site_obj)
             if loaded is not None:
-                pos, desc, lids = loaded
+                pos, desc, lids, fls = loaded
                 for i in range(len(lids)):
                     lid = int(lids[i])
                     if lid in by_id:
@@ -875,6 +903,7 @@ class ContinuousMapper:
                         observations={},
                         descriptor=desc[i].astype(np.uint8).copy(),
                         session_id=COMMITTED_SESSION,
+                        floor=str(fls[i]),
                     )
                     # keep in memory too
                     if lid not in self.landmarks:
@@ -882,12 +911,16 @@ class ContinuousMapper:
         except Exception as e:
             logger.warning("[Mapper] merge-from-H2GIS before export failed: %s", e)
 
+        from fmc.floors import coerce_floor_array, normalize_floor_id
+
         npz_path = out_dir / "map_landmarks.npz"
         if npz_path.exists():
             try:
-                data = np.load(npz_path, allow_pickle=False)
+                data = np.load(npz_path, allow_pickle=True)
                 pos, desc, lids = data["positions"], data["descriptors"], data["ids"]
                 cols = data["colors"] if "colors" in data.files else None
+                fls = data["floors"] if "floors" in data.files else None
+                fl_labels = coerce_floor_array(fls, n=len(lids)) if fls is not None else ["1"] * len(lids)
                 for i in range(len(lids)):
                     lid = int(lids[i])
                     if lid in by_id:
@@ -900,12 +933,21 @@ class ContinuousMapper:
                         color=col,
                         descriptor=desc[i].astype(np.uint8).copy(),
                         session_id=COMMITTED_SESSION,
+                        floor=normalize_floor_id(fl_labels[i]),
                     )
                     by_id[lid] = lm
                     if lid not in self.landmarks:
                         self.landmarks[lid] = lm
             except OSError as e:
                 logger.warning("[Mapper] merge-from-NPZ before export failed: %s", e)
+
+        # infer floor from session tags when still default
+        sess_floor: Dict[int, str] = {}
+        for tag in self.user_tags:
+            sess_floor[tag.session_id] = normalize_floor_id(tag.facility_floor)
+        for lm in by_id.values():
+            if normalize_floor_id(getattr(lm, "floor", "1")) == "1" and lm.session_id in sess_floor:
+                lm.floor = sess_floor[lm.session_id]
 
         rows = list(by_id.values())
         if not rows:
@@ -916,6 +958,10 @@ class ContinuousMapper:
         descriptors = np.stack([lm.descriptor.astype(np.uint8) for lm in rows], axis=0)
         ids = np.array([lm.landmark_id for lm in rows], dtype=np.int32)
         colors = np.array([lm.color for lm in rows], dtype=np.uint8)
+        floors = np.array(
+            [normalize_floor_id(getattr(lm, "floor", "1")) for lm in rows],
+            dtype=object,
+        )
         aligned = bool(self._aligned_sessions) or bool(getattr(self, "_is_aligned", False))
 
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -925,7 +971,10 @@ class ContinuousMapper:
             from fmc.storage.h2gis_store import replace_landmarks
 
             site_obj = site if site is not None else load_site_config(out_dir.parent.name)
-            replace_landmarks(site_obj, positions, descriptors, ids, colors, aligned=aligned)
+            replace_landmarks(
+                site_obj, positions, descriptors, ids, colors,
+                floors=floors, aligned=aligned,
+            )
         except Exception as e:
             logger.warning("[Mapper] H2GIS export failed: %s", e)
 
@@ -935,10 +984,28 @@ class ContinuousMapper:
             descriptors=descriptors,
             ids=ids,
             colors=colors,
+            floors=floors,
             aligned=np.array([aligned]),
             frame="facility_xy_height",
         )
+        # per-floor archives for partitioned PnP loaders (safe filename from label)
+        import re
+        for fid in sorted(set(str(f) for f in floors.tolist())):
+            mask = np.array([str(f) == fid for f in floors.tolist()])
+            if not np.any(mask):
+                continue
+            safe = re.sub(r"[^A-Za-z0-9._-]+", "_", fid)
+            np.savez_compressed(
+                out_dir / f"map_landmarks_f{safe}.npz",
+                positions=positions[mask],
+                descriptors=descriptors[mask],
+                ids=ids[mask],
+                colors=colors[mask],
+                floors=floors[mask],
+                aligned=np.array([aligned]),
+                frame="facility_xy_height",
+            )
         logger.info(
             f"[Mapper] Exported 2D-to-3D map DB: {len(rows)} landmarks "
-            f"(H2GIS + {npz_path.name})"
+            f"(H2GIS + {npz_path.name}; floors={sorted(set(str(f) for f in floors.tolist()))})"
         )

@@ -17,8 +17,8 @@ from fmc.dataset.locations import (
 def test_save_and_load_round_trip(tmp_path: Path):
     path = tmp_path / "locations.csv"
     rows = [
-        {"location_id": "loc_01", "floor": 1, "zone": "Zone_A", "x": 1.5, "y": 2.5},
-        {"location_id": "loc_02", "floor": 1, "zone": "Zone_B", "x": -3.0, "y": 4.0},
+        {"location_id": "loc_01", "floor": "1", "zone": "Zone_A", "x": 1.5, "y": 2.5},
+        {"location_id": "loc_02", "floor": "1", "zone": "Zone_B", "x": -3.0, "y": 4.0},
     ]
     save_locations_csv(path, rows)
     assert load_locations_csv(path) == rows
@@ -31,7 +31,7 @@ def test_load_missing_file_returns_empty_list(tmp_path: Path):
 def test_upsert_creates_new_location(tmp_path: Path):
     path = tmp_path / "locations.csv"
     row = upsert_location(path, "loc_01", floor=1, zone="Zone_A", x=1.234, y=5.678)
-    assert row == {"location_id": "loc_01", "floor": 1, "zone": "Zone_A", "x": 1.234, "y": 5.678}
+    assert row == {"location_id": "loc_01", "floor": "1", "zone": "Zone_A", "x": 1.234, "y": 5.678}
     assert load_locations_csv(path) == [row]
 
 
@@ -71,4 +71,4 @@ def test_bom_prefixed_file_reads_correctly(tmp_path: Path):
         "\ufefflocation_id,floor,zone,x,y\nloc_01,1,Zone_A,1.0,2.0\n".encode("utf-8")
     )
     rows = load_locations_csv(path)
-    assert rows == [{"location_id": "loc_01", "floor": 1, "zone": "Zone_A", "x": 1.0, "y": 2.0}]
+    assert rows == [{"location_id": "loc_01", "floor": "1", "zone": "Zone_A", "x": 1.0, "y": 2.0}]

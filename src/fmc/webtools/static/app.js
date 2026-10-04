@@ -21,6 +21,8 @@ const state = {
   slots: [],           // {px,py,slot_id,zone}
   ingestedLocations: [],
   hasTransform: false,
+  transform: null,            // {a,b,c,d,tx,ty} from transform.json
+  probe: null,                // {px, py, x, y} selected point in facility metres
   queryResult: null,
   routeResult: null,
   overlays: { locations: true, segments: true, slots: true },
@@ -58,6 +60,11 @@ function setStatus(msg, isError) {
   if (msg) setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 6000);
 }
 
+function floorBase() {
+  if (!state.siteId || state.floor == null || state.floor === "") return null;
+  return `/api/sites/${state.siteId}/floors/${encodeURIComponent(state.floor)}`;
+}
+
 // ---------------------------------------------------------------- coordinate math
 
 function screenToImage(sx, sy) {
@@ -65,6 +72,64 @@ function screenToImage(sx, sy) {
 }
 function imageToScreen(ix, iy) {
   return { x: ix * state.zoom + state.panX, y: iy * state.zoom + state.panY };
+}
+
+function pixelToWorld(px, py) {
+  const t = state.transform;
+  if (!t) return null;
+  // same as FloorPlanTransform.pixel_to_world
+  return {
+    x: t.a * px + t.b * py + t.tx,
+    y: t.c * px + t.d * py + t.ty,
+  };
+}
+
+function setProbe(px, py) {
+  const world = pixelToWorld(px, py);
+  state.probe = world
+    ? { px, py, x: world.x, y: world.y }
+    : { px, py, x: null, y: null };
+  renderProbePanel();
+  updateCoordReadout(state.probe);
+}
+
+function renderProbePanel() {
+  const pxEl = document.getElementById("probePx");
+  const xEl = document.getElementById("probeX");
+  const yEl = document.getElementById("probeY");
+  const hint = document.getElementById("probeHint");
+  if (!pxEl) return;
+  const p = state.probe;
+  if (!p) {
+    pxEl.textContent = "—";
+    xEl.textContent = "—";
+    yEl.textContent = "—";
+  } else {
+    pxEl.textContent = `${p.px.toFixed(1)}, ${p.py.toFixed(1)}`;
+    xEl.textContent = p.x == null ? "n/a" : `${p.x.toFixed(3)} m`;
+    yEl.textContent = p.y == null ? "n/a" : `${p.y.toFixed(3)} m`;
+  }
+  if (hint) {
+    hint.textContent = state.hasTransform
+      ? `Values use floor ${state.floor} transform.json (facility metres).`
+      : `No transform for floor ${state.floor || "—"} — fit & save control points first.`;
+  }
+}
+
+function updateCoordReadout(probe) {
+  const el = document.getElementById("coordReadout");
+  if (!el) return;
+  if (!probe) {
+    el.textContent = state.hasTransform
+      ? "Click the plan to read real X/Y"
+      : "No transform — calibrate first";
+    return;
+  }
+  if (probe.x == null || probe.y == null) {
+    el.textContent = `px ${probe.px.toFixed(0)}, ${probe.py.toFixed(0)} · no transform`;
+    return;
+  }
+  el.textContent = `X ${probe.x.toFixed(3)} m · Y ${probe.y.toFixed(3)} m  (px ${probe.px.toFixed(0)}, ${probe.py.toFixed(0)})`;
 }
 
 // ---------------------------------------------------------------- rendering
@@ -85,24 +150,30 @@ function draw() {
   // Ingested capture locations (read-only overlay)
   if (state.overlays.locations) {
     for (const loc of state.ingestedLocations) {
-      if (loc.px === undefined) continue;
+      if (loc.px === undefined || loc.py === undefined) continue;
       const s = imageToScreen(loc.px, loc.py);
       drawDot(s.x, s.y, "#2ecc71", 5);
+      drawLabel(s.x + 8, s.y - 8, loc.location_id || "?", "#2ecc71");
     }
   }
 
-  // Saved walkable segments (from server, pixel coords already resolved)
+  // walkable segments (full editable list loaded from server + new draws)
   if (state.overlays.segments) {
-    for (const seg of state.savedSegments || []) {
+    const segColor = state.mode === "segments" ? "#00d2ff" : "#3498db";
+    for (const seg of state.segments) {
       if (seg.px1 === undefined) continue;
       const a = imageToScreen(seg.px1, seg.py1);
       const b = imageToScreen(seg.px2, seg.py2);
-      drawLine(a, b, "#3498db", 3);
+      drawLine(a, b, segColor, 3);
+      if (state.mode === "segments") {
+        drawDot(a.x, a.y, segColor, 5);
+        drawDot(b.x, b.y, segColor, 5);
+      }
     }
   }
-  // Saved vehicle slots
-  if (state.overlays.slots) {
-    for (const slot of state.savedSlots || []) {
+  // vehicle slots (full editable list; slots-mode redraws them highlighted)
+  if (state.overlays.slots && state.mode !== "slots") {
+    for (const slot of state.slots) {
       if (slot.px === undefined) continue;
       const s = imageToScreen(slot.px, slot.py);
       drawSquare(s.x, s.y, "#e67e22", 7);
@@ -118,18 +189,9 @@ function draw() {
       drawLabel(s.x + 8, s.y - 8, String(i), "#ff4757");
     });
   }
-  if (state.mode === "segments") {
-    state.segments.forEach((seg) => {
-      const a = imageToScreen(seg.px1, seg.py1);
-      const b = imageToScreen(seg.px2, seg.py2);
-      drawLine(a, b, "#00d2ff", 3);
-      drawDot(a.x, a.y, "#00d2ff", 5);
-      drawDot(b.x, b.y, "#00d2ff", 5);
-    });
-    if (state.pendingSegmentPt) {
-      const s = imageToScreen(state.pendingSegmentPt.px, state.pendingSegmentPt.py);
-      drawDot(s.x, s.y, "#ffdd00", 6);
-    }
+  if (state.mode === "segments" && state.pendingSegmentPt) {
+    const s = imageToScreen(state.pendingSegmentPt.px, state.pendingSegmentPt.py);
+    drawDot(s.x, s.y, "#ffdd00", 6);
   }
   if (state.mode === "slots") {
     state.slots.forEach((slot) => {
@@ -179,6 +241,29 @@ function draw() {
       drawDot(s.x, s.y, "#ffdd00", 7);
     }
   }
+
+  // selected probe point (overview click → real X/Y)
+  if (state.probe) {
+    const s = imageToScreen(state.probe.px, state.probe.py);
+    drawCrosshair(s.x, s.y, "#ffdd00", 12);
+    if (state.probe.x != null && state.probe.y != null) {
+      drawLabel(s.x + 10, s.y - 10, `${state.probe.x.toFixed(2)}, ${state.probe.y.toFixed(2)}`, "#ffdd00");
+    }
+  }
+}
+
+function drawCrosshair(x, y, color, r) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x - r, y);
+  ctx.lineTo(x + r, y);
+  ctx.moveTo(x, y - r);
+  ctx.lineTo(x, y + r);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x, y, 3.5, 0, 2 * Math.PI);
+  ctx.stroke();
 }
 
 function drawDot(x, y, color, r) {
@@ -266,7 +351,9 @@ canvas.addEventListener("click", (e) => {
 });
 
 function handleClick(px, py) {
-  if (state.mode === "control_points") {
+  if (state.mode === "view" || state.mode === "query") {
+    setProbe(px, py);
+  } else if (state.mode === "control_points") {
     state.controlPoints.push({ px, py, x: 0, y: 0 });
     renderControlPointsPanel();
   } else if (state.mode === "segments") {
@@ -420,33 +507,50 @@ async function selectSite(siteId) {
   const floors = await api("GET", `/api/sites/${siteId}/floors`);
   const sel = document.getElementById("floorSelect");
   sel.innerHTML = floors.map((f) => `<option value="${f}">${f}</option>`).join("");
-  await selectFloor(floors[0] ?? 1);
+  await selectFloor(String(floors[0] ?? "1"));
 }
 
 document.getElementById("createFloorBtn").addEventListener("click", async () => {
-  const n = parseInt(document.getElementById("newFloorNum").value, 10);
-  if (Number.isNaN(n)) return;
-  await api("POST", `/api/sites/${state.siteId}/floors/${n}`);
+  const name = (document.getElementById("newFloorNum").value || "").trim();
+  if (!name) return;
+  const enc = encodeURIComponent(name);
+  await api("POST", `/api/sites/${state.siteId}/floors/${enc}`);
+  document.getElementById("newFloorNum").value = "";
   await selectSite(state.siteId);
-  document.getElementById("floorSelect").value = n;
-  await selectFloor(n);
+  document.getElementById("floorSelect").value = name;
+  await selectFloor(name);
 });
 
-document.getElementById("floorSelect").addEventListener("change", (e) => selectFloor(+e.target.value));
+document.getElementById("floorSelect").addEventListener("change", (e) => selectFloor(e.target.value));
 
 async function selectFloor(floor) {
-  state.floor = floor;
+  state.floor = String(floor);
   state.controlPoints = [];
   state.segments = [];
   state.slots = [];
+  state.savedSegments = [];
+  state.savedSlots = [];
+  state.pendingSegmentPt = null;
   state.queryResult = null;
   state.routeResult = null;
   state.captureLocations = [];
   state.selectedLocationId = null;
   state.selectedLocationPhotos = [];
   state.pendingNewLocationPoint = null;
+  state.probe = null;
+  state.transform = null;
+  state.hasTransform = false;
+  state.img = null;
   document.getElementById("newLocationForm").style.display = "none";
   document.getElementById("selectedLocationPanel").style.display = "none";
+  const fitEl = document.getElementById("fitResult");
+  if (fitEl) fitEl.innerHTML = "";
+  document.getElementById("saveTransformBtn").disabled = true;
+  renderControlPointsPanel();
+  renderSegmentsPanel();
+  renderSlotsPanel();
+  renderProbePanel();
+  updateCoordReadout(null);
   await loadFloorplanImage();
   await loadControlPoints();
   await checkTransform();
@@ -460,39 +564,45 @@ async function selectFloor(floor) {
 
 document.getElementById("uploadPdfBtn").addEventListener("click", async () => {
   const fileInput = document.getElementById("pdfFile");
-  if (!fileInput.files.length || !state.siteId) { setStatus("Pick a site and a PDF first", true); return; }
+  const base = floorBase();
+  if (!fileInput.files.length || !base) { setStatus("Pick a site, floor, and PDF first", true); return; }
   const form = new FormData();
   form.append("file", fileInput.files[0]);
   const page = document.getElementById("pdfPage").value || 0;
   const dpi = document.getElementById("pdfDpi").value || 200;
-  setStatus("Rendering PDF...");
+  setStatus(`Rendering PDF for floor ${state.floor}...`);
   try {
-    const res = await fetch(`/api/sites/${state.siteId}/floorplan?page=${page}&dpi=${dpi}`, { method: "POST", body: form });
+    const res = await fetch(`${base}/floorplan?page=${page}&dpi=${dpi}`, { method: "POST", body: form });
     if (!res.ok) throw new Error((await res.json()).detail);
-    setStatus("Floor plan rendered");
+    setStatus(`Floor plan rendered for floor ${state.floor}`);
     await loadFloorplanImage();
     draw();
   } catch (e) { setStatus(e.message, true); }
 });
 
 async function loadFloorplanImage() {
-  if (!state.siteId) return;
+  const base = floorBase();
+  if (!base) return;
   const img = new Image();
   await new Promise((resolve) => {
     img.onload = () => {
       state.img = img;
       state.imgW = img.width;
       state.imgH = img.height;
-      document.getElementById("canvasHint").style.display = "none";
+      const hint = document.getElementById("canvasHint");
+      hint.style.display = "none";
+      hint.textContent = "Load a site and render a floor plan to begin. Scroll to zoom, right-drag to pan.";
       fitToCanvas();
       resolve();
     };
     img.onerror = () => {
       state.img = null;
-      document.getElementById("canvasHint").style.display = "block";
+      const hint = document.getElementById("canvasHint");
+      hint.style.display = "block";
+      hint.textContent = `No floor plan for floor ${state.floor} yet. Upload/render a PDF for this floor.`;
       resolve();
     };
-    img.src = `/api/sites/${state.siteId}/floorplan/image?_=${Date.now()}`;
+    img.src = `${base}/floorplan/image?_=${Date.now()}`;
   });
 }
 
@@ -507,22 +617,31 @@ function fitToCanvas() {
 // ---------------------------------------------------------------- control points / transform
 
 async function loadControlPoints() {
-  const points = await api("GET", `/api/sites/${state.siteId}/control-points`);
-  state.controlPoints = points;
+  const base = floorBase();
+  if (!base) return;
+  try {
+    state.controlPoints = await api("GET", `${base}/control-points`);
+  } catch (e) {
+    state.controlPoints = [];
+  }
   renderControlPointsPanel();
 }
 
 document.getElementById("saveControlPointsBtn").addEventListener("click", async () => {
+  const base = floorBase();
+  if (!base) return;
   try {
-    await api("PUT", `/api/sites/${state.siteId}/control-points`, state.controlPoints);
-    setStatus("Control points saved");
+    await api("PUT", `${base}/control-points`, state.controlPoints);
+    setStatus(`Control points saved for floor ${state.floor}`);
   } catch (e) { setStatus(e.message, true); }
 });
 
 document.getElementById("fitTransformBtn").addEventListener("click", async () => {
+  const base = floorBase();
+  if (!base) return;
   try {
-    await api("PUT", `/api/sites/${state.siteId}/control-points`, state.controlPoints);
-    const result = await api("POST", `/api/sites/${state.siteId}/control-points/fit`);
+    await api("PUT", `${base}/control-points`, state.controlPoints);
+    const result = await api("POST", `${base}/control-points/fit`);
     renderFitResult(result);
     document.getElementById("saveTransformBtn").disabled = false;
   } catch (e) {
@@ -544,9 +663,11 @@ function renderFitResult(result) {
 }
 
 document.getElementById("saveTransformBtn").addEventListener("click", async () => {
+  const base = floorBase();
+  if (!base) return;
   try {
-    await api("POST", `/api/sites/${state.siteId}/control-points/fit/save`);
-    setStatus("Transform saved");
+    await api("POST", `${base}/control-points/fit/save`);
+    setStatus(`Transform saved for floor ${state.floor}`);
     await checkTransform();
     await loadGeometry();
     await loadIngestedLocations();
@@ -555,11 +676,26 @@ document.getElementById("saveTransformBtn").addEventListener("click", async () =
 });
 
 async function checkTransform() {
+  const base = floorBase();
+  if (!base) {
+    state.transform = null;
+    state.hasTransform = false;
+    renderProbePanel();
+    updateCoordReadout(null);
+    return;
+  }
   try {
-    await api("GET", `/api/sites/${state.siteId}/transform`);
+    const t = await api("GET", `${base}/transform`);
+    state.transform = t;
     state.hasTransform = true;
   } catch (e) {
+    state.transform = null;
     state.hasTransform = false;
+  }
+  if (state.probe) setProbe(state.probe.px, state.probe.py);
+  else {
+    renderProbePanel();
+    updateCoordReadout(null);
   }
 }
 
@@ -568,21 +704,39 @@ async function checkTransform() {
 async function loadGeometry() {
   if (!state.floor) return;
   try {
-    const geo = await api("GET", `/api/sites/${state.siteId}/floors/${state.floor}/geometry`);
-    state.savedSegments = geo.segments;
-    state.savedSlots = geo.slots;
+    const floorPath = encodeURIComponent(state.floor);
+    const geo = await api("GET", `/api/sites/${state.siteId}/floors/${floorPath}/geometry`);
+    state.savedSegments = geo.segments || [];
+    state.savedSlots = geo.slots || [];
+    // editable lists include everything already on disk (PUT replaces whole floor list)
+    state.segments = state.savedSegments
+      .filter((s) => s.px1 != null && s.py1 != null && s.px2 != null && s.py2 != null)
+      .map((s) => ({ px1: s.px1, py1: s.py1, px2: s.px2, py2: s.py2 }));
+    state.slots = state.savedSlots
+      .filter((s) => s.px != null && s.py != null)
+      .map((s) => ({
+        px: s.px,
+        py: s.py,
+        slot_id: s.slot_id || "",
+        zone: s.zone || "",
+      }));
   } catch (e) {
     state.savedSegments = [];
     state.savedSlots = [];
+    state.segments = [];
+    state.slots = [];
   }
+  renderSegmentsPanel();
+  renderSlotsPanel();
 }
 
 document.getElementById("saveSegmentsBtn").addEventListener("click", async () => {
   try {
-    await api("PUT", `/api/sites/${state.siteId}/floors/${state.floor}/segments`, state.segments);
-    setStatus("Segments saved");
-    state.segments = [];
-    renderSegmentsPanel();
+    const payload = state.segments.map((s) => ({
+      px1: s.px1, py1: s.py1, px2: s.px2, py2: s.py2,
+    }));
+    await api("PUT", `/api/sites/${state.siteId}/floors/${encodeURIComponent(state.floor)}/segments`, payload);
+    setStatus(`Segments saved (${payload.length})`);
     await loadGeometry();
     draw();
   } catch (e) { setStatus(e.message, true); }
@@ -590,10 +744,11 @@ document.getElementById("saveSegmentsBtn").addEventListener("click", async () =>
 
 document.getElementById("saveSlotsBtn").addEventListener("click", async () => {
   try {
-    await api("PUT", `/api/sites/${state.siteId}/floors/${state.floor}/slots`, state.slots);
-    setStatus("Slots saved");
-    state.slots = [];
-    renderSlotsPanel();
+    const payload = state.slots.map((s) => ({
+      px: s.px, py: s.py, slot_id: s.slot_id, zone: s.zone,
+    }));
+    await api("PUT", `/api/sites/${state.siteId}/floors/${encodeURIComponent(state.floor)}/slots`, payload);
+    setStatus(`Slots saved (${payload.length})`);
     await loadGeometry();
     await refreshRouteSlotOptions();
     draw();
@@ -601,8 +756,18 @@ document.getElementById("saveSlotsBtn").addEventListener("click", async () => {
 });
 
 async function loadIngestedLocations() {
+  const base = floorBase();
+  if (!base) {
+    state.ingestedLocations = [];
+    return;
+  }
   try {
-    state.ingestedLocations = await api("GET", `/api/sites/${state.siteId}/locations`);
+    state.ingestedLocations = await api("GET", `${base}/locations`);
+    const withPx = state.ingestedLocations.filter((l) => l.px !== undefined).length;
+    if (state.ingestedLocations.length) {
+      setStatus(`${state.ingestedLocations.length} ingested location(s) on floor ${state.floor}` +
+        (withPx ? "" : " (no transform — calibrate to place on plan)"));
+    }
   } catch (e) {
     state.ingestedLocations = [];
   }
@@ -613,7 +778,7 @@ async function loadIngestedLocations() {
 async function loadCaptureLocations() {
   if (!state.siteId || !state.floor) return;
   try {
-    state.captureLocations = await api("GET", `/api/sites/${state.siteId}/floors/${state.floor}/capture-locations`);
+    state.captureLocations = await api("GET", `/api/sites/${state.siteId}/floors/${encodeURIComponent(state.floor)}/capture-locations`);
   } catch (e) {
     state.captureLocations = [];
   }
@@ -653,7 +818,7 @@ document.getElementById("createLocationBtn").addEventListener("click", async () 
   if (!locationId) { setStatus("Location ID is required", true); return; }
   if (!zone) { setStatus("Zone is required", true); return; }
   try {
-    await api("POST", `/api/sites/${state.siteId}/floors/${state.floor}/capture-locations`, {
+    await api("POST", `/api/sites/${state.siteId}/floors/${encodeURIComponent(state.floor)}/capture-locations`, {
       location_id: locationId, zone, px: state.pendingNewLocationPoint.px, py: state.pendingNewLocationPoint.py,
     });
     state._lastZoneUsed = zone;

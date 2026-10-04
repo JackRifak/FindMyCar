@@ -42,16 +42,17 @@ def _tiny_jpeg_bytes(color=(200, 50, 50)) -> bytes:
     return buf.getvalue()
 
 
-def _calibrated_site(client: TestClient, site_id: str = "site_00"):
-    """Create a site with a saved transform: 1 pixel = 0.05m, no rotation."""
+def _calibrated_site(client: TestClient, site_id: str = "site_00", floor: str = "1"):
+    """Create a site with a saved per-floor transform: 1 pixel = 0.05m, no rotation."""
     client.post(f"/api/sites/{site_id}")
     points = [
         {"px": 100, "py": 100, "x": 0.0, "y": 0.0},
         {"px": 300, "py": 100, "x": 10.0, "y": 0.0},
         {"px": 100, "py": 300, "x": 0.0, "y": 10.0},
     ]
-    client.put(f"/api/sites/{site_id}/control-points", json=points)
-    client.post(f"/api/sites/{site_id}/control-points/fit/save")
+    base = f"/api/sites/{site_id}/floors/{floor}"
+    client.put(f"{base}/control-points", json=points)
+    client.post(f"{base}/control-points/fit/save")
 
 
 def test_create_site_and_list(client: TestClient):
@@ -59,7 +60,7 @@ def test_create_site_and_list(client: TestClient):
 
     res = client.post("/api/sites/site_00")
     assert res.status_code == 200
-    assert res.json()["floors"] == [1]
+    assert res.json()["floors"] == ["1"]
 
     assert client.get("/api/sites").json() == ["site_00"]
 
@@ -68,14 +69,14 @@ def test_create_site_and_list(client: TestClient):
 
 
 def test_unknown_site_is_404(client: TestClient):
-    assert client.get("/api/sites/nope/transform").status_code == 404
-    assert client.get("/api/sites/nope/control-points").status_code == 404
+    assert client.get("/api/sites/nope/floors/1/transform").status_code == 404
+    assert client.get("/api/sites/nope/floors/1/control-points").status_code == 404
 
 
 def test_floorplan_upload_and_serve(client: TestClient):
     client.post("/api/sites/site_00")
     res = client.post(
-        "/api/sites/site_00/floorplan",
+        "/api/sites/site_00/floors/1/floorplan",
         params={"page": 0, "dpi": 72},
         files={"file": ("plan.pdf", _tiny_pdf_bytes(), "application/pdf")},
     )
@@ -83,45 +84,47 @@ def test_floorplan_upload_and_serve(client: TestClient):
     body = res.json()
     assert body["width"] == 200
     assert body["height"] == 150
+    assert body["floor"] == "1"
 
-    img_res = client.get("/api/sites/site_00/floorplan/image")
+    img_res = client.get("/api/sites/site_00/floors/1/floorplan/image")
     assert img_res.status_code == 200
     assert img_res.headers["content-type"] == "image/png"
 
 
 def test_control_points_fit_and_save_flow(client: TestClient):
     client.post("/api/sites/site_00")
+    base = "/api/sites/site_00/floors/1"
 
     points = [
         {"px": 100, "py": 100, "x": 0.0, "y": 0.0},
         {"px": 300, "py": 100, "x": 10.0, "y": 0.0},
         {"px": 100, "py": 300, "x": 0.0, "y": 10.0},
     ]
-    put_res = client.put("/api/sites/site_00/control-points", json=points)
+    put_res = client.put(f"{base}/control-points", json=points)
     assert put_res.status_code == 200
     assert put_res.json()["saved"] == 3
 
     # Round-trips correctly
-    assert client.get("/api/sites/site_00/control-points").json() == points
+    assert client.get(f"{base}/control-points").json() == points
 
     # Fit preview does not persist a transform yet
-    fit_res = client.post("/api/sites/site_00/control-points/fit")
+    fit_res = client.post(f"{base}/control-points/fit")
     assert fit_res.status_code == 200
     fit_body = fit_res.json()
     assert fit_body["max_residual"] < 1e-6
     assert any("3 control points" in w for w in fit_body["warnings"])
-    assert client.get("/api/sites/site_00/transform").status_code == 404
+    assert client.get(f"{base}/transform").status_code == 404
 
     # Saving persists it
-    save_res = client.post("/api/sites/site_00/control-points/fit/save")
+    save_res = client.post(f"{base}/control-points/fit/save")
     assert save_res.status_code == 200
-    assert client.get("/api/sites/site_00/transform").status_code == 200
+    assert client.get(f"{base}/transform").status_code == 200
 
 
 def test_fit_requires_three_points(client: TestClient):
     client.post("/api/sites/site_00")
-    client.put("/api/sites/site_00/control-points", json=[{"px": 0, "py": 0, "x": 0, "y": 0}])
-    res = client.post("/api/sites/site_00/control-points/fit")
+    client.put("/api/sites/site_00/floors/1/control-points", json=[{"px": 0, "py": 0, "x": 0, "y": 0}])
+    res = client.post("/api/sites/site_00/floors/1/control-points/fit")
     assert res.status_code == 400
 
 
@@ -132,8 +135,8 @@ def test_segments_and_slots_round_trip_through_pixel_and_world(client: TestClien
         {"px": 300, "py": 100, "x": 10.0, "y": 0.0},
         {"px": 100, "py": 300, "x": 0.0, "y": 10.0},
     ]
-    client.put("/api/sites/site_00/control-points", json=points)
-    client.post("/api/sites/site_00/control-points/fit/save")
+    client.put("/api/sites/site_00/floors/1/control-points", json=points)
+    client.post("/api/sites/site_00/floors/1/control-points/fit/save")
 
     # 1 pixel = 0.05m per the fitted transform above; segment from (100,100)->(300,100)
     # should come out to world (0,0)->(10,0).
@@ -172,9 +175,56 @@ def test_segments_rejected_without_transform(client: TestClient):
 
 def test_create_floor(client: TestClient):
     client.post("/api/sites/site_00")
-    assert client.get("/api/sites/site_00/floors").json() == [1]
-    client.post("/api/sites/site_00/floors/2")
-    assert client.get("/api/sites/site_00/floors").json() == [1, 2]
+    assert client.get("/api/sites/site_00/floors").json() == ["1"]
+    client.post("/api/sites/site_00/floors/B1")
+    assert client.get("/api/sites/site_00/floors").json() == ["1", "B1"]
+
+
+def test_floors_have_isolated_plans_and_geometry(client: TestClient, tmp_path: Path):
+    """Each floor keeps its own floorplan/transform/control points/geometry."""
+    client.post("/api/sites/site_00")
+    client.post("/api/sites/site_00/floors/B1")
+
+    # calibrate floor 1
+    _calibrated_site(client, floor="1")
+    client.put(
+        "/api/sites/site_00/floors/1/segments",
+        json=[{"px1": 100, "py1": 100, "px2": 300, "py2": 100}],
+    )
+
+    # calibrate B1 with a different scale (1px = 0.1m)
+    b1_points = [
+        {"px": 100, "py": 100, "x": 0.0, "y": 0.0},
+        {"px": 200, "py": 100, "x": 10.0, "y": 0.0},
+        {"px": 100, "py": 200, "x": 0.0, "y": 10.0},
+    ]
+    client.put("/api/sites/site_00/floors/B1/control-points", json=b1_points)
+    client.post("/api/sites/site_00/floors/B1/control-points/fit/save")
+    client.put(
+        "/api/sites/site_00/floors/B1/segments",
+        json=[{"px1": 100, "py1": 100, "px2": 200, "py2": 100}],
+    )
+
+    # floor 1 transform/control points unchanged
+    assert client.get("/api/sites/site_00/floors/1/control-points").json()[1]["x"] == 10.0
+    assert len(client.get("/api/sites/site_00/floors/1/control-points").json()) == 3
+    assert client.get("/api/sites/site_00/floors/B1/control-points").json() == b1_points
+
+    # a third floor with no calibration must NOT inherit floor 1's points
+    client.post("/api/sites/site_00/floors/G")
+    assert client.get("/api/sites/site_00/floors/G/control-points").json() == []
+    assert client.get("/api/sites/site_00/floors/G/transform").status_code == 404
+
+    geo1 = client.get("/api/sites/site_00/floors/1/geometry").json()
+    geo_b1 = client.get("/api/sites/site_00/floors/B1/geometry").json()
+    assert len(geo1["segments"]) == 1
+    assert len(geo_b1["segments"]) == 1
+    assert geo1["segments"][0]["x2"] == pytest.approx(10.0, abs=1e-6)
+    assert geo_b1["segments"][0]["x2"] == pytest.approx(10.0, abs=1e-6)
+
+    # assets land under per-floor dirs
+    assert (tmp_path / "site_00" / "floorplan" / "1" / "transform.json").exists()
+    assert (tmp_path / "site_00" / "floorplan" / "B1" / "transform.json").exists()
 
 
 def test_capture_location_and_photo_lifecycle(client: TestClient):

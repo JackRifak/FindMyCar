@@ -21,7 +21,7 @@
       <input id="newSiteId" type="text" placeholder="New site ID" aria-label="New site ID">
       <button id="createSiteBtn" class="secondary-btn">Create site</button>
       <label>Floor <select id="floorSelect" aria-label="Current floor"></select></label>
-      <input id="newFloorNum" type="number" placeholder="#" aria-label="New floor number">
+      <input id="newFloorNum" type="text" placeholder="e.g. G, B1, 1" aria-label="New floor name" maxlength="16" style="width:7em;">
       <button id="createFloorBtn" class="secondary-btn">Add floor</button>
     </div>
 
@@ -30,7 +30,7 @@
       <label class="file-label">PDF <input id="pdfFile" type="file" accept="application/pdf"></label>
       <label>Page <input id="pdfPage" type="number" value="0"></label>
       <label>DPI <input id="pdfDpi" type="number" value="200"></label>
-      <button id="uploadPdfBtn">Render plan</button>
+      <button id="uploadPdfBtn">Render plan for floor</button>
     </div>
   </div>
 </header>
@@ -51,7 +51,10 @@
   <section id="workspace" aria-label="Floor plan workspace">
     <div class="workspace-heading">
       <div><span class="eyebrow">Workspace</span><strong>Floor plan canvas</strong></div>
-      <span class="canvas-help">Scroll to zoom · right-drag to pan</span>
+      <div class="workspace-meta">
+        <span id="coordReadout" class="coord-readout" aria-live="polite">Click the plan to read real X/Y</span>
+        <span class="canvas-help">Scroll to zoom · right-drag to pan</span>
+      </div>
     </div>
     <div id="canvasWrap">
     <canvas id="mapCanvas" width="900" height="700"></canvas>
@@ -67,13 +70,21 @@
       <label><input type="checkbox" id="toggleLocations" checked> Ingested capture locations</label>
       <label><input type="checkbox" id="toggleSegments" checked> Walkable paths</label>
       <label><input type="checkbox" id="toggleSlots" checked> Parking slots</label>
-      <p class="hint">Choose a numbered mode above to calibrate the plan or add parking data.</p>
+      <h3 style="margin-top:1.1em">Selected point</h3>
+      <p class="hint">Click anywhere on the floor plan to convert that pixel through the saved transform into facility metres.</p>
+      <div id="probeCoords" class="probe-coords">
+        <div><span>Pixel</span><strong id="probePx">—</strong></div>
+        <div><span>Real X</span><strong id="probeX">—</strong></div>
+        <div><span>Real Y</span><strong id="probeY">—</strong></div>
+      </div>
+      <p id="probeHint" class="hint">No transform loaded yet — fit &amp; save control points first.</p>
     </section>
 
     <section id="panel-control_points" class="panel" style="display:none">
       <p class="panel-kicker">Step 1 · Calibrate</p><h3>Control points</h3>
-      <p class="hint">Click 2 points on a marked/dimensioned feature. Enter the REAL-WORLD coordinates
-      (in METERS) for each. Need 3+ non-collinear points, ideally 4+.</p>
+      <p class="hint">Per-floor calibration. Click points on this floor's plan and enter REAL-WORLD
+      coordinates (metres). Need 3+ non-collinear points, ideally 4+. Switching floors loads that
+      floor's own control points / transform.</p>
       <div id="controlPointsList"></div>
       <button id="saveControlPointsBtn">Save points</button>
       <button id="fitTransformBtn">Fit &amp; Check</button>

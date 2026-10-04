@@ -21,7 +21,7 @@ LIVE_POSE_TTL_S = 300.0
 
 @dataclass
 class FusedPosition:
-    floor: int
+    floor: str | int
     x: float
     y: float
     heading: float
@@ -30,9 +30,10 @@ class FusedPosition:
 
 
 class PositionFuser:
-    def __init__(self, vio_tracker: VIOTracker, floor: int):
+    def __init__(self, vio_tracker: VIOTracker, floor: str | int = "1"):
+        from fmc.floors import normalize_floor_id
         self.vio_tracker = vio_tracker
-        self.floor = floor
+        self.floor = normalize_floor_id(floor)
         self._last_confidence = 0.0
         self._last_x: float | None = None
         self._last_y: float | None = None
@@ -43,7 +44,7 @@ class PositionFuser:
         self._live_marker: bool = False
         self._live_ts: float = 0.0
 
-    def last_position(self) -> tuple[int, float, float] | None:
+    def last_position(self) -> tuple[str | int, float, float] | None:
         """Most recent known (floor, x, y), or None if no fix yet.
         Used by the navigation/routing layer, which needs a starting point."""
         if self._last_x is None or self._last_y is None:
@@ -71,20 +72,27 @@ class PositionFuser:
         if not vpr_result.matched:
             return None
 
+        from fmc.floors import normalize_floor_id
+
         # prefer 6-DOF PnP pose when available
         z = None
         if vpr_result.pose_6dof is not None:
             pose = vpr_result.pose_6dof
             x, y, heading = pose.x, pose.y, pose.heading
             conf = pose.confidence
-            floor = vpr_result.record.floor if vpr_result.record else self.floor
+            floor = getattr(pose, "floor", None)
+            if floor is None and vpr_result.record is not None:
+                floor = getattr(vpr_result.record, "floor_label", None) or vpr_result.record.floor
+            floor = normalize_floor_id(floor if floor is not None else self.floor)
             z = float(pose.z)
         elif vpr_result.record is not None:
             x = vpr_result.record.x
             y = vpr_result.record.y
             heading = float(vpr_result.record.orientation)
             conf = vpr_result.inlier_ratio
-            floor = vpr_result.record.floor
+            floor = normalize_floor_id(
+                getattr(vpr_result.record, "floor_label", None) or vpr_result.record.floor
+            )
         else:
             return None
 
@@ -153,7 +161,7 @@ class EKFPositionFuser(PositionFuser):
     or alpha-beta approach, avoiding jarring teleportation jumps in the UI.
     """
     
-    def __init__(self, vio_tracker: VIOTracker, floor: int):
+    def __init__(self, vio_tracker: VIOTracker, floor: str | int = "1"):
         super().__init__(vio_tracker, floor)
         # Process noise covariance (VIO drift uncertainty)
         self.P = 1.0  # initial variance
@@ -163,14 +171,21 @@ class EKFPositionFuser(PositionFuser):
         if not vpr_result.matched:
             return None
 
+        from fmc.floors import normalize_floor_id
+
         if vpr_result.pose_6dof is not None:
             z_x, z_y = vpr_result.pose_6dof.x, vpr_result.pose_6dof.y
             z_heading = vpr_result.pose_6dof.heading
-            floor = vpr_result.record.floor if vpr_result.record else self.floor
+            floor = getattr(vpr_result.pose_6dof, "floor", None)
+            if floor is None and vpr_result.record is not None:
+                floor = getattr(vpr_result.record, "floor_label", None) or vpr_result.record.floor
+            floor = normalize_floor_id(floor if floor is not None else self.floor)
         elif vpr_result.record is not None:
             z_x, z_y = vpr_result.record.x, vpr_result.record.y
             z_heading = float(vpr_result.record.orientation)
-            floor = vpr_result.record.floor
+            floor = normalize_floor_id(
+                getattr(vpr_result.record, "floor_label", None) or vpr_result.record.floor
+            )
         else:
             return None
 

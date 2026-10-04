@@ -96,3 +96,79 @@ def test_same_segment_direct_edge_still_beats_going_via_a_junction():
     route = calculate_route(segments, start_x=-4.408, start_y=0.0, dest_x=-1.809, dest_y=0.0)
     assert route is not None
     assert route.total_distance == pytest.approx(2.599, abs=1e-3)
+
+
+def test_multifloor_route_via_elevator():
+    from fmc.navigation.routing import calculate_multifloor_route
+
+    floors = {
+        "1": [
+            {"x1": 0.0, "y1": 0.0, "x2": 10.0, "y2": 0.0},
+            {"x1": 10.0, "y1": 0.0, "x2": 10.0, "y2": 10.0},
+        ],
+        "B1": [
+            {"x1": 10.0, "y1": 0.0, "x2": 20.0, "y2": 0.0},
+        ],
+    }
+    connectors = [{
+        "connector_id": "elevator_a",
+        "type": "elevator",
+        "penalty_cost": 15.0,
+        "nodes": {
+            "1": {"x": 10.0, "y": 0.0},
+            "B1": {"x": 10.0, "y": 0.0},
+        },
+    }]
+    route = calculate_multifloor_route(
+        floors_segments=floors,
+        vertical_connectors=connectors,
+        start_floor="1",
+        start_x=0.0,
+        start_y=0.0,
+        dest_floor="B1",
+        dest_x=20.0,
+        dest_y=0.0,
+        dest_slot_id="P2-1",
+    )
+    assert route is not None
+    assert route.start_floor == "1"
+    assert route.dest_floor == "B1"
+    assert any(leg.floor_transition for leg in route.legs)
+    assert route.total_distance == pytest.approx(10.0 + 15.0 + 10.0, abs=0.05)
+    # walking legs exist on both floors
+    walk_floors = {leg.floor for leg in route.legs if leg.floor is not None}
+    assert "1" in walk_floors and "B1" in walk_floors
+
+
+def test_multifloor_connector_mid_segment_splices():
+    # landing not on a declared endpoint must still join the corridor
+    from fmc.navigation.routing import calculate_multifloor_route
+
+    floors = {
+        "G": [{"x1": 0.0, "y1": 0.0, "x2": 20.0, "y2": 0.0}],
+        "B1": [{"x1": 10.0, "y1": -5.0, "x2": 10.0, "y2": 15.0}],
+    }
+    connectors = [{
+        "connector_id": "stairs_mid",
+        "type": "stairs",
+        "penalty_cost": 8.0,
+        "nodes": {
+            "G": {"x": 10.0, "y": 0.0},
+            "B1": {"x": 10.0, "y": 5.0},
+        },
+    }]
+    route = calculate_multifloor_route(
+        floors_segments=floors,
+        vertical_connectors=connectors,
+        start_floor="G",
+        start_x=0.0,
+        start_y=0.0,
+        dest_floor="B1",
+        dest_x=10.0,
+        dest_y=15.0,
+        dest_slot_id="S1",
+    )
+    assert route is not None
+    assert any(leg.floor_transition for leg in route.legs)
+    # vertical weight = penalty + planar offset between landings (5 m here)
+    assert route.total_distance == pytest.approx(10.0 + 8.0 + 5.0 + 10.0, abs=0.1)

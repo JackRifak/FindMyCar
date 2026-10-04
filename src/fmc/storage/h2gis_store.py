@@ -3,6 +3,7 @@
 Uses the H2GIS JDBC driver (Java) via JayDeBeApi. Landmarks are stored as
 POINT Z geometries with ORB descriptors so we can:
   - load the full map for 2D-to-3D matching
+  - filter by floor_id (multi-floor parking, no cross-floor false positives)
   - spatially filter landmarks near a coarse VPR fix (ST_DWithin)
 """
 from __future__ import annotations
@@ -71,6 +72,24 @@ def _ensure_spatial(conn) -> None:
         cur.close()
 
 
+def _column_exists(conn, table: str, column: str) -> bool:
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE UPPER(TABLE_NAME) = UPPER(?) AND UPPER(COLUMN_NAME) = UPPER(?)
+            """,
+            (table, column),
+        )
+        row = cur.fetchone()
+        return bool(row and int(row[0]) > 0)
+    except Exception:
+        return False
+    finally:
+        cur.close()
+
+
 def _ensure_schema(conn) -> None:
     cur = conn.cursor()
     try:
@@ -93,22 +112,50 @@ def _ensure_schema(conn) -> None:
                 descriptor VARBINARY(256) NOT NULL,
                 color_r INT DEFAULT 52,
                 color_g INT DEFAULT 199,
-                color_b INT DEFAULT 89
+                color_b INT DEFAULT 89,
+                floor_id VARCHAR(32) DEFAULT '1' NOT NULL
             )
             """
         )
-        # spatial index (ignore if already exists)
+        # migrate older DBs that lack floor_id / still use INT
+        if not _column_exists(conn, "map_landmarks", "floor_id"):
+            try:
+                cur.execute(
+                    "ALTER TABLE map_landmarks ADD COLUMN floor_id VARCHAR(32) DEFAULT '1' NOT NULL"
+                )
+                logger.info("[H2GIS] Migrated map_landmarks: added floor_id (VARCHAR)")
+            except Exception as e:
+                logger.warning("[H2GIS] floor_id migrate skipped: %s", e)
+        else:
+            # best-effort widen INT → VARCHAR for label floors (G, B1, …)
+            try:
+                cur.execute(
+                    "ALTER TABLE map_landmarks ALTER COLUMN floor_id VARCHAR(32)"
+                )
+            except Exception:
+                pass
+
         try:
             cur.execute(
                 "CREATE SPATIAL INDEX IF NOT EXISTS map_landmarks_spidx "
                 "ON map_landmarks(the_geom)"
             )
         except Exception:
-            # older H2GIS may not support IF NOT EXISTS on spatial index
             try:
                 cur.execute(
                     "CREATE SPATIAL INDEX map_landmarks_spidx ON map_landmarks(the_geom)"
                 )
+            except Exception:
+                pass
+
+        try:
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_floor_geom "
+                "ON map_landmarks(floor_id)"
+            )
+        except Exception:
+            try:
+                cur.execute("CREATE INDEX idx_floor_geom ON map_landmarks(floor_id)")
             except Exception:
                 pass
     finally:
@@ -120,7 +167,6 @@ def _as_jbytes(arr: np.ndarray):
     import jpype
 
     u8 = np.asarray(arr, dtype=np.uint8).ravel()
-    # JByte is signed; bit pattern preserved via int8 view
     return jpype.JArray(jpype.JByte)(u8.view(np.int8).tolist())
 
 
@@ -130,7 +176,6 @@ def _from_jbytes(blob) -> np.ndarray:
         return np.zeros(0, dtype=np.uint8)
     if isinstance(blob, (bytes, bytearray, memoryview)):
         return np.frombuffer(bytes(blob), dtype=np.uint8).copy()
-    # java byte[]
     return np.array([int(b) & 0xFF for b in blob], dtype=np.uint8)
 
 
@@ -140,6 +185,7 @@ def replace_landmarks(
     descriptors: np.ndarray,
     ids: np.ndarray,
     colors: Optional[np.ndarray] = None,
+    floors: Optional[np.ndarray] = None,
     aligned: bool = False,
 ) -> Path:
     """Wipe and rewrite the landmark table for a site. Returns DB file stem path."""
@@ -150,6 +196,13 @@ def replace_landmarks(
 
     db_file = db_file_for_site(site)
     db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    from fmc.floors import coerce_floor_array, normalize_floor_id
+
+    if floors is None:
+        floor_labels = ["1"] * len(positions)
+    else:
+        floor_labels = coerce_floor_array(floors, n=len(positions))
 
     conn = connect(db_file)
     try:
@@ -170,6 +223,11 @@ def replace_landmarks(
                 "INSERT INTO map_meta(k, v) VALUES (?, ?)",
                 ("count", str(len(positions))),
             )
+            floor_set = sorted(set(floor_labels), key=str)
+            cur.execute(
+                "INSERT INTO map_meta(k, v) VALUES (?, ?)",
+                ("floors", ",".join(floor_set)),
+            )
 
             if colors is None:
                 colors = np.tile(np.array([52, 199, 89], dtype=np.uint8), (len(positions), 1))
@@ -179,13 +237,14 @@ def replace_landmarks(
                 wkt = f"POINT Z ({x} {y} {z})"
                 desc = _as_jbytes(descriptors[i])
                 cr, cg, cb = int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2])
+                fid = normalize_floor_id(floor_labels[i])
                 cur.execute(
                     """
                     INSERT INTO map_landmarks
-                    (landmark_id, x, y, z, the_geom, descriptor, color_r, color_g, color_b)
-                    VALUES (?, ?, ?, ?, ST_GeomFromText(?, 0), ?, ?, ?, ?)
+                    (landmark_id, x, y, z, the_geom, descriptor, color_r, color_g, color_b, floor_id)
+                    VALUES (?, ?, ?, ?, ST_GeomFromText(?, 0), ?, ?, ?, ?, ?)
                     """,
-                    (int(ids[i]), x, y, z, wkt, desc, cr, cg, cb),
+                    (int(ids[i]), x, y, z, wkt, desc, cr, cg, cb, fid),
                 )
             conn.commit()
         finally:
@@ -194,25 +253,84 @@ def replace_landmarks(
         conn.close()
 
     logger.info(
-        "[H2GIS] Stored %s landmarks in %s (aligned=%s)",
-        len(positions), db_file, aligned,
+        "[H2GIS] Stored %s landmarks in %s (aligned=%s floors=%s)",
+        len(positions), db_file, aligned, sorted(set(floor_labels)),
     )
     return db_file
 
 
+def list_floors(site: SiteConfig) -> list[str]:
+    """Distinct floor_id labels present in the landmark DB."""
+    from fmc.floors import normalize_floor_id
+
+    db_file = db_file_for_site(site)
+    mv = Path(str(db_file) + ".mv.db")
+    if not mv.exists() and not Path(str(db_file) + ".db").exists() and not db_file.exists():
+        return []
+
+    conn = connect(db_file)
+    try:
+        _ensure_schema(conn)
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT DISTINCT floor_id FROM map_landmarks ORDER BY floor_id")
+            rows = cur.fetchall()
+            return [normalize_floor_id(r[0]) for r in rows]
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+
+def retag_floor(site: SiteConfig, old_floor, new_floor) -> int:
+    """Rewrite floor_id labels in the landmark DB. Returns rows updated."""
+    from fmc.floors import normalize_floor_id
+
+    old_id = normalize_floor_id(old_floor)
+    new_id = normalize_floor_id(new_floor)
+    if old_id == new_id:
+        return 0
+
+    db_file = db_file_for_site(site)
+    mv = Path(str(db_file) + ".mv.db")
+    if not mv.exists() and not Path(str(db_file) + ".db").exists() and not db_file.exists():
+        return 0
+
+    conn = connect(db_file)
+    try:
+        _ensure_schema(conn)
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "UPDATE map_landmarks SET floor_id = ? WHERE CAST(floor_id AS VARCHAR) = ?",
+                (new_id, old_id),
+            )
+            n = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
+            conn.commit()
+            return int(n)
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+
 def load_landmarks(
     site: SiteConfig,
+    floor: Optional[str] = None,
     center_xy: Optional[tuple[float, float]] = None,
     radius_m: float = 25.0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    """Load landmarks as (positions Nx3, descriptors NxD, ids N).
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """Load landmarks as (positions Nx3, descriptors NxD, ids N, floors N).
 
-    If center_xy is set, only return landmarks within radius_m (spatial filter).
+    If floor is set, only that floor's landmarks are returned (prevents
+    cross-floor PnP false positives). If center_xy is set, also apply
+    spatial radius filter.
     """
+    from fmc.floors import normalize_floor_id
+
     db_file = db_file_for_site(site)
     mv = Path(str(db_file) + ".mv.db")
     if not mv.exists() and not Path(str(db_file) + ".db").exists():
-        # also accept bare file created by some H2 versions
         if not db_file.exists():
             return None
 
@@ -221,25 +339,27 @@ def load_landmarks(
         _ensure_schema(conn)
         cur = conn.cursor()
         try:
+            clauses = []
+            params: list = []
+            if floor is not None:
+                clauses.append("CAST(floor_id AS VARCHAR) = ?")
+                params.append(normalize_floor_id(floor))
             if center_xy is not None:
                 cx, cy = float(center_xy[0]), float(center_xy[1])
-                # ST_DWithin on 2D projection of POINT Z
-                cur.execute(
-                    """
-                    SELECT landmark_id, x, y, z, descriptor
-                    FROM map_landmarks
-                    WHERE ST_DWithin(
-                        ST_Force2D(the_geom),
-                        ST_GeomFromText(?, 0),
-                        ?
-                    )
-                    """,
-                    (f"POINT({cx} {cy})", float(radius_m)),
+                clauses.append(
+                    "ST_DWithin(ST_Force2D(the_geom), ST_GeomFromText(?, 0), ?)"
                 )
+                params.extend([f"POINT({cx} {cy})", float(radius_m)])
+
+            where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+            sql = (
+                "SELECT landmark_id, x, y, z, descriptor, floor_id "
+                f"FROM map_landmarks{where}"
+            )
+            if params:
+                cur.execute(sql, tuple(params))
             else:
-                cur.execute(
-                    "SELECT landmark_id, x, y, z, descriptor FROM map_landmarks"
-                )
+                cur.execute(sql)
             rows = cur.fetchall()
         finally:
             cur.close()
@@ -251,14 +371,21 @@ def load_landmarks(
 
     ids = np.array([int(r[0]) for r in rows], dtype=np.int32)
     positions = np.array([[float(r[1]), float(r[2]), float(r[3])] for r in rows], dtype=np.float32)
+    floors = np.array(
+        [normalize_floor_id(r[5] if r[5] is not None else "1") for r in rows],
+        dtype=object,
+    )
     descs = [_from_jbytes(r[4]) for r in rows]
     dlen = max((len(d) for d in descs), default=0)
     descriptors = np.zeros((len(descs), dlen), dtype=np.uint8)
     for i, d in enumerate(descs):
         descriptors[i, : len(d)] = d
 
-    logger.info("[H2GIS] Loaded %s landmarks from %s", len(ids), db_file)
-    return positions, descriptors, ids
+    logger.info(
+        "[H2GIS] Loaded %s landmarks from %s (floor=%s)",
+        len(ids), db_file, floor if floor is not None else "all",
+    )
+    return positions, descriptors, ids, floors
 
 
 def delete_site_db(site: SiteConfig) -> None:

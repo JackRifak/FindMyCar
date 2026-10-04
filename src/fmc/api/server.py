@@ -35,13 +35,14 @@ from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from fmc.config import load_site_config
+from fmc.config import get_or_create_floor, load_site_config, rename_floor, save_site_config
 from fmc.api.live_diagnostics import append_client_event, image_quality_metrics, persist_live_miss
 from fmc.dataset.schema import load_records
 from fmc.dataset.locations import load_locations_csv
+from fmc.floors import normalize_floor_id
 from fmc.fusion.map_matching import snap_to_walkable
 from fmc.fusion.sensor_fusion import PositionFuser
-from fmc.navigation.routing import calculate_route
+from fmc.navigation.routing import calculate_multifloor_route, calculate_route
 from fmc.vio.tracker import SixDofPose, TrueVIOTracker
 from fmc.vpr.pipeline import VPRPipeline
 from fmc.mapping.continuous_mapper import ContinuousMapper
@@ -86,8 +87,14 @@ def _get_vpr_pipeline() -> VPRPipeline:
         _vpr_pipeline = VPRPipeline(_site)
     return _vpr_pipeline
 
+def _default_floor() -> str:
+    ids = _site.floor_ids()
+    return ids[0] if ids else "1"
+
+
 # Global mapper instance for the continuous mapping feature
 _global_mapper = ContinuousMapper()
+_global_mapper.set_map_floor(_default_floor())
 _finalize_lock = threading.Lock()
 
 
@@ -104,12 +111,16 @@ def reload_site():
     global _site, _vpr_pipeline
     _site = load_site_config(_SITE_ID)
     _vpr_pipeline = None
+    # keep mapper on a floor that still exists after config edits
+    cur = normalize_floor_id(getattr(_global_mapper, "_map_floor", None) or _default_floor())
+    if cur not in _site.floor_ids():
+        _global_mapper.set_map_floor(_default_floor())
     logger.info(f"Site config and VPR pipeline cache reloaded for site={_SITE_ID}")
     return {"status": "reloaded", "site": _SITE_ID}
 
 
 class PositionResponse(BaseModel):
-    floor: int
+    floor: str
     x: float
     y: float
     heading: float
@@ -167,6 +178,7 @@ async def localize(
     vio_qx: float | None = Form(None),
     vio_qy: float | None = Form(None),
     vio_qz: float | None = Form(None),
+    prior_floor: str | None = Form(None),
 ):
     """First fix / relocalisation: submit a camera frame, get a VPR-based position."""
     t0 = time.perf_counter()
@@ -182,11 +194,15 @@ async def localize(
     logger.info(f"[{device_id}] POST /localize received: frame={w}x{h} ({len(contents)/1024:.1f} KB)")
 
     pipeline = _get_vpr_pipeline()
+    fuser = _sessions.setdefault(device_id, PositionFuser(TrueVIOTracker(), floor=_default_floor()))
+    floor_prior = (
+        normalize_floor_id(prior_floor)
+        if prior_floor is not None
+        else getattr(fuser, "floor", None)
+    )
     t_vpr0 = time.perf_counter()
-    result = pipeline.localize(frame)
+    result = pipeline.localize(frame, prior_floor=floor_prior)
     t_vpr_ms = (time.perf_counter() - t_vpr0) * 1000
-
-    fuser = _sessions.setdefault(device_id, PositionFuser(TrueVIOTracker(), floor=1))
     # seed VIO pose before reset so facility lock is relative to current ARCore frame
     if vio_x is not None and vio_z is not None:
         tracker = fuser.vio_tracker
@@ -270,7 +286,7 @@ async def localize(
             f"vpr={t_vpr_ms:.1f}ms | total_server={total_ms:.1f}ms"
         )
         return PositionResponse(
-            floor=fuser.floor, x=0.0, y=0.0, heading=0.0,
+            floor=normalize_floor_id(fuser.floor), x=0.0, y=0.0, heading=0.0,
             confidence=0.0, tracking=False, timestamp=time.time(),
         )
 
@@ -293,7 +309,7 @@ async def localize(
 
     pose = result.pose_6dof
     return PositionResponse(
-        floor=fused.floor,
+        floor=normalize_floor_id(fused.floor),
         x=snapped_x,
         y=snapped_y,
         heading=fused.heading,
@@ -372,11 +388,11 @@ class TrackPoseBody(BaseModel):
 @app.post("/track/{device_id}", response_model=PositionResponse)
 def track_six_dof(device_id: str, body: TrackPoseBody):
     """Push ARCore/6-DOF odometry between VPR fixes (live localization)."""
-    fuser = _sessions.setdefault(device_id, PositionFuser(TrueVIOTracker(), floor=1))
+    fuser = _sessions.setdefault(device_id, PositionFuser(TrueVIOTracker(), floor=_default_floor()))
     # need an absolute fix first — otherwise marker stays off
     if fuser.last_position() is None and not getattr(fuser, "_live_marker", False):
         return PositionResponse(
-            floor=fuser.floor, x=0.0, y=0.0, heading=0.0,
+            floor=normalize_floor_id(fuser.floor), x=0.0, y=0.0, heading=0.0,
             confidence=0.0, tracking=False, timestamp=time.time(),
             method="none",
         )
@@ -393,7 +409,7 @@ def track_six_dof(device_id: str, body: TrackPoseBody):
     )
     fused = fuser.on_six_dof(six)
     return PositionResponse(
-        floor=fused.floor,
+        floor=normalize_floor_id(fused.floor),
         x=fused.x,
         y=fused.y,
         heading=fused.heading,
@@ -415,15 +431,21 @@ def get_last_position(device_id: str):
     logger.debug(f"[{device_id}] GET /position/{device_id}")
     fuser = _sessions.get(device_id)
     if fuser is None:
-        return PositionResponse(floor=1, x=0.0, y=0.0, heading=0.0, confidence=0.0, tracking=False, timestamp=time.time())
+        return PositionResponse(
+            floor=_default_floor(), x=0.0, y=0.0, heading=0.0,
+            confidence=0.0, tracking=False, timestamp=time.time(),
+        )
 
     last = fuser.last_position()
     if last is None:
-        return PositionResponse(floor=fuser.floor, x=0.0, y=0.0, heading=0.0, confidence=0.0, tracking=False, timestamp=time.time())
+        return PositionResponse(
+            floor=normalize_floor_id(fuser.floor), x=0.0, y=0.0, heading=0.0,
+            confidence=0.0, tracking=False, timestamp=time.time(),
+        )
 
     floor, x, y = last
     return PositionResponse(
-        floor=floor,
+        floor=normalize_floor_id(floor),
         x=x,
         y=y,
         heading=float(getattr(fuser, "_last_heading", 0.0) or 0.0),
@@ -435,22 +457,36 @@ def get_last_position(device_id: str):
     )
 
 
+class RouteLegResponse(BaseModel):
+    floor: str | None = None
+    instruction: str = ""
+    waypoints: list[tuple[float, float]] = []
+    floor_transition: dict | None = None
+    distance: float = 0.0
+
+
 class RouteResponse(BaseModel):
-    floor: int
+    floor: str
+    dest_floor: str | None = None
     waypoints: list[tuple[float, float]]
     total_distance: float
+    legs: list[RouteLegResponse] = []
 
 
 @app.get("/route/{device_id}", response_model=RouteResponse)
 def get_route(device_id: str, slot_id: str):
     """Route from the device's last known position to a vehicle slot.
 
-    Implements project brief Section 10: current position + destination slot
-    + walkable map -> ordered waypoints (Dijkstra). Does not yet handle a
-    slot on a different floor than the current position (needs stairs/
-    elevator/ramp transitions modeled in the walkable graph -- not in the
-    mock site yet).
+    Same-floor or cross-floor via vertical_connectors in site config.yaml
+    (elevators / stairs / ramps).
     """
+    global _site
+    # pick up config.yaml edits (connectors / walkables) without full restart
+    try:
+        _site = load_site_config(_SITE_ID)
+    except Exception as e:
+        logger.warning("[API /route] config reload failed: %s", e)
+
     fuser = _sessions.get(device_id)
     if fuser is None:
         raise HTTPException(status_code=404, detail="No known position for this device — call /localize first")
@@ -459,22 +495,75 @@ def get_route(device_id: str, slot_id: str):
     if last is None:
         raise HTTPException(status_code=404, detail="No known position for this device — call /localize first")
     floor, x, y = last
+    floor = normalize_floor_id(floor)
 
     slot = _site.vehicle_slot(slot_id)
     if slot is None:
         raise HTTPException(status_code=404, detail=f"Unknown slot_id: {slot_id}")
-    if slot["floor"] != floor:
-        raise HTTPException(status_code=400, detail="Cross-floor routing not yet supported")
+    dest_floor = normalize_floor_id(slot["floor"])
 
-    route = calculate_route(
-        walkable_segments=_site.walkable_segments(floor),
-        start_x=x, start_y=y,
-        dest_x=slot["x"], dest_y=slot["y"],
-    )
+    floors_segments = {
+        normalize_floor_id(f["floor"]): list(f.get("walkable_segments") or [])
+        for f in _site.raw.get("floors", [])
+    }
+    connectors = _site.vertical_connectors()
+
+    if dest_floor == floor and not connectors:
+        route = calculate_route(
+            walkable_segments=_site.walkable_segments(floor),
+            start_x=x, start_y=y,
+            dest_x=slot["x"], dest_y=slot["y"],
+        )
+    else:
+        route = calculate_multifloor_route(
+            floors_segments=floors_segments,
+            vertical_connectors=connectors,
+            start_floor=floor,
+            start_x=x,
+            start_y=y,
+            dest_floor=dest_floor,
+            dest_x=slot["x"],
+            dest_y=slot["y"],
+            dest_slot_id=slot_id,
+        )
+
     if route is None:
-        raise HTTPException(status_code=404, detail="No walkable route found to that slot")
+        if dest_floor != floor and not connectors:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cross-floor route {floor}→{dest_floor} needs vertical_connectors "
+                    f"in config.yaml (none configured)"
+                ),
+            )
+        start_n = len(floors_segments.get(floor) or [])
+        dest_n = len(floors_segments.get(dest_floor) or [])
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No walkable route {floor}→{dest_floor} to {slot_id} "
+                f"(segments {floor}={start_n}, {dest_floor}={dest_n}, "
+                f"connectors={len(connectors)})"
+            ),
+        )
 
-    return RouteResponse(floor=floor, waypoints=route.waypoints, total_distance=route.total_distance)
+    legs = [
+        RouteLegResponse(
+            floor=normalize_floor_id(leg.floor) if leg.floor is not None else None,
+            instruction=leg.instruction,
+            waypoints=list(leg.waypoints),
+            floor_transition=leg.floor_transition,
+            distance=float(leg.distance),
+        )
+        for leg in (route.legs or [])
+    ]
+    return RouteResponse(
+        floor=floor,
+        dest_floor=dest_floor,
+        waypoints=route.waypoints,
+        total_distance=route.total_distance,
+        legs=legs,
+    )
 
 
 @app.get("/slots")
@@ -499,7 +588,16 @@ class MappingTag(BaseModel):
     timestamp: float
     x: float
     y: float
-    floor: int
+    floor: str = "1"
+
+
+class FloorBody(BaseModel):
+    floor: str
+
+
+class FloorRenameBody(BaseModel):
+    new_floor: str
+
 
 def _persist_live_tags() -> None:
     tags_path = _site.index_dir / "tags.json"
@@ -513,15 +611,76 @@ def _persist_live_tags() -> None:
 
 
 @app.post("/map/new-session")
-def map_new_session():
+def map_new_session(floor: str | None = None):
     """Start a separated mapping walk; keep prior sessions' landmarks and tags."""
     # reload finalized cloud/H2GIS into memory so the next finalize cannot wipe them
     info = _global_mapper.begin_session(site=_site)
+    if floor is not None:
+        fid = normalize_floor_id(floor)
+        _global_mapper.set_map_floor(fid)
+        info["floor"] = fid
+    else:
+        info["floor"] = normalize_floor_id(getattr(_global_mapper, "_map_floor", _default_floor()))
     logger.info(
-        "[API /map/new-session] session=%s total_landmarks=%s total_tags=%s",
-        info.get("session_id"), info.get("total_landmarks"), info.get("total_tags"),
+        "[API /map/new-session] session=%s floor=%s total_landmarks=%s total_tags=%s",
+        info.get("session_id"), info.get("floor"),
+        info.get("total_landmarks"), info.get("total_tags"),
     )
     return {"status": "success", "message": "new mapping session", **info}
+
+
+@app.post("/map/floor")
+def map_set_floor(floor: str = Form(...)):
+    """Set active floor for subsequent keyframes / tags in the mapping session."""
+    fid = normalize_floor_id(floor)
+    _global_mapper.set_map_floor(fid)
+    return {"status": "success", "floor": fid}
+
+
+@app.get("/map/floors")
+def map_list_floors():
+    """Floors declared in site config only (user-assigned names / count)."""
+    cfg = list(_site.floor_ids())
+    map_only: list[str] = []
+    try:
+        from fmc.vpr.pnp_localizer import available_map_floors
+        for f in available_map_floors(_site):
+            fid = normalize_floor_id(f)
+            if fid not in cfg and fid not in map_only:
+                map_only.append(fid)
+    except Exception:
+        pass
+    return {
+        "floors": cfg,
+        "map_only_floors": map_only,  # orphan map DB labels not in config (not selectable)
+        "vertical_connectors": _site.vertical_connectors(),
+    }
+
+
+@app.post("/map/floors")
+def map_create_floor(body: FloorBody):
+    """Add a user-named floor to the site config (e.g. G, B1, B2)."""
+    fid = normalize_floor_id(body.floor)
+    if not fid or fid.lower() in ("none", "null"):
+        raise HTTPException(status_code=400, detail="invalid floor name")
+    get_or_create_floor(_site, fid)
+    save_site_config(_site)
+    _global_mapper.set_map_floor(fid)
+    return {"status": "success", "floor": fid, "floors": _site.floor_ids()}
+
+
+@app.patch("/map/floors/{old_floor}")
+def map_rename_floor(old_floor: str, body: FloorRenameBody):
+    """Rename a floor label in config and vertical_connectors."""
+    try:
+        rename_floor(_site, old_floor, body.new_floor)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    save_site_config(_site)
+    new_id = normalize_floor_id(body.new_floor)
+    if normalize_floor_id(getattr(_global_mapper, "_map_floor", "")) == normalize_floor_id(old_floor):
+        _global_mapper.set_map_floor(new_id)
+    return {"status": "success", "floor": new_id, "floors": _site.floor_ids()}
 
 
 @app.post("/map/reset")
@@ -536,6 +695,11 @@ def map_reset():
                 p.unlink()
             except OSError as e:
                 logger.warning("[API /map/reset] Could not remove %s: %s", name, e)
+    for p in _site.index_dir.glob("map_landmarks_f*.npz"):
+        try:
+            p.unlink()
+        except OSError as e:
+            logger.warning("[API /map/reset] Could not remove %s: %s", p, e)
     try:
         from fmc.storage.h2gis_store import delete_site_db
         delete_site_db(_site)
@@ -670,7 +834,7 @@ def get_map_tags():
                         "type": "facility_landmark",
                         "facility_x": float(r["x"]),
                         "facility_y": float(r["y"]),
-                        "floor": int(r["floor"]),
+                        "floor": normalize_floor_id(r["floor"]),
                         "zone": r.get("zone", ""),
                         "x": float(r["x"]),
                         "y": float(r["y"]),
@@ -752,50 +916,70 @@ def map_finalize():
         _finalize_lock.release()
 
 @app.get("/map/floorplan")
-def get_floorplan():
-    """Serve the floorplan image for visual tagging."""
-    img_path = _site.data_dir / "floorplan" / "floorplan.png"
+def get_floorplan(floor: str | None = None):
+    """Serve the floorplan image for the active / requested floor."""
+    from fmc.floors import resolve_floorplan_asset
+
+    fid = normalize_floor_id(
+        floor if floor is not None else getattr(_global_mapper, "_map_floor", None) or _default_floor()
+    )
+    img_path = resolve_floorplan_asset(_site.data_dir, fid, "floorplan.png")
     if not img_path.exists():
         logger.warning(f"[API /map/floorplan] Floorplan not found at {img_path}")
-        raise HTTPException(status_code=404, detail="Floorplan image not found")
+        raise HTTPException(status_code=404, detail=f"Floorplan image not found for floor '{fid}'")
     return FileResponse(img_path)
 
 @app.get("/map/transform")
-def get_transform():
-    """Serve the floorplan transform matrix to map pixels to meters."""
-    transform_path = _site.data_dir / "floorplan" / "transform.json"
+def get_transform(floor: str | None = None):
+    """Serve the floorplan transform matrix for the active / requested floor."""
+    from fmc.floors import resolve_floorplan_asset
+
+    fid = normalize_floor_id(
+        floor if floor is not None else getattr(_global_mapper, "_map_floor", None) or _default_floor()
+    )
+    transform_path = resolve_floorplan_asset(_site.data_dir, fid, "transform.json")
     if not transform_path.exists():
         logger.warning(f"[API /map/transform] Transform not found at {transform_path}")
-        raise HTTPException(status_code=404, detail="Transform not found")
+        raise HTTPException(status_code=404, detail=f"Transform not found for floor '{fid}'")
     with open(transform_path, "r") as f:
         return json.load(f)
 
 @app.get("/map/survey-spots")
-def get_survey_spots():
-    """Pixel coords of survey spots (P5–P8) for the tagging floorplan overlay."""
-    path = _site.data_dir / "floorplan" / "locations_pixels.csv"
+def get_survey_spots(floor: str | None = None):
+    """Pixel coords of survey spots for the tagging floorplan overlay.
+
+    Optional per floor — missing file / no rows returns an empty list (not 404).
+    """
+    from fmc.floors import resolve_floorplan_asset
+
+    fid = normalize_floor_id(
+        floor if floor is not None else getattr(_global_mapper, "_map_floor", None) or _default_floor()
+    )
+    path = resolve_floorplan_asset(_site.data_dir, fid, "locations_pixels.csv")
     if not path.exists():
-        raise HTTPException(status_code=404, detail="Survey spot pixels not found")
-    want = {"P5", "P6", "P7", "P8"}
+        return {"status": "success", "spots": [], "floor": fid}
     spots = []
     try:
         with open(path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 lid = (row.get("location_id") or "").strip()
-                if lid not in want:
+                if not lid:
+                    continue
+                spot_floor = normalize_floor_id(row.get("floor") or fid)
+                if spot_floor != fid:
                     continue
                 spots.append({
                     "id": lid,
                     "px": float(row["pixel_x"]),
                     "py": float(row["pixel_y"]),
-                    "floor": int(float(row.get("floor") or 1)),
+                    "floor": spot_floor,
                     "zone": (row.get("zone") or "").strip(),
                 })
     except (KeyError, ValueError, OSError) as e:
         logger.warning("[API /map/survey-spots] Failed reading %s: %s", path, e)
         raise HTTPException(status_code=500, detail="Could not load survey spots") from e
     spots.sort(key=lambda s: s["id"])
-    return {"status": "success", "spots": spots}
+    return {"status": "success", "spots": spots, "floor": fid}
 
 @app.get("/map/pointcloud")
 def get_pointcloud():
@@ -807,6 +991,80 @@ def get_pointcloud():
     size_bytes = ply_path.stat().st_size
     logger.info(f"[API /map/pointcloud] Serving pointcloud.ply ({size_bytes/1024:.1f} KB)")
     return FileResponse(ply_path, media_type="application/octet-stream")
+
+
+@app.get("/map/cloud-layers")
+def get_cloud_layers(max_per_floor: int = 8000):
+    """Point cloud split by floor for stacked 3D visualization."""
+    from fmc.storage.h2gis_store import load_landmarks
+
+    floor_order = list(_site.floor_ids())
+    loaded = None
+    try:
+        loaded = load_landmarks(_site)
+    except Exception as e:
+        logger.warning("[API /map/cloud-layers] H2GIS load failed: %s", e)
+    if loaded is None:
+        npz = _site.index_dir / "map_landmarks.npz"
+        if npz.exists():
+            try:
+                data = np.load(npz)
+                pos = data["positions"]
+                fls = data["floors"] if "floors" in data.files else np.array(["1"] * len(pos))
+                loaded = (pos, None, None, fls)
+            except Exception as e:
+                logger.warning("[API /map/cloud-layers] NPZ load failed: %s", e)
+    if loaded is None:
+        raise HTTPException(status_code=404, detail="No map landmarks for cloud layers")
+
+    positions, _desc, _ids, floors_arr = loaded
+    from fmc.floors import coerce_floor_array, normalize_floor_id
+
+    labels = coerce_floor_array(floors_arr, n=len(positions))
+    # keep config order, then any extras
+    for lab in labels:
+        fid = normalize_floor_id(lab)
+        if fid not in floor_order:
+            floor_order.append(fid)
+
+    max_n = max(200, min(int(max_per_floor), 20000))
+    layers = []
+    total = 0
+    for fid in floor_order:
+        idxs = [i for i, lab in enumerate(labels) if normalize_floor_id(lab) == fid]
+        if len(idxs) > max_n:
+            step = max(1, len(idxs) // max_n)
+            idxs = idxs[::step][:max_n]
+        pts = [[float(positions[i][0]), float(positions[i][1]), float(positions[i][2])] for i in idxs]
+        layers.append({"floor": fid, "positions": pts, "count": len(pts)})
+        total += len(pts)
+
+    aligned = False
+    tags_file = _site.index_dir / "tags.json"
+    if tags_file.exists():
+        try:
+            with open(tags_file, "r", encoding="utf-8") as f:
+                tags = json.load(f)
+            aligned = bool(tags and tags[0].get("aligned"))
+        except Exception:
+            pass
+    if not aligned:
+        aligned = bool(getattr(_global_mapper, "_is_aligned", False))
+
+    try:
+        stack_m = float(_site.raw.get("stack_m", 4.0))
+    except (TypeError, ValueError):
+        stack_m = 4.0
+    stack_m = max(0.5, min(stack_m, 50.0))
+
+    return {
+        "status": "success",
+        "aligned": aligned,
+        "floor_order": floor_order,
+        "stack_m": stack_m,
+        "total_points": total,
+        "layers": layers,
+    }
 
 
 @app.get("/favicon.ico")

@@ -49,6 +49,11 @@
         <label for="server-url">Server:</label>
         <input type="text" id="server-url" placeholder="Backend URL (leave empty for current host)">
         <button id="btn-save-server">Set</button>
+        <label for="map-floor" style="margin-left:8px;">Floor:</label>
+        <select id="map-floor" title="Active mapping floor"></select>
+        <input id="new-floor-name" type="text" placeholder="G, B1…" maxlength="16" title="New floor label" style="flex:0 0 4.5em; width:4.5em;">
+        <button id="btn-add-floor" title="Add floor to site config">Add</button>
+        <button id="btn-rename-floor" title="Rename selected floor">Rename</button>
     </div>
 
     <div class="video-container">
@@ -118,7 +123,12 @@
     <div id="viewer-modal">
         <div style="position: absolute; top: 15px; left: 15px; right: 15px; z-index: 210; display: flex; justify-content: space-between; align-items: center; pointer-events: none;">
             <div id="viewer-stats" style="background: rgba(0,0,0,0.8); padding: 8px 12px; border-radius: 6px; font-family: monospace; font-size: 12px; color: #34c759; border: 1px solid rgba(255,255,255,0.2);">Loading 3D Point Cloud...</div>
-            <div style="display:flex; gap:8px; pointer-events:auto;">
+            <div style="display:flex; gap:8px; align-items:center; pointer-events:auto;">
+                <label for="stack-m-input" style="display:flex; align-items:center; gap:6px; background:rgba(0,0,0,0.8); padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.2); font-size:11px; color:#ccc;">
+                    Floor gap
+                    <input id="stack-m-input" type="range" min="1" max="20" step="0.5" value="4" style="width:90px;">
+                    <span id="stack-m-val" style="color:#34c759; font-family:monospace; min-width:2.5em;">4.0m</span>
+                </label>
                 <button id="btn-toggle-3d-landmarks" style="padding: 7px 14px; font-size: 12px; font-weight: bold; background: #ff9500; color: #000; border: none; border-radius: 6px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.5);">📍 Landmarks: ON</button>
             </div>
         </div>

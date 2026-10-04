@@ -1,9 +1,15 @@
+const ARRIVE_M = 2.0; // along-route remaining / approach-node threshold
+const ARRIVE_SLOT_M = 8.0; // euclidean to slot (bays sit off the walkable line)
+const LEG_ADVANCE_M = 0.7; // snap to next walk leg
+const ENTER_CONNECTOR_M = 3.0; // enter lift/stairs guidance (PDR freezes in elevator)
+const SKIP_CALIBRATION = true; // temporarily bypass phone calibration UI
+
 const state = {
   deviceId: "parking-mobile-" + Math.random().toString(36).slice(2, 8),
   workflowStep: "destination",
   hasLocalizedPosition: false,
   slotList: [],
-  position: { floor: 1, x: 0, y: 0, heading: 0, confidence: 0, tracking: false },
+  position: { floor: "1", x: 0, y: 0, heading: 0, confidence: 0, tracking: false },
   calibration: {
     status: "idle",
     step: 0,
@@ -18,6 +24,9 @@ const state = {
   },
   route: null,
   routeScreenPoint: null,
+  activeLegIndex: 0,
+  inFloorTransition: false,
+  arrivedShown: false,
   liveVpr: {
     running: false,
     requestInFlight: false,
@@ -95,6 +104,9 @@ const ui = {
   slotSheet: document.getElementById("slotSheet"),
   calSheet: document.getElementById("calSheet"),
   slotSheetBtn: document.getElementById("slotSheetBtn"),
+  arriveOverlay: document.getElementById("arriveOverlay"),
+  arriveSlot: document.getElementById("arriveSlot"),
+  arriveDismissBtn: document.getElementById("arriveDismissBtn"),
 };
 
 function setStatusChip(text, kind = "warn") {
@@ -126,7 +138,237 @@ function hideSheets() {
   if (ui.calSheet) ui.calSheet.hidden = true;
 }
 
+function showArrivalCelebration(slotId) {
+  if (state.arrivedShown) return;
+  state.arrivedShown = true;
+  stopLiveVprCapture({ keepCamera: true });
+  const label = slotId || "your destination";
+  if (ui.arriveSlot) ui.arriveSlot.textContent = slotId || "your car";
+  if (ui.arriveOverlay) {
+    ui.arriveOverlay.hidden = false;
+    if (ui.turnBanner) ui.turnBanner.hidden = true;
+  } else if (ui.turnBanner) {
+    ui.turnBanner.hidden = false;
+    if (ui.turnLabel) ui.turnLabel.textContent = "You have reached";
+    if (ui.turnDistance) ui.turnDistance.textContent = label;
+  }
+  setStatusChip("Arrived", "live");
+  setStatusMsg(`You have reached ${label}`);
+  setHint(`You have reached ${label}`, true);
+}
+
+function hideArrivalCelebration() {
+  if (ui.arriveOverlay) ui.arriveOverlay.hidden = true;
+}
+
+function destFloorId() {
+  if (!state.route) return null;
+  return String(state.route.dest_floor ?? state.route.floor);
+}
+
+function onDestFloor() {
+  const dest = destFloorId();
+  if (!dest) return false;
+  return String(state.position.floor ?? "") === dest;
+}
+
+function routeDestPoint() {
+  // prefer active last-leg end, else flat route end
+  const leg = activeRouteLeg();
+  const legWps = leg?.waypoints;
+  if (legWps?.length) return legWps[legWps.length - 1];
+  const wps = state.route?.waypoints;
+  if (wps?.length) return wps[wps.length - 1];
+  const slotId = ui.slotInput?.value?.trim();
+  const slot = (state.slotList || []).find((s) => s.slot_id === slotId);
+  if (slot) return [slot.x, slot.y];
+  return null;
+}
+
+function hasReachedDestination(progress) {
+  if (!state.route || !onDestFloor()) return false;
+  if (state.inFloorTransition) return false;
+
+  const pos = state.position;
+  const dest = routeDestPoint();
+  const distSlot = dest
+    ? Math.hypot(pos.x - dest[0], pos.y - dest[1])
+    : Infinity;
+
+  // bay coords are often a few meters off the corridor — use looser radius
+  if (distSlot <= ARRIVE_SLOT_M) return true;
+
+  const rem = progress?.remainingDistance;
+  if (typeof rem === "number" && rem <= ARRIVE_M) return true;
+
+  // corridor approach node (waypoint before the off-path slot spur)
+  const leg = activeRouteLeg();
+  const wps = leg?.waypoints?.length ? leg.waypoints : state.route.waypoints;
+  if (wps?.length >= 2) {
+    const approach = wps[wps.length - 2];
+    const distApproach = Math.hypot(pos.x - approach[0], pos.y - approach[1]);
+    if (distApproach <= ARRIVE_M) return true;
+  }
+  return false;
+}
+
+function activeRouteLeg() {
+  if (!state.route?.legs?.length) return null;
+  const idx = Math.max(0, Math.min(state.activeLegIndex || 0, state.route.legs.length - 1));
+  return state.route.legs[idx];
+}
+
+function nextTransitionLeg(fromIdx = state.activeLegIndex || 0) {
+  if (!state.route?.legs?.length) return null;
+  for (let i = Math.max(0, fromIdx); i < state.route.legs.length; i += 1) {
+    if (state.route.legs[i]?.floor_transition) return state.route.legs[i];
+  }
+  return null;
+}
+
+function connectorLabel(tf) {
+  if (!tf) return "connector";
+  const ctype = String(tf.type || "stairs");
+  if (ctype === "elevator") return "Elevator";
+  if (ctype === "ramp") return "Ramp";
+  return "Stairs";
+}
+
+function enterConnectorLeg() {
+  if (!state.route?.legs?.length) return false;
+  const from = state.activeLegIndex || 0;
+  for (let i = from; i < state.route.legs.length; i += 1) {
+    if (state.route.legs[i]?.floor_transition) {
+      state.activeLegIndex = i;
+      state.inFloorTransition = true;
+      return true;
+    }
+  }
+  // also allow looking slightly ahead of current walk leg
+  for (let i = 0; i < state.route.legs.length; i += 1) {
+    if (state.route.legs[i]?.floor_transition) {
+      const tf = state.route.legs[i].floor_transition;
+      if (String(tf.from_floor) === String(state.position.floor ?? "")) {
+        state.activeLegIndex = i;
+        state.inFloorTransition = true;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function syncActiveLeg() {
+  if (!state.route?.legs?.length) {
+    state.activeLegIndex = 0;
+    state.inFloorTransition = false;
+    return;
+  }
+
+  // sticky: once in a lift/stairs leg, stay until VPR reports the landing floor
+  if (state.inFloorTransition) {
+    let cur = state.route.legs[state.activeLegIndex];
+    if (!cur?.floor_transition) {
+      // repair index if needed
+      enterConnectorLeg();
+      cur = state.route.legs[state.activeLegIndex];
+    }
+    if (cur?.floor_transition) {
+      const userFloor = String(state.position.floor ?? "");
+      const toFloor = String(cur.floor_transition.to_floor);
+      const fromFloor = String(cur.floor_transition.from_floor);
+      if (userFloor === toFloor) {
+        const walkIdx = state.route.legs.findIndex((leg, i) => (
+          i > state.activeLegIndex
+          && String(leg.floor) === userFloor
+          && (leg.waypoints?.length || 0) > 0
+        ));
+        state.activeLegIndex = walkIdx >= 0 ? walkIdx : state.activeLegIndex + 1;
+        state.inFloorTransition = false;
+      } else if (userFloor && userFloor !== fromFloor && userFloor !== toFloor) {
+        // unexpected floor — drop sticky and resync
+        state.inFloorTransition = false;
+      } else {
+        return; // still riding the connector
+      }
+    }
+  }
+
+  if (state.inFloorTransition) return;
+
+  const userFloor = String(state.position.floor ?? "1");
+  let idx = state.route.legs.findIndex((leg) => {
+    if (leg.floor_transition) return false;
+    return String(leg.floor) === userFloor && (leg.waypoints?.length || 0) > 0;
+  });
+  if (idx < 0) idx = Math.max(0, state.activeLegIndex || 0);
+  state.activeLegIndex = idx;
+}
+
 function nextTurnGuidance(waypoints, traveledDistance = 0) {
+  // multi-floor: prefer active leg transition / walk instruction
+  const leg = activeRouteLeg();
+  if (leg?.floor_transition) {
+    const tf = leg.floor_transition;
+    // leg.distance is routing penalty (e.g. 12m), NOT walking remaining
+    return {
+      label: tf.instruction || leg.instruction || `Take ${connectorLabel(tf)} to Floor ${tf.to_floor}`,
+      distanceM: 0,
+      isArrival: false,
+      kind: "arrive",
+      isFloorChange: true,
+    };
+  }
+  if (leg?.waypoints?.length >= 2) {
+    const progress = routeProgressForWaypoints(leg.waypoints);
+    const upcoming = nextTransitionLeg((state.activeLegIndex || 0) + 1);
+    // near the lift/stairs — keep showing meters-to-door (not elevator penalty)
+    if (upcoming?.floor_transition && progress.remainingDistance < 12) {
+      const tf = upcoming.floor_transition;
+      const cid = tf.connector_id || "connector";
+      const rem = Math.max(0, progress.remainingDistance);
+      const atDoor = rem <= ENTER_CONNECTOR_M;
+      return {
+        label: atDoor
+          ? `Take ${connectorLabel(tf)} (${cid}) to Floor ${tf.to_floor}`
+          : `Walk to ${cid} · then ${connectorLabel(tf)} to Floor ${tf.to_floor}`,
+        // don't freeze a stale ~2m while standing in the lift
+        distanceM: atDoor ? 0 : rem,
+        isArrival: false,
+        kind: atDoor ? "arrive" : "straight",
+        isFloorChange: true,
+      };
+    }
+    const instructions = buildTurnInstructions(leg.waypoints);
+    for (const instruction of instructions) {
+      const remaining = instruction.distanceAlongRoute - progress.distanceAlongRoute;
+      if (!instruction.isArrival && remaining < -1) continue;
+      // last walk cue before a lift: prefer route leg text ("Walk to PL3-N03")
+      if (instruction.isArrival && upcoming?.floor_transition) {
+        const tf = upcoming.floor_transition;
+        return {
+          label: leg.instruction || `Walk to ${tf.connector_id || "lift"}`,
+          distanceM: Math.max(0, remaining),
+          isArrival: false,
+          kind: "straight",
+          isFloorChange: false,
+        };
+      }
+      return {
+        label: instruction.label,
+        distanceM: Math.max(0, remaining),
+        isArrival: !!instruction.isArrival,
+        kind: turnKind(instruction.label),
+      };
+    }
+    return {
+      label: leg.instruction || "Continue",
+      distanceM: progress.remainingDistance,
+      isArrival: progress.remainingDistance < ARRIVE_M,
+      kind: progress.remainingDistance < ARRIVE_M ? "arrive" : "straight",
+    };
+  }
+
   const instructions = buildTurnInstructions(waypoints);
   for (const instruction of instructions) {
     const remaining = instruction.distanceAlongRoute - traveledDistance;
@@ -139,6 +381,37 @@ function nextTurnGuidance(waypoints, traveledDistance = 0) {
     };
   }
   return { label: "Continue", distanceM: 0, isArrival: true, kind: "arrive" };
+}
+
+function routeProgressForWaypoints(waypoints) {
+  const position = state.position;
+  let cumulativeDistance = 0;
+  let nearestOffset = Infinity;
+  let distanceAlongRoute = 0;
+  for (let index = 1; index < waypoints.length; index += 1) {
+    const [startX, startY] = waypoints[index - 1];
+    const [endX, endY] = waypoints[index];
+    const segmentX = endX - startX;
+    const segmentY = endY - startY;
+    const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY;
+    const segmentLength = Math.sqrt(segmentLengthSquared);
+    if (segmentLength === 0) continue;
+    const projection = Math.max(0, Math.min(1,
+      ((position.x - startX) * segmentX + (position.y - startY) * segmentY) / segmentLengthSquared,
+    ));
+    const projectedX = startX + projection * segmentX;
+    const projectedY = startY + projection * segmentY;
+    const offset = Math.hypot(position.x - projectedX, position.y - projectedY);
+    if (offset < nearestOffset) {
+      nearestOffset = offset;
+      distanceAlongRoute = cumulativeDistance + projection * segmentLength;
+    }
+    cumulativeDistance += segmentLength;
+  }
+  return {
+    distanceAlongRoute,
+    remainingDistance: Math.max(0, cumulativeDistance - distanceAlongRoute),
+  };
 }
 
 function turnKind(label) {
@@ -160,22 +433,36 @@ function updateTurnHud(traveledDistance = 0) {
     return;
   }
 
+  if (state.arrivedShown) {
+    ui.turnBanner.hidden = Boolean(ui.arriveOverlay && !ui.arriveOverlay.hidden);
+    if (!ui.turnBanner.hidden) {
+      if (ui.turnLabel) ui.turnLabel.textContent = "You have reached";
+      if (ui.turnDistance) ui.turnDistance.textContent = slotId;
+    }
+    return;
+  }
+
   const next = nextTurnGuidance(state.route.waypoints, traveledDistance);
   ui.turnBanner.hidden = false;
   if (ui.turnLabel) ui.turnLabel.textContent = next.label;
   if (ui.turnDistance) {
-    ui.turnDistance.textContent = next.isArrival && next.distanceM < 0.7
-      ? "Now"
-      : next.distanceM < 1
+    ui.turnDistance.textContent = next.isFloorChange
+      ? (next.distanceM < 1 ? "Now" : `${Math.round(next.distanceM)} m`)
+      : next.isArrival && next.distanceM < ARRIVE_M
         ? "Now"
-        : `${Math.round(next.distanceM)} m`;
+        : next.distanceM < 1
+          ? "Now"
+          : `${Math.round(next.distanceM)} m`;
   }
   if (ui.turnIcon) {
     const deg = { left: -90, right: 90, uturn: 180, arrive: 0, straight: 0 }[next.kind] || 0;
     ui.turnIcon.style.transform = `rotate(${deg}deg)`;
     ui.turnIcon.style.opacity = next.kind === "arrive" ? "0.55" : "1";
   }
-  setHint("", false);
+  // keep floor-change copy visible; don't wipe elevator hint
+  if (!next.isFloorChange && !state.inFloorTransition) {
+    setHint("", false);
+  }
 }
 
 function circularMeanDeg(degrees) {
@@ -198,31 +485,45 @@ function circularSpreadDeg(samples) {
   return Math.min(180, Math.sqrt(-2 * Math.log(Math.max(r, 1e-9))) * 180 / Math.PI);
 }
 
+function markCalibrationSkipped() {
+  state.calibration.completed.stillness = true;
+  state.calibration.completed.compass = true;
+  state.calibration.completed.walk = true;
+  state.calibration.status = "skipped";
+}
+
 function updateCalibrationReadiness() {
+  if (SKIP_CALIBRATION) markCalibrationSkipped();
   const allDone = Object.values(state.calibration.completed).every(Boolean);
   state.sessionReady = allDone;
-  setStatusChip(allDone ? "Calibrated" : "Ready", allDone ? "live" : "warn");
+  setStatusChip(allDone ? (SKIP_CALIBRATION ? "Ready" : "Calibrated") : "Ready", allDone ? "live" : "warn");
   ui.localizeBtn.disabled = !allDone;
   updateWorkflowControls();
 }
 
 function canEnterWorkflowStep(step) {
   if (step === "destination") return true;
-  if (step === "calibration") return Boolean(ui.slotInput.value.trim());
-  if (step === "navigation") return state.sessionReady;
+  if (step === "calibration") {
+    if (SKIP_CALIBRATION) return false;
+    return Boolean(ui.slotInput.value.trim());
+  }
+  if (step === "navigation") {
+    if (SKIP_CALIBRATION) return Boolean(ui.slotInput?.value?.trim());
+    return state.sessionReady;
+  }
   return false;
 }
 
 function updateWorkflowControls() {
   const hasDestination = Boolean(ui.slotInput.value.trim());
   ui.destinationContinueBtn.disabled = !hasDestination;
-  ui.calibrationContinueBtn.disabled = !state.sessionReady;
+  if (ui.calibrationContinueBtn) ui.calibrationContinueBtn.disabled = !state.sessionReady;
   if (ui.selectedSlotSummary) {
     ui.selectedSlotSummary.textContent = hasDestination ? ui.slotInput.value.trim() : "No slot selected";
   }
   if (ui.hudSlot) ui.hudSlot.textContent = hasDestination ? ui.slotInput.value.trim() : "—";
 
-  ui.calibrationSteps.forEach((node) => {
+  (ui.calibrationSteps || []).forEach((node) => {
     const key = node.dataset.step === "magnetometer" ? "compass" : node.dataset.step;
     const done = !!state.calibration.completed[key];
     node.classList.toggle("is-done", done);
@@ -336,6 +637,10 @@ function startArTracking() {
 }
 
 function setWorkflowStep(step, moveFocus = false) {
+  // calibration sheet disabled — jump straight to navigation
+  if (SKIP_CALIBRATION && step === "calibration") {
+    step = "navigation";
+  }
   if (!canEnterWorkflowStep(step)) return;
 
   if (state.workflowStep === "navigation" && step !== "navigation") {
@@ -352,7 +657,9 @@ function setWorkflowStep(step, moveFocus = false) {
   if (step === "destination") {
     showSheet("slot");
     setHint("Choose your parking slot to begin", true);
-    setStatusMsg("Select a parking slot, then continue to calibration.");
+    setStatusMsg(SKIP_CALIBRATION
+      ? "Select a parking slot, then continue to localize."
+      : "Select a parking slot, then continue to calibration.");
   } else if (step === "calibration") {
     showSheet("cal");
     setHint("Calibrate sensors before localizing", true);
@@ -689,7 +996,7 @@ async function initSlots() {
       for (const location of locations) {
         const option = document.createElement("option");
         option.value = location.location_id;
-        option.label = `F${location.floor} ${location.zone} (${location.x.toFixed(1)}, ${location.y.toFixed(1)})`;
+        option.label = `${location.floor} ${location.zone} (${location.x.toFixed(1)}, ${location.y.toFixed(1)})`;
         ui.diagnosticLocations.appendChild(option);
       }
     }
@@ -813,6 +1120,7 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
   form.append("image", blob, "parking-frame.jpg");
   const groundTruth = ui.groundTruthLocationId.value.trim();
   if (groundTruth) form.append("ground_truth_location_id", groundTruth);
+  if (state.position?.floor) form.append("prior_floor", String(state.position.floor));
   for (const [key, value] of Object.entries(diagnostics)) form.append(key, String(value));
 
   // lock ARCore frame at the moment of this VPR fix
@@ -879,8 +1187,11 @@ function applyVprFix(pos) {
 }
 
 async function localizeParkingPosition() {
+  if (SKIP_CALIBRATION) markCalibrationSkipped();
   if (!state.sessionReady) {
-    alert("Please complete the 3-step calibration before localizing.");
+    alert(SKIP_CALIBRATION
+      ? "Select a parking slot first, then tap Continue."
+      : "Please complete the 3-step calibration before localizing.");
     return;
   }
   if (state.liveVpr.requestInFlight) return;
@@ -1079,7 +1390,7 @@ function renderTurnInstructions(waypoints, traveledDistance = 0) {
     item.appendChild(label);
 
     const distance = document.createElement("strong");
-    distance.textContent = remainingDistance < 0.7
+    distance.textContent = remainingDistance < ARRIVE_M
       ? "Now"
       : `In ${Math.round(remainingDistance)} m`;
     item.appendChild(distance);
@@ -1090,12 +1401,28 @@ function renderTurnInstructions(waypoints, traveledDistance = 0) {
 async function updateRouteForSlot(slotId) {
   const response = await fetch(`/route/${encodeURIComponent(state.deviceId)}?slot_id=${encodeURIComponent(slotId)}`);
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "No route found");
+    let msg = "No route found";
+    const raw = await response.text().catch(() => "");
+    try {
+      const body = JSON.parse(raw);
+      msg = body.detail || body.error || msg;
+    } catch (_) {
+      if (raw) msg = raw;
+    }
+    if (typeof msg === "string" && msg.toLowerCase().includes("no known position")) {
+      state.hasLocalizedPosition = false;
+      state.route = null;
+    }
+    throw new Error(msg);
   }
 
   const route = await response.json();
   state.route = route;
+  state.activeLegIndex = 0;
+  state.inFloorTransition = false;
+  state.arrivedShown = false;
+  hideArrivalCelebration();
+  syncActiveLeg();
   if (ui.routeBadge) {
     ui.routeBadge.classList.remove("neutral", "warning");
     ui.routeBadge.classList.add("success");
@@ -1103,12 +1430,20 @@ async function updateRouteForSlot(slotId) {
   }
   if (ui.routeDestination) ui.routeDestination.textContent = slotId;
   if (ui.routeTotalDistance) ui.routeTotalDistance.textContent = `${route.total_distance.toFixed(1)} m`;
-  if (ui.routeStatus) ui.routeStatus.textContent = `Floor ${route.floor}`;
-  setStatusChip("Navigating", "live");
+  const destFloor = String(route.dest_floor ?? route.floor);
+  const startFloor = String(route.floor);
+  if (ui.routeStatus) {
+    ui.routeStatus.textContent = destFloor !== startFloor
+      ? `Floor ${startFloor} → ${destFloor}`
+      : `Floor ${startFloor}`;
+  }
+  setStatusChip(destFloor !== startFloor ? `Nav ${startFloor}→${destFloor}` : "Navigating", "live");
   setStatusMsg(`Route ready · ${route.total_distance.toFixed(1)} m to ${slotId}`);
   setHint("", false);
-  renderTurnInstructions(route.waypoints);
-  drawRoute(route.waypoints, slotId);
+  const leg = activeRouteLeg();
+  const guideWps = leg?.waypoints?.length ? leg.waypoints : route.waypoints;
+  renderTurnInstructions(guideWps);
+  drawRoute(guideWps, slotId);
 }
 
 async function navigateToSlot() {
@@ -1202,17 +1537,74 @@ function updateRouteProgress() {
     return;
   }
 
-  const progress = routeProgress();
+  syncActiveLeg();
+  const leg = activeRouteLeg();
+  if (state.inFloorTransition && leg?.floor_transition) {
+    const tf = leg.floor_transition;
+    const msg = tf.instruction
+      || `Take ${connectorLabel(tf)} (${tf.connector_id || ""}) to Floor ${tf.to_floor}`;
+    setHint(msg, true);
+    setStatusMsg(msg);
+    updateTurnHud(0);
+    // at the connector — never show elevator penalty as "left" distance
+    ui.metricDistance.textContent = "Now";
+    return;
+  }
+
+  const guideWps = leg?.waypoints?.length ? leg.waypoints : state.route.waypoints;
+  const progress = guideWps?.length
+    ? routeProgressForWaypoints(guideWps)
+    : routeProgress();
   if (ui.routeDistance) ui.routeDistance.textContent = `${progress.remainingDistance.toFixed(1)} m`;
   if (ui.routeTotalDistance) ui.routeTotalDistance.textContent = `${state.route.total_distance.toFixed(1)} m`;
   ui.metricDistance.textContent = `${progress.remainingDistance.toFixed(1)} m`;
+  const destFloor = destFloorId();
+  const isLastLeg = !state.route.legs
+    || state.activeLegIndex >= state.route.legs.length - 1
+    || onDestFloor();
+  const upcoming = nextTransitionLeg((state.activeLegIndex || 0) + 1);
+  const reached = hasReachedDestination(progress);
   if (ui.routeStatus) {
-    ui.routeStatus.textContent = progress.remainingDistance < 0.7
-      ? `Arrived · Floor ${state.route.floor}`
-      : `Floor ${state.route.floor}`;
+    ui.routeStatus.textContent = reached
+      ? `Arrived · Floor ${destFloor}`
+      : `Floor ${state.position.floor ?? state.route.floor}`;
   }
-  if (progress.remainingDistance < 0.7) {
-    setStatusChip("Arrived", "live");
+  // preview lift/stairs while walking toward it
+  if (!reached && upcoming?.floor_transition && progress.remainingDistance < 12) {
+    const tf = upcoming.floor_transition;
+    setHint(
+      progress.remainingDistance <= ENTER_CONNECTOR_M
+        ? (tf.instruction || `Take ${connectorLabel(tf)} (${tf.connector_id || ""}) to Floor ${tf.to_floor}`)
+        : `Walk to ${tf.connector_id || "lift"} · then ${connectorLabel(tf)} to Floor ${tf.to_floor}`,
+      true,
+    );
+  }
+  if (!leg?.floor_transition && !state.inFloorTransition) {
+    const lastWp = guideWps?.[guideWps.length - 1];
+    const distLift = lastWp
+      ? Math.hypot(state.position.x - lastWp[0], state.position.y - lastWp[1])
+      : Infinity;
+    // enter lift/stairs early — PDR often freezes inside the cabin (~2m left)
+    const nearConnector = Boolean(upcoming?.floor_transition)
+      && (progress.remainingDistance <= ENTER_CONNECTOR_M || distLift <= ENTER_CONNECTOR_M);
+    if (!isLastLeg && !onDestFloor() && nearConnector) {
+      if (enterConnectorLeg()) {
+        updateRouteProgress();
+        return;
+      }
+    }
+    if (!isLastLeg && !onDestFloor() && progress.remainingDistance < LEG_ADVANCE_M) {
+      state.activeLegIndex += 1;
+      const nxt = activeRouteLeg();
+      state.inFloorTransition = Boolean(nxt?.floor_transition);
+      updateRouteProgress();
+      return;
+    }
+    if (reached) {
+      showArrivalCelebration(ui.slotInput?.value?.trim() || "");
+    }
+  } else if (reached) {
+    showArrivalCelebration(ui.slotInput?.value?.trim() || "");
   }
 
   const marker = ui.routeSvg?.querySelector("#livePositionMarker");
@@ -1222,7 +1614,7 @@ function updateRouteProgress() {
     marker.setAttribute("cy", String(point.y));
   }
 
-  renderTurnInstructions(state.route.waypoints, progress.distanceAlongRoute);
+  renderTurnInstructions(guideWps, progress.distanceAlongRoute);
 }
 
 function drawRoute(waypoints, slotId) {
@@ -1363,10 +1755,14 @@ ui.workflowSteps.forEach((button) => {
   });
 });
 
-ui.destinationContinueBtn.addEventListener("click", () => setWorkflowStep("calibration", true));
-ui.calibrationBackBtn.addEventListener("click", () => setWorkflowStep("destination", true));
-ui.calibrationContinueBtn.addEventListener("click", () => setWorkflowStep("navigation", true));
-ui.navigationBackBtn?.addEventListener("click", () => setWorkflowStep("calibration", true));
+ui.destinationContinueBtn.addEventListener("click", () => {
+  setWorkflowStep(SKIP_CALIBRATION ? "navigation" : "calibration", true);
+});
+ui.calibrationBackBtn?.addEventListener("click", () => setWorkflowStep("destination", true));
+ui.calibrationContinueBtn?.addEventListener("click", () => setWorkflowStep("navigation", true));
+ui.navigationBackBtn?.addEventListener("click", () => {
+  setWorkflowStep(SKIP_CALIBRATION ? "destination" : "calibration", true);
+});
 ui.slotSheetBtn?.addEventListener("click", () => showSheet("slot"));
 document.querySelectorAll("[data-close-sheet]").forEach((el) => {
   el.addEventListener("click", () => {
@@ -1378,10 +1774,14 @@ document.querySelectorAll("[data-close-sheet]").forEach((el) => {
 ui.slotInput.addEventListener("input", updateWorkflowControls);
 ui.localizeBtn.addEventListener("click", localizeParkingPosition);
 ui.routeBtn.addEventListener("click", navigateToSlot);
+ui.arriveDismissBtn?.addEventListener("click", () => {
+  hideArrivalCelebration();
+  setHint("Tap Slot to navigate somewhere else", true);
+});
 ui.slotInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
-    setWorkflowStep("calibration", true);
+    setWorkflowStep(SKIP_CALIBRATION ? "navigation" : "calibration", true);
   }
 });
 
@@ -1389,7 +1789,9 @@ window.addEventListener("load", async () => {
   await initSlots();
   updateCalibrationReadiness();
   setWorkflowStep("destination");
-  setCalibrationStep("Waiting for calibration to begin.", 0, "stillness");
+  if (!SKIP_CALIBRATION) {
+    setCalibrationStep("Waiting for calibration to begin.", 0, "stillness");
+  }
   updateRouteStatus();
   setInterval(refreshCurrentPosition, 2000);
 });

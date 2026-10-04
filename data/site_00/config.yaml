@@ -1,16 +1,30 @@
 site_id: site_00
+# vertical gap between stacked floors in the 3D viewer (meters)
+stack_m: 6.0
 floors:
-- floor: 1
+- floor: B1
   zones: []
   walkable_segments:
-  - x1: 5.797
-    y1: -25.238
-    x2: 5.874
-    y2: -3.803
-  - x1: 5.95
-    y1: -3.88
-    x2: -17.636
-    y2: -3.909
+  - x1: 5.77
+    y1: -25.172
+    x2: 11.695
+    y2: -25.212
+  - x1: 11.667
+    y1: -25.127
+    x2: 11.752
+    y2: -20.483
+  - x1: 11.724
+    y1: -20.427
+    x2: 14.997
+    y2: -20.518
+  - x1: 5.736
+    y1: -25.135
+    x2: 5.388
+    y2: -4.16
+  - x1: 5.346
+    y1: -4.16
+    x2: -17.672
+    y2: -4.055
   landmarks: []
   vehicle_slots:
   - slot_id: 87-04C
@@ -61,3 +75,41 @@ floors:
     zone: zone_00
     x: -1.732
     y: 1.919
+- floor: G
+  zones: []
+  walkable_segments:
+  - x1: 10.449
+    y1: -19.294
+    x2: 15.397
+    y2: -19.08
+  - x1: 10.763
+    y1: -19.453
+    x2: 15.212
+    y2: -22.044
+  - x1: 15.397
+    y1: -19.08
+    x2: 15.212
+    y2: -22.044
+  landmarks: []
+  vehicle_slots: []
+vertical_connectors:
+- connector_id: PL3-N03
+  type: elevator
+  penalty_cost: 12.0
+  nodes:
+    G:
+      x: 15.397
+      y: -19.08
+    B1:
+      x: 15.397
+      y: -19.08
+- connector_id: PL4-N03
+  type: elevator
+  penalty_cost: 12.0
+  nodes:
+    G:
+      x: 15.212
+      y: -22.044
+    B1:
+      x: 15.212
+      y: -22.044

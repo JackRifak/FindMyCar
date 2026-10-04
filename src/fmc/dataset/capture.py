@@ -22,11 +22,20 @@ import cv2
 from fmc.config import PROCESSED_IMAGE_SHORT_SIDE, SiteConfig
 from fmc.dataset.schema import CameraInfo, ReferenceImage, append_record, load_records
 
-_IMAGE_ID_SEQUENCE_PATTERN = re.compile(r"^F\d{2}_Z.+_(\d{5})_\d{3}$")
+# F{label}_Z{zone}_{seq}_{heading} — label is a safe floor token (1, G, B1, …)
+_IMAGE_ID_SEQUENCE_PATTERN = re.compile(r"^F[^_]+_Z.+_(\d{5})_\d{3}$")
 
 
-def image_id_for(floor: int, zone: str, sequence: int, orientation: int) -> str:
-    return f"F{floor:02d}_Z{zone}_{sequence:05d}_{orientation:03d}"
+def _floor_token(floor) -> str:
+    from fmc.floors import normalize_floor_id
+    raw = normalize_floor_id(floor)
+    # keep path/id safe: alnum + hyphen/underscore only
+    tok = re.sub(r"[^A-Za-z0-9_-]+", "", raw)
+    return tok or "1"
+
+
+def image_id_for(floor, zone: str, sequence: int, orientation: int) -> str:
+    return f"F{_floor_token(floor)}_Z{zone}_{sequence:05d}_{orientation:03d}"
 
 
 def next_sequence_for_site(site: SiteConfig) -> int:
@@ -60,7 +69,7 @@ def _normalize_image(src_path: Path, dst_path: Path) -> None:
 def register_capture(
     site: SiteConfig,
     src_image_path: Path,
-    floor: int,
+    floor,
     zone: str,
     sequence: int,
     orientation: int,
@@ -69,8 +78,10 @@ def register_capture(
     device: str = "unknown",
     location_id: str = "",
 ) -> ReferenceImage:
+    from fmc.floors import normalize_floor_id
+    floor = normalize_floor_id(floor)
     image_id = image_id_for(floor, zone, sequence, orientation)
-    dst_path = site.processed_dir / f"F{floor}" / f"Z{zone}" / f"{image_id}.jpg"
+    dst_path = site.processed_dir / f"F{_floor_token(floor)}" / f"Z{zone}" / f"{image_id}.jpg"
     _normalize_image(src_image_path, dst_path)
     processed_rel_path = str(dst_path.relative_to(site.processed_dir))
 

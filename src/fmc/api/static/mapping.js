@@ -29,6 +29,129 @@ const poseHud = document.getElementById('pose-hud');
 const hudPos = document.getElementById('hud-pos');
 const hudRot = document.getElementById('hud-rot');
 const serverUrlInput = document.getElementById('server-url');
+const mapFloorSelect = document.getElementById('map-floor');
+const newFloorInput = document.getElementById('new-floor-name');
+const btnAddFloor = document.getElementById('btn-add-floor');
+const btnRenameFloor = document.getElementById('btn-rename-floor');
+let activeMapFloor = '';
+
+function selectedMapFloor() {
+    const v = mapFloorSelect ? String(mapFloorSelect.value || '').trim() : '';
+    return v || String(activeMapFloor || '').trim();
+}
+
+async function loadMapFloors(prefer) {
+    if (!mapFloorSelect) return;
+    try {
+        const res = await fetch(getApiUrl('/map/floors'));
+        const data = await res.json();
+        const floors = (data.floors && data.floors.length) ? data.floors.map(String) : [];
+        mapFloorSelect.innerHTML = '';
+        if (!floors.length) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = '(add a floor)';
+            mapFloorSelect.appendChild(opt);
+            activeMapFloor = '';
+            logDebug('No floors in site config — add one (e.g. B1, G)', 'warn');
+            return;
+        }
+        for (const f of floors) {
+            const opt = document.createElement('option');
+            opt.value = f;
+            opt.textContent = f;
+            mapFloorSelect.appendChild(opt);
+        }
+        const want = prefer != null ? String(prefer) : String(activeMapFloor);
+        activeMapFloor = floors.includes(want) ? want : floors[0];
+        mapFloorSelect.value = activeMapFloor;
+        logDebug(`Map floors: ${floors.join(', ')}`, 'info');
+        if (data.map_only_floors && data.map_only_floors.length) {
+            logDebug(
+                `Ignoring orphan map labels not in config: ${data.map_only_floors.join(', ')}`,
+                'warn',
+            );
+        }
+    } catch (err) {
+        logDebug('Floor list unavailable', 'warn');
+    }
+}
+
+async function pushMapFloor(floor) {
+    activeMapFloor = String(floor);
+    try {
+        const body = new FormData();
+        body.append('floor', activeMapFloor);
+        await fetch(getApiUrl('/map/floor'), { method: 'POST', body });
+        logDebug(`Active mapping floor → ${activeMapFloor}`, 'success');
+    } catch (err) {
+        logDebug('Failed to set map floor on server', 'warn');
+    }
+}
+
+async function addMapFloor() {
+    const name = (newFloorInput && newFloorInput.value || '').trim();
+    if (!name) {
+        alert('Enter a floor name (e.g. G, B1, 2)');
+        return;
+    }
+    try {
+        const res = await fetch(getApiUrl('/map/floors'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ floor: name }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            alert(data.detail || 'Could not add floor');
+            return;
+        }
+        if (newFloorInput) newFloorInput.value = '';
+        await loadMapFloors(data.floor || name);
+        await pushMapFloor(selectedMapFloor());
+        logDebug(`Added floor ${data.floor || name}`, 'success');
+    } catch (err) {
+        logDebug('Add floor failed', 'error');
+    }
+}
+
+async function renameMapFloor() {
+    const oldFloor = selectedMapFloor();
+    const name = (newFloorInput && newFloorInput.value || '').trim();
+    if (!name) {
+        alert('Enter the new floor name in the text field, then tap Rename');
+        return;
+    }
+    if (name === oldFloor) return;
+    try {
+        const res = await fetch(getApiUrl(`/map/floors/${encodeURIComponent(oldFloor)}`), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_floor: name }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            alert(data.detail || 'Could not rename floor');
+            return;
+        }
+        if (newFloorInput) newFloorInput.value = '';
+        await loadMapFloors(data.floor || name);
+        await pushMapFloor(selectedMapFloor());
+        logDebug(`Renamed floor ${oldFloor} → ${data.floor || name}`, 'success');
+    } catch (err) {
+        logDebug('Rename floor failed', 'error');
+    }
+}
+
+if (mapFloorSelect) {
+    mapFloorSelect.addEventListener('change', async () => {
+        await pushMapFloor(selectedMapFloor());
+        await loadFloorplanAndTransform();
+        drawFloorplanTags();
+    });
+}
+if (btnAddFloor) btnAddFloor.addEventListener('click', addMapFloor);
+if (btnRenameFloor) btnRenameFloor.addEventListener('click', renameMapFloor);
 const btnSaveServer = document.getElementById('btn-save-server');
 const btnToggleFeatures = document.getElementById('btn-toggle-features');
 
@@ -376,40 +499,53 @@ function advancePdr() {
 
 // 1. Initialize Camera and Map Data
 async function loadFloorplanAndTransform() {
+    const fid = selectedMapFloor();
+    if (!fid) {
+        logDebug('Skip floorplan load — no floor selected yet', 'warn');
+        return;
+    }
+    const floorQ = `?floor=${encodeURIComponent(fid)}`;
     try {
-        const trRes = await fetch(getApiUrl('/map/transform'));
+        const trRes = await fetch(getApiUrl('/map/transform' + floorQ));
         if (trRes.ok) {
             transform = await trRes.json();
-            logDebug("Loaded floorplan transform matrix", "info");
+            logDebug(`Loaded floorplan transform for floor ${selectedMapFloor()}`, "info");
         } else {
+            transform = null;
             console.error("Failed to fetch transform:", trRes.status);
             statusEl.innerText = "Transform load failed: " + trRes.status;
             logDebug("Failed to load transform: HTTP " + trRes.status, "warn");
         }
     } catch (e) {
+        transform = null;
         console.error("Network error fetching transform", e);
         logDebug("Transform fetch error: " + e.message, "warn");
     }
 
     try {
-        const spRes = await fetch(getApiUrl('/map/survey-spots'));
+        const spRes = await fetch(getApiUrl('/map/survey-spots' + floorQ));
         if (spRes.ok) {
             const data = await spRes.json();
             surveySpots = data.spots || [];
             logDebug(`Survey spots: ${surveySpots.map(s => s.id).join(', ') || 'none'}`, "info");
         } else {
+            surveySpots = [];
             logDebug("Survey spots load failed: HTTP " + spRes.status, "warn");
         }
     } catch (e) {
+        surveySpots = [];
         logDebug("Survey spots fetch error: " + e.message, "warn");
     }
     
-    floorplanImg.src = getApiUrl('/map/floorplan');
+    floorplanImg.src = getApiUrl('/map/floorplan' + floorQ + `&_=${Date.now()}`);
     floorplanImg.onload = () => {
         fpCanvas.width = floorplanImg.width;
         fpCanvas.height = floorplanImg.height;
         drawFloorplanTags();
-        logDebug(`Floorplan loaded (${floorplanImg.width}x${floorplanImg.height})`, "info");
+        logDebug(`Floorplan loaded floor=${selectedMapFloor()} (${floorplanImg.width}x${floorplanImg.height})`, "info");
+    };
+    floorplanImg.onerror = () => {
+        logDebug(`No floorplan image for floor ${selectedMapFloor()}`, "warn");
     };
 }
 
@@ -451,6 +587,8 @@ function drawFloorplanTags() {
 }
 
 async function initCamera() {
+    await loadMapFloors();
+    await pushMapFloor(selectedMapFloor());
     await loadFloorplanAndTransform();
     initSensors();
     // ARCore first — owns the camera on native; getUserMedia only as browser fallback
@@ -603,12 +741,14 @@ async function beginWalk(mode) {
         logDebug("Cleared all mapping sessions", "warn");
     } else if (mode === 'new-session') {
         try {
-            const res = await fetch(getApiUrl("/map/new-session"), { method: "POST" });
+            const floor = selectedMapFloor();
+            const res = await fetch(getApiUrl(`/map/new-session?floor=${floor}`), { method: "POST" });
             const data = await res.json().catch(() => ({}));
             logDebug(
-                `New session ${data.session_id ?? '?'} — kept map: ${data.total_landmarks ?? 0} landmarks / ${data.total_tags ?? 0} tags (disk+memory)`,
+                `New session ${data.session_id ?? '?'} floor=${data.floor ?? floor} — kept map: ${data.total_landmarks ?? 0} landmarks / ${data.total_tags ?? 0} tags (disk+memory)`,
                 "success"
             );
+            await pushMapFloor(floor);
             if ((data.total_landmarks ?? 0) === 0) {
                 logDebug("Warning: no prior landmarks in memory/disk — finalize of an earlier walk may be missing", "warn");
             }
@@ -712,7 +852,7 @@ fpCanvas.onclick = (e) => {
 btnSubmitTag.onclick = async () => {
     if (selectedWorldX === null) return;
     
-    const floor = 1;
+    const floor = selectedMapFloor();
     const payload = { timestamp: Date.now() / 1000.0, x: selectedWorldX, y: selectedWorldY, floor };
     
     try {
@@ -806,13 +946,35 @@ let renderer = null;
 let scene = null;
 let camera = null;
 let controls = null;
-let currentPoints = null;
+let currentPoints = null; // THREE.Group of per-floor point clouds
+let floorDeckGroup = null;
 let landmarkGroup = null;
 let poseGroup = null;
 let show3DLandmarks = true;
-let viewerFrame = null; // { center, scale, floorY } after PLY load
+let viewerFrame = null; // { center, scale, floorY, floorOrder, stackM }
 let posePollTimer = null;
+let lastCloudData = null; // last /map/cloud-layers payload for re-stack
+let viewerStackM = null; // UI override (meters); null = use server/config
 const btnToggle3DLandmarks = document.getElementById('btn-toggle-3d-landmarks');
+const stackMInput = document.getElementById('stack-m-input');
+const stackMVal = document.getElementById('stack-m-val');
+
+function syncStackMUi(m) {
+    const v = Math.max(0.5, Math.min(Number(m) || 4.0, 50));
+    if (stackMInput) stackMInput.value = String(v);
+    if (stackMVal) stackMVal.textContent = `${v.toFixed(1)}m`;
+    return v;
+}
+
+if (stackMInput) {
+    stackMInput.addEventListener('input', () => {
+        viewerStackM = syncStackMUi(stackMInput.value);
+        try { localStorage.setItem('fmc_stack_m', String(viewerStackM)); } catch (_) {}
+        if (lastCloudData) {
+            renderStackedCloud({ ...lastCloudData, stack_m: viewerStackM });
+        }
+    });
+}
 
 if (btnToggle3DLandmarks) {
     btnToggle3DLandmarks.onclick = () => {
@@ -824,13 +986,22 @@ if (btnToggle3DLandmarks) {
     };
 }
 
-function facilityToScene(fx, fy, frame) {
-    // aligned PLY: (fx, fy, h) → rotateX(-90°) → (fx, h, -fy), then recenter/scale
+function floorStackOffset(floorId, frame) {
+    if (!frame) return 0;
+    const order = frame.floorOrder || [];
+    const gap = (frame.stackM != null ? frame.stackM : 4.0) * (frame.scale || 1);
+    let i = order.indexOf(String(floorId));
+    if (i < 0) i = 0;
+    return i * gap;
+}
+
+function facilityToScene(fx, fy, frame, floorId) {
+    // aligned: (fx, fy, h) → rotateX(-90°) → (fx, h, -fy), then recenter/scale
     const rx = fx;
     const rz = -fy;
     return {
         x: (rx - frame.center.x) * frame.scale,
-        y: frame.floorY,
+        y: frame.floorY + floorStackOffset(floorId, frame),
         z: (rz - frame.center.z) * frame.scale,
     };
 }
@@ -875,9 +1046,9 @@ function renderLivePoseMarkers(poses) {
     }
 
     poses.forEach((p) => {
-        const pos = facilityToScene(p.x, p.y, viewerFrame);
+        const pos = facilityToScene(p.x, p.y, viewerFrame, p.floor);
         const g = new THREE.Group();
-        g.position.set(pos.x, viewerFrame.floorY, pos.z);
+        g.position.set(pos.x, pos.y, pos.z);
 
         // body
         const body = new THREE.Mesh(
@@ -1010,13 +1181,15 @@ async function loadAndRender3DLandmarks(center, scale, floorY) {
             "info"
         );
 
-        const planePoints = [];
+        const planeByFloor = {};
         const commonFloorY = (floorY !== undefined) ? floorY : 0.0;
+        const frame = viewerFrame || { center, scale, floorY: commonFloorY, floorOrder: [], stackM: 4.0 };
 
         landmarks.forEach((lm) => {
             const isUserTag = lm.type === 'user_tag';
             const colorHex = isUserTag ? 0xff3b30 : 0xff9500;
             const colorCss = isUserTag ? '#ff3b30' : '#ff9500';
+            const fl = String(lm.floor != null ? lm.floor : (frame.floorOrder[0] || '1'));
 
             // Aligned PLY: (fx, fy, h) → rotateX → (fx, h, -fy)
             // Local PLY:   (mx, h, mz) → rotateX → (mx, mz, -h)
@@ -1026,18 +1199,19 @@ async function loadAndRender3DLandmarks(center, scale, floorY) {
                 const rawY = lm.facility_y !== undefined ? lm.facility_y : lm.y;
                 rotatedX = rawX;
                 rotatedZ = -rawY;
-                labelXY = `(${rawX.toFixed(1)}, ${rawY.toFixed(1)})`;
+                labelXY = `${fl} (${rawX.toFixed(1)}, ${rawY.toFixed(1)})`;
             } else {
                 rotatedX = lm.x;
                 rotatedZ = lm.z;
-                labelXY = `path (${lm.x.toFixed(1)}, ${lm.z.toFixed(1)})`;
+                labelXY = `${fl} path (${lm.x.toFixed(1)}, ${lm.z.toFixed(1)})`;
             }
 
             const sceneX = (rotatedX - center.x) * scale;
             const sceneZ = (rotatedZ - center.z) * scale;
-            const sceneY = commonFloorY;
+            const sceneY = commonFloorY + floorStackOffset(fl, frame);
 
-            planePoints.push(new THREE.Vector3(sceneX, sceneY + 0.02, sceneZ));
+            if (!planeByFloor[fl]) planeByFloor[fl] = [];
+            planeByFloor[fl].push(new THREE.Vector3(sceneX, sceneY + 0.02, sceneZ));
 
             const pinGroup = new THREE.Group();
             pinGroup.position.set(sceneX, sceneY, sceneZ);
@@ -1075,9 +1249,11 @@ async function loadAndRender3DLandmarks(center, scale, floorY) {
             landmarkGroup.add(pinGroup);
         });
 
-        // Add visual alignment guide between landmarks on the same plane
-        if (planePoints.length >= 2) {
-            const lineGeo = new THREE.BufferGeometry().setFromPoints(planePoints);
+        // dashed guide per floor (not across floors)
+        Object.keys(planeByFloor).forEach((fl) => {
+            const pts = planeByFloor[fl];
+            if (pts.length < 2) return;
+            const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
             const lineMat = new THREE.LineDashedMaterial({
                 color: 0xff9500,
                 dashSize: 0.15,
@@ -1088,10 +1264,11 @@ async function loadAndRender3DLandmarks(center, scale, floorY) {
             const line = new THREE.Line(lineGeo, lineMat);
             line.computeLineDistances();
             landmarkGroup.add(line);
-        }
+        });
 
+        const nFloors = Object.keys(planeByFloor).length;
         if (viewerStats && landmarks.length > 0) {
-            viewerStats.innerText += ` | 📍 ${landmarks.length} Landmarks (Same Plane)`;
+            viewerStats.innerText += ` | 📍 ${landmarks.length} landmarks · ${nFloors} floor(s)`;
             viewerStats.dataset.base = viewerStats.innerText.split(' | you:')[0];
         }
     } catch (e) {
@@ -1205,32 +1382,322 @@ function show3DViewer() {
     });
 }
 
-function loadPLY() {
+const FLOOR_TINTS = [
+    { r: 0.20, g: 0.85, b: 0.95 },
+    { r: 0.45, g: 0.95, b: 0.40 },
+    { r: 0.95, g: 0.75, b: 0.25 },
+    { r: 0.90, g: 0.45, b: 0.85 },
+    { r: 0.55, g: 0.65, b: 1.00 },
+    { r: 0.95, g: 0.50, b: 0.35 },
+];
+
+function clearCloudScene() {
+    if (currentPoints && scene) scene.remove(currentPoints);
+    currentPoints = null;
+    if (floorDeckGroup && scene) scene.remove(floorDeckGroup);
+    floorDeckGroup = null;
+}
+
+function rotCloudPt(x, y, z) {
+    // rotateX(-90°): (x,y,z) → (x, z, -y) so height becomes up
+    return { x: x, y: z, z: -y };
+}
+
+function tintForFloor(i) {
+    return FLOOR_TINTS[i % FLOOR_TINTS.length];
+}
+
+function makeFloorLabel(text, colorCss) {
+    const c = document.createElement('canvas');
+    c.width = 144;
+    c.height = 48;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.strokeStyle = colorCss;
+    ctx.lineWidth = 3;
+    const x = 4, y = 4, w = 136, h = 40, r = 10;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 22px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 72, 24);
+    const tex = new THREE.CanvasTexture(c);
+    tex.minFilter = THREE.LinearFilter;
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+    spr.scale.set(1.1, 0.36, 1);
+    return spr;
+}
+
+function renderStackedCloud(data) {
+    clearCloudScene();
+    lastCloudData = data;
+
+    const layers = data.layers || [];
+    if (!layers.length) {
+        if (viewerStats) viewerStats.innerText = "No floor cloud layers.";
+        return;
+    }
+
+    const floorOrder = (data.floor_order || layers.map((l) => l.floor)).map(String);
+    const stackM = syncStackMUi(
+        viewerStackM != null
+            ? viewerStackM
+            : (data.stack_m != null ? data.stack_m : 4.0)
+    );
+    viewerStackM = stackM;
+
+    // transform all pts; center from combined cloud before stacking
+    const rawLayers = layers.map((layer) => {
+        const pts = [];
+        (layer.positions || []).forEach((p) => {
+            pts.push(rotCloudPt(p[0], p[1], p[2]));
+        });
+        return { floor: String(layer.floor), pts };
+    });
+
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    let nAll = 0;
+    rawLayers.forEach((layer) => {
+        layer.pts.forEach((p) => {
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.z < minZ) minZ = p.z;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+            if (p.z > maxZ) maxZ = p.z;
+            nAll++;
+        });
+    });
+    if (!nAll) {
+        if (viewerStats) viewerStats.innerText = "Point cloud is empty (0 points).";
+        return;
+    }
+
+    const center = new THREE.Vector3(
+        (minX + maxX) * 0.5,
+        (minY + maxY) * 0.5,
+        (minZ + maxZ) * 0.5
+    );
+    const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+    const radius = 0.5 * Math.sqrt(dx * dx + dy * dy + dz * dz) || 1.0;
+    let scale = 1.0;
+    if (radius > 12.0 || radius < 0.5) {
+        scale = 5.0 / radius;
+    }
+
+    const gap = stackM * scale;
+    currentPoints = new THREE.Group();
+    floorDeckGroup = new THREE.Group();
+
+    const byFloor = {};
+    rawLayers.forEach((layer) => { byFloor[layer.floor] = layer.pts; });
+    // always stack every configured floor, even if cloud is missing
+    const stackFloors = floorOrder.slice();
+    rawLayers.forEach((layer) => {
+        if (!stackFloors.includes(layer.floor)) stackFloors.push(layer.floor);
+    });
+
+    // shared deck footprint from all points (XZ after center/scale)
+    let gMinX = Infinity, gMaxX = -Infinity, gMinZ = Infinity, gMaxZ = -Infinity;
+    let baseMinY = Infinity;
+    rawLayers.forEach((layer) => {
+        layer.pts.forEach((p) => {
+            const sx = (p.x - center.x) * scale;
+            const sy = (p.y - center.y) * scale;
+            const sz = (p.z - center.z) * scale;
+            if (sx < gMinX) gMinX = sx;
+            if (sx > gMaxX) gMaxX = sx;
+            if (sz < gMinZ) gMinZ = sz;
+            if (sz > gMaxZ) gMaxZ = sz;
+            if (sy < baseMinY) baseMinY = sy;
+        });
+    });
+    if (!Number.isFinite(gMinX)) {
+        gMinX = -2; gMaxX = 2; gMinZ = -2; gMaxZ = 2; baseMinY = 0;
+    }
+    const floorY = baseMinY - 0.02;
+    const pad = 0.4;
+    const deckW = Math.max(1.2, (gMaxX - gMinX) + pad * 2);
+    const deckD = Math.max(1.2, (gMaxZ - gMinZ) + pad * 2);
+    const deckCx = (gMinX + gMaxX) * 0.5;
+    const deckCz = (gMinZ + gMaxZ) * 0.5;
+
+    stackFloors.forEach((fid, level) => {
+        const yOff = level * gap;
+        const tint = tintForFloor(level);
+        const pts = byFloor[fid] || [];
+        const n = pts.length;
+        const deckY = floorY + yOff;
+
+        if (n > 0) {
+            const pos = new Float32Array(n * 3);
+            const cols = new Float32Array(n * 3);
+            for (let i = 0; i < n; i++) {
+                const p = pts[i];
+                const sx = (p.x - center.x) * scale;
+                const sy = (p.y - center.y) * scale + yOff;
+                const sz = (p.z - center.z) * scale;
+                pos[i * 3] = sx;
+                pos[i * 3 + 1] = sy;
+                pos[i * 3 + 2] = sz;
+                const t = Math.max(0, Math.min(1, (p.y - minY) / ((maxY - minY) || 1)));
+                cols[i * 3] = tint.r * (0.55 + 0.45 * t);
+                cols[i * 3 + 1] = tint.g * (0.55 + 0.45 * t);
+                cols[i * 3 + 2] = tint.b * (0.55 + 0.45 * t);
+            }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+            const pointSize = Math.max(0.04, Math.min(0.10, 6.0 / Math.sqrt(n)));
+            const mat = new THREE.PointsMaterial({
+                size: pointSize,
+                vertexColors: true,
+                map: circleTexture,
+                transparent: true,
+                alphaTest: 0.1,
+                sizeAttenuation: true
+            });
+            currentPoints.add(new THREE.Points(geo, mat));
+        }
+
+        const deckGeo = new THREE.PlaneGeometry(deckW, deckD);
+        const deckMat = new THREE.MeshBasicMaterial({
+            color: new THREE.Color(tint.r, tint.g, tint.b),
+            transparent: true,
+            opacity: n > 0 ? 0.14 : 0.10,
+            side: THREE.DoubleSide,
+            depthWrite: false
+        });
+        const deck = new THREE.Mesh(deckGeo, deckMat);
+        deck.rotation.x = -Math.PI / 2;
+        deck.position.set(deckCx, deckY, deckCz);
+        floorDeckGroup.add(deck);
+
+        const edgeGeo = new THREE.EdgesGeometry(deckGeo);
+        const edgeMat = new THREE.LineBasicMaterial({
+            color: new THREE.Color(tint.r, tint.g, tint.b),
+            transparent: true,
+            opacity: 0.55
+        });
+        const edge = new THREE.LineSegments(edgeGeo, edgeMat);
+        edge.rotation.x = -Math.PI / 2;
+        edge.position.set(deckCx, deckY + 0.005, deckCz);
+        floorDeckGroup.add(edge);
+
+        // thin connector post between stacked floors
+        if (level > 0) {
+            const postH = gap;
+            const post = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.03, 0.03, postH, 8),
+                new THREE.MeshBasicMaterial({ color: 0x666666, transparent: true, opacity: 0.35 })
+            );
+            post.position.set(gMinX - pad * 0.5, floorY + (level - 0.5) * gap, gMinZ - pad * 0.5);
+            floorDeckGroup.add(post);
+        }
+
+        const hex = '#' + new THREE.Color(tint.r, tint.g, tint.b).getHexString();
+        const label = makeFloorLabel(`Floor ${fid}`, hex);
+        label.position.set(gMinX - 0.15, deckY + 0.55, gMinZ - 0.15);
+        floorDeckGroup.add(label);
+    });
+
+    scene.add(currentPoints);
+    scene.add(floorDeckGroup);
+
+    viewerFrame = {
+        center,
+        scale,
+        floorY,
+        floorOrder: stackFloors,
+        stackM,
+    };
+
+    loadAndRender3DLandmarks(center, scale, floorY);
+
+    if (scene) {
+        const existingGrid = scene.children.find((c) => c.type === 'GridHelper');
+        if (existingGrid) {
+            existingGrid.position.y = floorY - 0.01;
+        }
+    }
+
+    const nLevels = Math.max(1, stackFloors.length);
+    const camY = 2.5 + (nLevels - 1) * gap * 0.55;
+    const camZ = 7 + (nLevels - 1) * gap * 0.35;
+    camera.position.set(0, camY, camZ);
+    if (controls) {
+        controls.target.set(0, ((nLevels - 1) * gap) * 0.45, 0);
+        controls.update();
+    }
+
+    if (viewerStats) {
+        const base = `Points: ${nAll.toLocaleString()} · ${nLevels} floors stacked · Orbit: Drag · Zoom: Pinch`;
+        viewerStats.dataset.base = base;
+        viewerStats.innerText = base;
+    }
+    logDebug(`[Viewer] Stacked ${nLevels} floors (${nAll.toLocaleString()} pts)`, "success");
+    startPosePolling();
+}
+
+async function loadPLY() {
+    if (viewerStats) viewerStats.innerText = "Loading stacked floor clouds...";
+    try {
+        const saved = localStorage.getItem('fmc_stack_m');
+        if (saved != null && viewerStackM == null) {
+            viewerStackM = syncStackMUi(saved);
+        }
+    } catch (_) {}
+    try {
+        const res = await fetch(getApiUrl('/map/cloud-layers?v=' + Date.now()));
+        if (res.ok) {
+            const data = await res.json();
+            if (data.layers && data.layers.length) {
+                renderStackedCloud(data);
+                return;
+            }
+        }
+    } catch (e) {
+        console.warn("cloud-layers failed, falling back to PLY", e);
+        logDebug(`[Viewer] cloud-layers failed: ${e.message}`, "warn");
+    }
+    loadPLYLegacy();
+}
+
+function loadPLYLegacy() {
     const loader = new THREE.PLYLoader();
     loader.load(getApiUrl('/map/pointcloud?v=' + Date.now()), function (geometry) {
         try {
-            if (currentPoints && scene) scene.remove(currentPoints);
-            
+            clearCloudScene();
+
             const count = geometry.attributes.position.count;
             if (count === 0) {
                 if (viewerStats) viewerStats.innerText = "Point cloud is empty (0 points).";
                 return;
             }
 
-            // 1. Orient point cloud so that height axis is Three.js Y (UP)
-            // and the floor plane lies horizontally on the Three.js ground plane (X-Z)
             geometry.rotateX(-Math.PI / 2);
-
             geometry.computeBoundingBox();
             geometry.computeBoundingSphere();
             const sphere = geometry.boundingSphere;
             const center = sphere ? sphere.center.clone() : new THREE.Vector3(0, 0, 0);
             const radius = (sphere && sphere.radius > 0.01) ? sphere.radius : 1.0;
 
-            // Recenter geometry to origin
             geometry.translate(-center.x, -center.y, -center.z);
 
-            // Scale to comfortable ~5m viewport size
             let scale = 1.0;
             if (radius > 12.0 || radius < 0.5) {
                 const targetRadius = 5.0;
@@ -1238,24 +1705,19 @@ function loadPLY() {
                 geometry.scale(scale, scale, scale);
             }
 
-            // Exact horizontal floor elevation
             geometry.computeBoundingBox();
             const floorY = geometry.boundingBox.min.y;
 
-            // Height-based coloring if PLY has no color attribute
             const hasColors = geometry.attributes.color !== undefined;
             if (!hasColors) {
                 const minY = geometry.boundingBox.min.y;
                 const maxY = geometry.boundingBox.max.y;
                 const rangeY = (maxY - minY) || 1.0;
-                
                 const positions = geometry.attributes.position.array;
                 const colors = new Float32Array(count * 3);
-                
                 for (let i = 0; i < count; i++) {
                     const y = positions[i * 3 + 1];
                     const t = Math.max(0, Math.min(1, (y - minY) / rangeY));
-                    
                     const color = new THREE.Color();
                     if (t < 0.5) {
                         color.setRGB(0.1 + 0.2 * (t * 2), 0.7 + 0.3 * (t * 2), 0.9 - 0.4 * (t * 2));
@@ -1269,7 +1731,6 @@ function loadPLY() {
                 geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
             }
 
-            // Crisp round circular particle dots
             const pointSize = Math.max(0.04, Math.min(0.10, 6.0 / Math.sqrt(count)));
             const material = new THREE.PointsMaterial({
                 size: pointSize,
@@ -1283,12 +1744,9 @@ function loadPLY() {
             currentPoints = new THREE.Points(geometry, material);
             scene.add(currentPoints);
 
-            viewerFrame = { center, scale, floorY };
-
-            // Render all location tag landmarks on the exact same floor plane
+            viewerFrame = { center, scale, floorY, floorOrder: [], stackM: 4.0 };
             loadAndRender3DLandmarks(center, scale, floorY);
 
-            // Align ground grid with the floor plane
             if (scene) {
                 const existingGrid = scene.children.find(c => c.type === 'GridHelper');
                 if (existingGrid) {

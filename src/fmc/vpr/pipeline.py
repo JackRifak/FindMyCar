@@ -18,7 +18,7 @@ from fmc.config import SiteConfig
 from fmc.dataset.schema import CameraInfo, ReferenceImage
 from fmc.vpr.embedder import get_embedder
 from fmc.vpr.geometric_verification import verify
-from fmc.vpr.pnp_localizer import Pose6Dof, load_map_index
+from fmc.vpr.pnp_localizer import Pose6Dof, available_map_floors, load_map_index
 from fmc.vpr.search import VectorIndex
 
 logger = logging.getLogger("fmc.vpr")
@@ -57,6 +57,7 @@ class VPRPipeline:
         self.embedder = get_embedder(site)
         self.index = VectorIndex.load(site)
         self.map_index = load_map_index(site)
+        self._floor_indexes: dict[int, object] = {}
         n_map = 0 if self.map_index is None else len(self.map_index.positions)
         logger.info(
             f"VPRPipeline initialized with {len(self.index.ids)} index records, "
@@ -66,25 +67,119 @@ class VPRPipeline:
     def reload_map_index(self) -> None:
         """Reload H2GIS / NPZ map index after a new mapping finalize."""
         self.map_index = load_map_index(self.site)
+        self._floor_indexes: dict[int, object] = {}
         n = 0 if self.map_index is None else len(self.map_index.positions)
         logger.info("[VPR] Reloaded 3D map index (%s landmarks)", n)
 
-    def localize(self, query_image: np.ndarray) -> VPRResult:
-        # --- Stage A: 2D-to-3D PnP against continuous map ---
-        if self.map_index is not None:
+    def _index_for_floor(self, floor: str):
+        from fmc.floors import normalize_floor_id
+        floor = normalize_floor_id(floor)
+        cache = getattr(self, "_floor_indexes", None)
+        if cache is None:
+            self._floor_indexes = {}
+            cache = self._floor_indexes
+        if floor in cache:
+            return cache[floor]
+        idx = load_map_index(self.site, floor=floor)
+        cache[floor] = idx
+        return idx
+
+    def _candidate_floors(self, prior_floor, query_image: np.ndarray) -> list[str]:
+        from fmc.floors import adjacent_floors, normalize_floor_id
+
+        mapped = available_map_floors(self.site)
+        declared = self.site.floor_ids()
+        if not mapped and self.map_index is not None:
+            mapped = declared or ["1"]
+
+        ordered: list[str] = []
+        if prior_floor is not None:
+            cur = normalize_floor_id(prior_floor)
+            ordered.append(cur)
+            for adj in adjacent_floors(declared or mapped, cur):
+                if adj in mapped and adj not in ordered:
+                    ordered.append(adj)
+
+        # global embedding majority vote for floor when unknown / as fallback
+        if prior_floor is None or len(ordered) < 2:
+            try:
+                emb = self.embedder.embed(query_image)
+                hits = self.index.query(emb)
+                votes: dict[str, int] = {}
+                for hit in hits[:5]:
+                    f = normalize_floor_id(getattr(hit.record, "floor", "1") or "1")
+                    votes[f] = votes.get(f, 0) + 1
+                for f, _ in sorted(votes.items(), key=lambda kv: -kv[1]):
+                    if f not in ordered:
+                        ordered.append(f)
+            except Exception as e:
+                logger.debug("[VPR] floor vote skipped: %s", e)
+
+        for f in mapped:
+            if f not in ordered:
+                ordered.append(f)
+        return ordered or ["1"]
+
+    def localize(
+        self,
+        query_image: np.ndarray,
+        prior_floor=None,
+    ) -> VPRResult:
+        from fmc.floors import normalize_floor_id
+
+        # --- Stage A: floor-partitioned 2D-to-3D PnP ---
+        floors = self._candidate_floors(prior_floor, query_image)
+        for floor in floors:
+            idx = self._index_for_floor(floor)
+            if idx is None:
+                continue
+            t0 = time.perf_counter()
+            pose = idx.localize(query_image)
+            t_pnp = (time.perf_counter() - t0) * 1000
+            if pose is None:
+                logger.info("[VPR] PnP floor=%s failed (%.1fms)", floor, t_pnp)
+                continue
+            floor = normalize_floor_id(floor)
+            pose.floor = floor
+            logger.info(
+                "[VPR] PnP localization succeeded in %.1fms "
+                "floor=%s at (%.2f, %.2f) heading=%.0f",
+                t_pnp, floor, pose.x, pose.y, pose.heading,
+            )
+            record = ReferenceImage(
+                image_id="pnp_fix",
+                floor=floor,
+                zone=f"floor:{floor}",
+                x=pose.x,
+                y=pose.y,
+                orientation=int(round(pose.heading)) % 360,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                camera_information=CameraInfo(),
+                processed_path="",
+                location_id="pnp",
+            )
+            return VPRResult(
+                matched=True,
+                record=record,
+                similarity=pose.confidence,
+                inlier_ratio=pose.inlier_ratio,
+                candidates=[],
+                pose_6dof=pose,
+                method="pnp",
+            )
+
+        # unpartitioned fallback (legacy single-floor maps)
+        if self.map_index is not None and not floors:
             t0 = time.perf_counter()
             pose = self.map_index.localize(query_image)
             t_pnp = (time.perf_counter() - t0) * 1000
             if pose is not None:
-                logger.info(
-                    "[VPR] PnP localization succeeded in %.1fms "
-                    "at (%.2f, %.2f) heading=%.0f",
-                    t_pnp, pose.x, pose.y, pose.heading,
-                )
+                floor = normalize_floor_id(getattr(pose, "floor", prior_floor or "1") or "1")
+                pose.floor = floor
                 record = ReferenceImage(
                     image_id="pnp_fix",
-                    floor=1,
-                    zone="map",
+                    floor=floor,
+                    zone=f"floor:{floor}",
                     x=pose.x,
                     y=pose.y,
                     orientation=int(round(pose.heading)) % 360,
