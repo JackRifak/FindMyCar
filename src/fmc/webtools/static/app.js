@@ -246,7 +246,7 @@ function draw() {
     state.controlPoints.forEach((cp, i) => {
       const s = imageToScreen(cp.px, cp.py);
       drawDot(s.x, s.y, "#ff4757", 6);
-      drawLabel(s.x + 8, s.y - 8, String(i), "#ff4757");
+      drawLabel(s.x + 8, s.y - 8, String(i + 1), "#ff4757");
     });
   }
   if (state.mode === "segments" && state.pendingSegmentPt) {
