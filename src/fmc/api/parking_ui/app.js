@@ -2,10 +2,8 @@ const ARRIVE_M = 2.0; // along-route remaining / approach-node threshold
 const ARRIVE_SLOT_M = 8.0; // euclidean to slot (bays sit off the walkable line)
 const LEG_ADVANCE_M = 0.7; // snap to next walk leg
 const ENTER_CONNECTOR_M = 3.0; // enter lift/stairs guidance (PDR freezes in elevator)
-/** after this, assume user exited lift (XR often can't PnP; camera-nav used live VPR) */
+/** after this + walk motion, assume user exited lift (camera-nav used VPR; XR often can't) */
 const ELEVATOR_AUTO_MS = 7000;
-/** XR: exit on dwell alone — motion sensors are weak / paused in immersive-ar */
-const ELEVATOR_XR_AUTO_MS = 6500;
 const ELEVATOR_WALK_MOTION = 1.6;
 const SKIP_CALIBRATION = true; // temporarily bypass phone calibration UI
 
@@ -124,26 +122,6 @@ const ui = {
 };
 
 let webXrNav = null;
-let elevatorWatchTimer = null;
-
-function stopElevatorWatch() {
-  if (elevatorWatchTimer != null) {
-    clearInterval(elevatorWatchTimer);
-    elevatorWatchTimer = null;
-  }
-}
-
-/** WebXR doesn't get PDR ticks — poll so dwell/PnP can leave the elevator banner */
-function startElevatorWatch() {
-  stopElevatorWatch();
-  elevatorWatchTimer = setInterval(() => {
-    if (!state.inFloorTransition || !state.route) {
-      stopElevatorWatch();
-      return;
-    }
-    updateRouteProgress();
-  }, 500);
-}
 
 function setStatusChip(text, kind = "warn") {
   if (ui.sessionState) ui.sessionState.textContent = text;
@@ -247,15 +225,9 @@ function startFloorDetectVpr() {
   state.liveVpr.lastCaptureTime = 0; // capture soon
   state.motion.cumulativeMotion = 0;
   state.motion.lastMeaningfulMotionAt = performance.now();
-  const xrCamOk = state.webXrActive && webXrNav?.hasCameraAccess && webXrNav?.grabFrameBlob;
-  if (xrCamOk) {
+  // XR camera-access preferred; getUserMedia is backup when AR doesn't own cam
+  if (state.webXrActive && webXrNav?.grabFrameBlob) {
     runLiveVprCaptureLoop();
-    return;
-  }
-  // XR without camera-access: still poll for dwell auto-exit; try gUM quietly
-  if (state.webXrActive) {
-    runLiveVprCaptureLoop();
-    ensureCamera().catch(() => {});
     return;
   }
   ensureCamera().then((ok) => {
@@ -407,7 +379,6 @@ function enterConnectorLeg() {
   if (entered) {
     // same as camera-nav: keep localizing so new floor unlocks next banner
     startFloorDetectVpr();
-    startElevatorWatch();
   }
   return entered;
 }
@@ -441,7 +412,6 @@ function landOnFloor(toFloor, transitionIdx = state.activeLegIndex || 0) {
   state.inFloorTransition = false;
   state.floorTransitionAt = 0;
   state.arrivedShown = false;
-  stopElevatorWatch();
   hideArrivalCelebration();
   setFloorContinueVisible(false);
   return true;
@@ -1544,12 +1514,9 @@ async function encodeCameraViewFrame(maxDimension, jpegQuality) {
 
 async function encodeXrCameraFrame(maxDimension, jpegQuality) {
   if (!state.webXrActive || !webXrNav?.grabFrameBlob) return null;
-  // don't burn 1.8s waiting when session never granted camera-access
-  if (webXrNav.hasCameraAccess === false) return null;
   try {
     const blob = await webXrNav.grabFrameBlob({ maxDim: maxDimension, quality: jpegQuality });
     if (!blob) return null;
-    webXrNav.hasCameraAccess = true;
     return {
       blob,
       sourceWidth: 0,
@@ -1571,13 +1538,13 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
 
   // during AR floor change: XR passthrough → PnP (same /localize as camera-nav)
   let frame = null;
-  if (state.webXrActive && state.inFloorTransition && webXrNav?.hasCameraAccess) {
+  if (state.webXrActive && state.inFloorTransition) {
     frame = await encodeXrCameraFrame(maxDimension, jpegQuality);
   }
   if (!frame) {
     frame = await encodeCameraViewFrame(maxDimension, jpegQuality);
   }
-  if (!frame && state.webXrActive && webXrNav?.hasCameraAccess !== false) {
+  if (!frame && state.webXrActive) {
     frame = await encodeXrCameraFrame(maxDimension, jpegQuality);
   }
   if (!frame) throw new Error("Camera frame is not ready yet.");
@@ -1815,7 +1782,6 @@ function setRouteBtnMode(mode) {
 }
 
 function stopWebXrSession({ resumeCamera = false } = {}) {
-  stopElevatorWatch();
   if (webXrNav) {
     webXrNav.dispose();
     webXrNav = null;
@@ -1898,11 +1864,6 @@ async function startWebXrNav() {
         paintTurnBanner(nextTurnFromLegs(legs, along));
       },
       onWalk: (progress, remain) => {
-        // elevator leg owns the banner — don't overwrite with stale walk turns
-        if (state.inFloorTransition) {
-          updateRouteProgress();
-          return;
-        }
         if (ui.metricDistance) {
           ui.metricDistance.textContent = hasFloorChangeAhead() && remain <= ENTER_CONNECTOR_M
             ? "Now"
@@ -1925,7 +1886,6 @@ async function startWebXrNav() {
           setStatusChip(connectorLabel(tf), "live");
           setStatusMsg(ban.label);
           setHint(ban.label, true);
-          startElevatorWatch();
           updateRouteProgress();
           return;
         }
@@ -1991,16 +1951,8 @@ async function runLiveVprCaptureLoop() {
       stopLiveVprCapture();
       return;
     }
-    const canXrGrab = state.webXrActive
-      && Boolean(webXrNav?.grabFrameBlob)
-      && webXrNav.hasCameraAccess !== false;
+    const canXrGrab = state.webXrActive && Boolean(webXrNav?.grabFrameBlob);
     if (!state.stream && !canXrGrab) {
-      // keep loop alive during elevator so watch/status can run; skip captures
-      if (state.inFloorTransition) {
-        updateRouteProgress();
-        await new Promise((r) => setTimeout(r, 400));
-        continue;
-      }
       stopLiveVprCapture();
       return;
     }
@@ -2070,15 +2022,12 @@ async function runLiveVprCaptureLoop() {
             ? `Floor detect retry… ${error.message}`
             : `Live VPR unavailable — VIO/PDR continues. ${error.message}`,
         );
-        // still tick elevator dwell / Continue visibility
-        if (state.inFloorTransition) updateRouteProgress();
       } finally {
         state.liveVpr.requestInFlight = false;
       }
       continue;
     }
 
-    if (state.inFloorTransition) updateRouteProgress();
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
@@ -2334,27 +2283,21 @@ function updateRouteProgress() {
       || `Take ${connectorLabel(tf)} (${tf.connector_id || ""}) to Floor ${tf.to_floor}`;
     // auto-detect landing via /localize (PnP first) — same as camera-nav
     startFloorDetectVpr();
-    startElevatorWatch();
     const dwell = performance.now() - (state.floorTransitionAt || performance.now());
     const walkedOut = state.motion.cumulativeMotion >= ELEVATOR_WALK_MOTION;
-    // XR: dwell alone is enough (no reliable PDR/PnP inside lift)
-    const xrReady = state.webXrActive && dwell >= ELEVATOR_XR_AUTO_MS;
-    const camReady = !state.webXrActive && dwell >= ELEVATOR_AUTO_MS && walkedOut;
-    if (xrReady || camReady) {
+    if (dwell >= ELEVATOR_AUTO_MS && walkedOut) {
       exitFloorTransition(tf.to_floor);
       return;
     }
     setHint(msg, true);
     setStatusMsg(
       dwell > 2500
-        ? (state.webXrActive
-          ? `${msg} · continuing on Floor ${tf.to_floor} shortly…`
-          : `${msg} · PnP detecting Floor ${tf.to_floor}…`)
+        ? `${msg} · PnP detecting Floor ${tf.to_floor}…`
         : msg,
     );
     updateTurnHud(0);
     // manual fallback only if auto-detect is slow (camera-nav rarely needs this)
-    setFloorContinueVisible(dwell >= (state.webXrActive ? 14000 : 18000), tf.to_floor);
+    setFloorContinueVisible(dwell >= 18000, tf.to_floor);
     ui.metricDistance.textContent = "Now";
     return;
   }
