@@ -14,8 +14,8 @@
       rel="stylesheet"
     />
     <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
-    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261005-hometrim" />
-    <link rel="stylesheet" href="/parking-ui/home.css?v=20261005-hometrim" />
+    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261005-voice2" />
+    <link rel="stylesheet" href="/parking-ui/home.css?v=20261005-voice2" />
   </head>
   <body class="entry-mode">
     <!-- React-matched splash + home -->
@@ -109,7 +109,15 @@
           <span class="mark">F</span>
           <span>Find My Car</span>
         </div>
-        <div id="statusChip" class="status-chip is-warn">Ready</div>
+        <div class="ar-top-actions">
+          <button id="voiceBtn" type="button" class="icon-btn voice-btn is-on" aria-label="Voice guidance" title="Voice guidance" aria-pressed="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M11 5 6 9H3v6h3l5 4V5z" fill="currentColor"/>
+              <path class="voice-waves" d="M15.5 8.5a4 4 0 0 1 0 7M18.5 6a7 7 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <div id="statusChip" class="status-chip is-warn">Ready</div>
+        </div>
       </div>
 
       <div id="arriveOverlay" class="arrive-overlay" hidden>
@@ -224,7 +232,7 @@
     </div>
 
     <script src="/ar-vio.js"></script>
-    <script src="/parking-ui/home.js?v=20261005-hometrim"></script>
-    <script src="/parking-ui/app.js?v=20261005-hometrim"></script>
+    <script src="/parking-ui/home.js?v=20261005-voice2"></script>
+    <script src="/parking-ui/app.js?v=20261005-voice2"></script>
   </body>
 </html>

@@ -111,7 +111,71 @@ const ui = {
   arriveOverlay: document.getElementById("arriveOverlay"),
   arriveSlot: document.getElementById("arriveSlot"),
   arriveDismissBtn: document.getElementById("arriveDismissBtn"),
+  voiceBtn: document.getElementById("voiceBtn"),
 };
+
+// react-style TTS (camera-nav branch — no WebXR)
+const voice = {
+  on: true,
+  lastSpoken: "",
+  navOn: false, // only speak after Start nav
+};
+
+function voiceLang() {
+  const lang = localStorage.getItem("ms_fmc_lang") || "en";
+  return lang === "ar" ? "ar" : "en";
+}
+
+function stopVoice() {
+  try {
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+  } catch (_) { /* ignore */ }
+}
+
+function speak(text) {
+  if (!voice.on || !voice.navOn || !text || !("speechSynthesis" in window)) return;
+  const msg = String(text).replace(/\s+/g, " ").trim();
+  if (!msg || msg === voice.lastSpoken) return;
+  voice.lastSpoken = msg;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(msg);
+    const lang = voiceLang();
+    u.lang = lang === "ar" ? "ar-SA" : "en-GB";
+    u.rate = 1;
+    const v = speechSynthesis
+      .getVoices()
+      .find((x) => x.lang && x.lang.toLowerCase().startsWith(lang));
+    if (v) u.voice = v;
+    speechSynthesis.speak(u);
+  } catch (_) { /* ignore */ }
+}
+
+function arrivedVoiceMsg() {
+  return voiceLang() === "ar"
+    ? "لقد وصلت إلى سيارتك."
+    : "You have arrived at your car.";
+}
+
+function setVoiceOn(on, { quiet = false } = {}) {
+  voice.on = Boolean(on);
+  if (!voice.on) {
+    stopVoice();
+    voice.lastSpoken = "";
+  }
+  ui.voiceBtn?.classList.toggle("is-on", voice.on);
+  ui.voiceBtn?.setAttribute("aria-pressed", voice.on ? "true" : "false");
+  // don't overwrite nav status on load — only when user toggles
+  if (!quiet && ui.statusLine) {
+    ui.statusLine.textContent = voice.on
+      ? (voiceLang() === "ar" ? "الإرشاد الصوتي مفعّل" : "Voice guidance on")
+      : (voiceLang() === "ar" ? "الإرشاد الصوتي متوقف" : "Voice guidance off");
+  }
+}
+
+function toggleVoice() {
+  setVoiceOn(!voice.on, { quiet: false });
+}
 
 function setStatusChip(text, kind = "warn") {
   if (ui.sessionState) ui.sessionState.textContent = text;
@@ -145,6 +209,7 @@ function hideSheets() {
 function showArrivalCelebration(slotId) {
   if (state.arrivedShown) return;
   state.arrivedShown = true;
+  stopNavGuidanceTick();
   stopLiveVprCapture({ keepCamera: true });
   const label = slotId || "your destination";
   if (ui.arriveSlot) ui.arriveSlot.textContent = slotId || "your car";
@@ -159,6 +224,9 @@ function showArrivalCelebration(slotId) {
   setStatusChip("Arrived", "live");
   setStatusMsg(`You have reached ${label}`);
   setHint(`You have reached ${label}`, true);
+  // keep navOn briefly so arrival TTS can play
+  speak(arrivedVoiceMsg());
+  voice.navOn = false;
 }
 
 function hideArrivalCelebration() {
@@ -466,6 +534,11 @@ function updateTurnHud(traveledDistance = 0) {
   // keep floor-change copy visible; don't wipe elevator hint
   if (!next.isFloorChange && !state.inFloorTransition) {
     setHint("", false);
+  }
+  // speak turn / lift cue; final "arrived" line only from showArrivalCelebration
+  if (voice.navOn && next.label) {
+    const nearArrive = next.isArrival && next.distanceM < ARRIVE_M;
+    if (!nearArrive) speak(next.label);
   }
 }
 
@@ -1528,16 +1601,35 @@ async function navigateToSlot() {
   }
 
   try {
+    // clear any prior arrival so Start nav can run again
+    state.arrivedShown = false;
+    hideArrivalCelebration();
+    stopVoice();
+
     await updateRouteForSlot(slotId);
-    startNavGuidanceTick();
+
+    // camera + live VPR first — don't speak/HUD before nav is live
     const camOk = state.stream || await ensureCamera();
     if (camOk) {
       startLiveVprCapture();
     } else {
       setStatusMsg("Route ready, but camera is unavailable for live VPR.");
     }
+
+    voice.navOn = true;
+    voice.lastSpoken = "";
+    startNavGuidanceTick();
+    // one HUD refresh after tick is armed (speak first turn, not arrival)
+    updateGuidanceFast();
+    setStatusChip("Navigating", "live");
+    if (camOk) {
+      setStatusMsg("Follow the arrows · live VPR + VIO/PDR");
+      setHint("Walk with the camera — follow the turn banner", true);
+    }
   } catch (error) {
     console.error(error);
+    voice.navOn = false;
+    stopVoice();
     if (ui.turnBanner) ui.turnBanner.hidden = true;
     if (ui.routeBadge) {
       ui.routeBadge.classList.remove("neutral", "success");
@@ -1576,6 +1668,7 @@ function updateGuidanceFast() {
       if (ui.turnDistance) ui.turnDistance.textContent = "Now";
     }
     ui.metricDistance.textContent = "Now";
+    speak(msg);
     return;
   }
   const guideWps = leg?.waypoints?.length ? leg.waypoints : state.route.waypoints;
@@ -1670,6 +1763,7 @@ function updateRouteProgress() {
       || `Take ${connectorLabel(tf)} (${tf.connector_id || ""}) to Floor ${tf.to_floor}`;
     setHint(msg, true);
     setStatusMsg(msg);
+    speak(msg);
     updateTurnHud(0);
     // at the connector — never show elevator penalty as "left" distance
     ui.metricDistance.textContent = "Now";
@@ -1897,10 +1991,12 @@ document.querySelectorAll("[data-close-sheet]").forEach((el) => {
   });
 });
 ui.slotInput.addEventListener("input", updateWorkflowControls);
+ui.voiceBtn?.addEventListener("click", () => toggleVoice());
 ui.localizeBtn.addEventListener("click", localizeParkingPosition);
 ui.routeBtn.addEventListener("click", navigateToSlot);
 ui.arriveDismissBtn?.addEventListener("click", () => {
   hideArrivalCelebration();
+  stopVoice();
   setHint("Tap Slot to navigate somewhere else", true);
 });
 ui.slotInput.addEventListener("keydown", (event) => {
@@ -1946,5 +2042,12 @@ window.addEventListener("load", async () => {
     setCalibrationStep("Waiting for calibration to begin.", 0, "stillness");
   }
   updateRouteStatus();
+  setVoiceOn(true, { quiet: true });
+  try {
+    speechSynthesis?.getVoices?.();
+    speechSynthesis?.addEventListener?.("voiceschanged", () => {
+      speechSynthesis.getVoices();
+    });
+  } catch (_) { /* ignore */ }
   setInterval(refreshCurrentPosition, 2000);
 });
