@@ -250,6 +250,46 @@ body.lift-cam .cam-keepalive {
 .status-chip.is-warn { color: var(--amber); }
 .status-chip.is-bad { color: var(--danger); }
 
+.ar-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.icon-btn {
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--glass);
+  color: #eef5f0;
+  backdrop-filter: blur(12px);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.icon-btn svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.voice-btn {
+  opacity: 0.45;
+}
+
+.voice-btn.is-on {
+  opacity: 1;
+  color: var(--mint);
+}
+
+.voice-btn:not(.is-on) .voice-waves {
+  opacity: 0.25;
+}
+
 .turn-banner {
   top: calc(64px + var(--safe-top));
   margin: 0 14px;

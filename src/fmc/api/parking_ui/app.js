@@ -139,7 +139,53 @@ const ui = {
   liftHudDir: document.getElementById("liftHudDir"),
   liftHudFloor: document.getElementById("liftHudFloor"),
   liftCamCanvas: document.getElementById("liftCamCanvas"),
+  voiceBtn: document.getElementById("voiceBtn"),
 };
+
+const voice = {
+  on: true, // same default as React CONFIG.VOICE
+  lastSpoken: "",
+};
+
+function stopVoice() {
+  try {
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+  } catch (_) { /* ignore */ }
+}
+
+/** react-style TTS for turn / elevator / arrival cues */
+function speak(text) {
+  if (!voice.on || !text || !("speechSynthesis" in window)) return;
+  const msg = String(text).replace(/\s+/g, " ").trim();
+  if (!msg || msg === voice.lastSpoken) return;
+  voice.lastSpoken = msg;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(msg);
+    u.lang = "en-GB";
+    u.rate = 1;
+    const v = speechSynthesis
+      .getVoices()
+      .find((x) => x.lang && x.lang.toLowerCase().startsWith("en"));
+    if (v) u.voice = v;
+    speechSynthesis.speak(u);
+  } catch (_) { /* ignore */ }
+}
+
+function setVoiceOn(on) {
+  voice.on = Boolean(on);
+  if (!voice.on) {
+    stopVoice();
+    voice.lastSpoken = "";
+  }
+  ui.voiceBtn?.classList.toggle("is-on", voice.on);
+  ui.voiceBtn?.setAttribute("aria-pressed", voice.on ? "true" : "false");
+  setStatusMsg(voice.on ? "Voice guidance on" : "Voice guidance off");
+}
+
+function toggleVoice() {
+  setVoiceOn(!voice.on);
+}
 
 let webXrNav = null;
 let liftHandoffBusy = false;
@@ -204,6 +250,7 @@ function showArrivalCelebration(slotId) {
   setStatusChip("Arrived", "live");
   setStatusMsg(`You have reached ${label}`);
   setHint(`You have reached ${label}`, true);
+  speak("You have arrived at your car.");
 }
 
 function hideArrivalCelebration() {
@@ -1462,6 +1509,11 @@ function paintTurnBanner(next) {
     hideLiftHud();
   }
   updateFloorArrowTilt(next);
+  // speak new turn / lift cue (deduped like React stepIdx)
+  if (next.label && (state.navActive || state.webXrActive || state.inFloorTransition)) {
+    if (next.isArrival) speak("You have arrived at your car.");
+    else speak(next.label);
+  }
 }
 
 function updateTurnHud(traveledDistance = 0) {
@@ -2491,6 +2543,8 @@ function stopWebXrSession({ resumeCamera = false } = {}) {
 }
 
 function stopCameraNav() {
+  stopVoice();
+  voice.lastSpoken = "";
   stopXrLiftWatch();
   stopXrHealthWatch();
   stopWebXrSession({ resumeCamera: false });
@@ -2513,6 +2567,7 @@ function stopCameraNav() {
 
 /** camera fallback: same chevron style + bearing tilt */
 function startCameraNav() {
+  voice.lastSpoken = "";
   state.navActive = true;
   state.webXrActive = false;
   state.camOwner = "camera";
@@ -2701,6 +2756,7 @@ async function startWebXrNav(opts = {}) {
   state.webXrActive = true;
   state.navActive = true;
   state.camOwner = "xr";
+  voice.lastSpoken = "";
   ui.arStage.classList.add("webxr-on");
   setRouteBtnMode("stop");
   setStatusChip(opts.fresh ? "AR · new floor" : "AR nav", "live");
@@ -3391,6 +3447,7 @@ document.querySelectorAll("[data-close-sheet]").forEach((el) => {
   });
 });
 ui.slotInput.addEventListener("input", updateWorkflowControls);
+ui.voiceBtn?.addEventListener("click", () => toggleVoice());
 ui.localizeBtn.addEventListener("click", localizeParkingPosition);
 ui.routeBtn.addEventListener("click", () => {
   navigateToSlot().catch((err) => {
@@ -3424,5 +3481,13 @@ window.addEventListener("load", async () => {
   setCalibrationStep("Waiting for calibration to begin.", 0, "stillness");
   }
   updateRouteStatus();
+  setVoiceOn(true);
+  // chrome loads voices async
+  try {
+    speechSynthesis?.getVoices?.();
+    speechSynthesis?.addEventListener?.("voiceschanged", () => {
+      speechSynthesis.getVoices();
+    });
+  } catch (_) { /* ignore */ }
   setInterval(refreshCurrentPosition, 2000);
 });
