@@ -2,6 +2,12 @@ const ARRIVE_M = 2.0; // along-route remaining / approach-node threshold
 const ARRIVE_SLOT_M = 8.0; // euclidean to slot (bays sit off the walkable line)
 const LEG_ADVANCE_M = 0.7; // snap to next walk leg
 const ENTER_CONNECTOR_M = 3.0; // enter lift/stairs guidance (PDR freezes in elevator)
+/** drop WebXR this far from the lift — cabin RF kills XR; getUserMedia must start in the hallway */
+const RELEASE_XR_NEAR_M = 12.0;
+/** after landing, walk this far from the lift door before an XR time-slice */
+const RESUME_XR_CLEAR_M = 8.0;
+const RESUME_XR_SETTLE_MS = 3000;
+const XR_TRACK_LOST_MS = 900; // hand camera back if XR pose dies this long
 /** after this + walk motion, assume user exited lift (camera-nav used VPR; XR often can't) */
 const ELEVATOR_AUTO_MS = 7000;
 const ELEVATOR_WALK_MOTION = 1.6;
@@ -52,6 +58,13 @@ const state = {
   },
   stream: null,
   video: null,
+  suppressXrResume: false, // true while handing XR → camera
+  pendingXrResume: false, // want XR slice once clear of lift
+  xrResumeReadyAt: 0, // earliest time to try WebXR after landing
+  xrResumeBlocked: false, // XR died this floor — stay on camera
+  camOwner: "camera", // "camera" | "xr" — time-sliced exclusive ownership
+  walkSinceLand: 0, // motion since landOnFloor (not cleared by PnP fixes)
+  floorOrder: [], // site floor labels, bottom→top when available
   lastCompassSample: null,
   rawHeadingHistory: [],
   headingOffset: 0,
@@ -119,9 +132,20 @@ const ui = {
   arCanvas: document.getElementById("arCanvas"),
   floorArrows: document.getElementById("floorArrows"),
   floorPath: document.getElementById("floorPath"),
+  liftHud: document.getElementById("liftHud"),
+  liftHudGlyph: document.getElementById("liftHudGlyph"),
+  liftHudDir: document.getElementById("liftHudDir"),
+  liftHudFloor: document.getElementById("liftHudFloor"),
+  liftCamCanvas: document.getElementById("liftCamCanvas"),
 };
 
 let webXrNav = null;
+let liftHandoffBusy = false;
+let xrResumeBusy = false;
+let liftCamRaf = 0;
+let xrLiftWatchTimer = 0;
+let xrHealthTimer = 0;
+let xrTrackLostAt = 0;
 
 function setStatusChip(text, kind = "warn") {
   if (ui.sessionState) ui.sessionState.textContent = text;
@@ -193,6 +217,68 @@ function sameFloor(a, b) {
   return normFloor(a).toLowerCase() === normFloor(b).toLowerCase();
 }
 
+/** rank floors bottom→top (B2 < B1 < G < 1 < 2) */
+function floorRank(f) {
+  const s = normFloor(f);
+  const order = state.floorOrder || [];
+  const idx = order.findIndex((x) => sameFloor(x, s));
+  if (idx >= 0) return idx;
+  const u = s.toUpperCase();
+  const bas = u.match(/^B(\d+)$/);
+  if (bas) return -Number(bas[1]);
+  if (u === "G" || u === "GF" || u === "LG") return 0;
+  const n = Number(u);
+  if (Number.isFinite(n)) return n;
+  return 0;
+}
+
+/** "up" | "down" | "straight" from transition floors */
+function verticalDir(fromFloor, toFloor) {
+  const d = floorRank(toFloor) - floorRank(fromFloor);
+  if (d > 0) return "up";
+  if (d < 0) return "down";
+  return "straight";
+}
+
+function showLiftHud(tf) {
+  if (!ui.liftHud || !tf) {
+    hideLiftHud();
+    return;
+  }
+  const dir = verticalDir(tf.from_floor, tf.to_floor);
+  const to = normFloor(tf.to_floor);
+  ui.liftHud.hidden = false;
+  ui.liftHud.classList.toggle("is-down", dir === "down");
+  if (ui.liftHudGlyph) {
+    ui.liftHudGlyph.textContent = dir === "down" ? "↓" : "↑";
+  }
+  if (ui.liftHudDir) {
+    ui.liftHudDir.textContent = dir === "down"
+      ? "Go down"
+      : dir === "up"
+        ? "Go up"
+        : "Change floor";
+  }
+  if (ui.liftHudFloor) {
+    ui.liftHudFloor.textContent = `Floor ${to}`;
+  }
+}
+
+function hideLiftHud() {
+  if (ui.liftHud) ui.liftHud.hidden = true;
+}
+
+async function ensureFloorOrder() {
+  if (state.floorOrder?.length) return;
+  try {
+    const res = await fetch("/map/floors");
+    if (!res.ok) return;
+    const data = await res.json();
+    const floors = (data.floors || []).map(normFloor);
+    if (floors.length) state.floorOrder = floors;
+  } catch (_) { /* ignore */ }
+}
+
 function destFloorId() {
   if (!state.route) return null;
   return normFloor(state.route.dest_floor ?? state.route.floor);
@@ -218,6 +304,38 @@ function setFloorContinueVisible(on, toFloor = "") {
 }
 
 /** resume live /localize (PnP first) so landing floor advances without Continue */
+function xrRemainM() {
+  if (!webXrNav || !(webXrNav.pathLen > 0)) return null;
+  return Math.max(0, webXrNav.pathLen - (webXrNav.progressM || 0));
+}
+
+function stopXrLiftWatch() {
+  if (xrLiftWatchTimer) {
+    clearInterval(xrLiftWatchTimer);
+    xrLiftWatchTimer = 0;
+  }
+  xrTrackLostAt = 0;
+}
+
+/** poll XR remain / tracking — onWalk dies when the cabin kills pose */
+function startXrLiftWatch() {
+  stopXrLiftWatch();
+  if (!hasFloorChangeAhead()) return;
+  xrLiftWatchTimer = setInterval(() => {
+    if (!state.webXrActive || !webXrNav) {
+      stopXrLiftWatch();
+      return;
+    }
+    if (!hasFloorChangeAhead()) return;
+    const rem = xrRemainM();
+    const lostMs = xrTrackLostAt ? performance.now() - xrTrackLostAt : 0;
+    if ((rem != null && rem <= RELEASE_XR_NEAR_M) || lostMs >= 800) {
+      stopXrLiftWatch();
+      void releaseXrForLiftApproach(rem != null ? rem : 0);
+    }
+  }, 350);
+}
+
 function startFloorDetectVpr() {
   if (!state.hasLocalizedPosition || !state.route) return;
   if (state.liveVpr.running) return;
@@ -225,7 +343,23 @@ function startFloorDetectVpr() {
   state.liveVpr.lastCaptureTime = 0; // capture soon
   state.motion.cumulativeMotion = 0;
   state.motion.lastMeaningfulMotionAt = performance.now();
-  // XR camera-access preferred; getUserMedia is backup when AR doesn't own cam
+  // in lift: always use getUserMedia (XR passthrough freezes in the cabin)
+  if (state.inFloorTransition) {
+    const open = state.stream ? Promise.resolve(true) : reopenCameraHard({ delayMs: 200 });
+    open.then((ok) => {
+      if (!ok || !state.stream) {
+        state.liveVpr.running = false;
+        return;
+      }
+      kickCameraPreview();
+      runLiveVprCaptureLoop();
+    }).catch((err) => {
+      state.liveVpr.running = false;
+      console.warn("floor-detect camera", err);
+    });
+    return;
+  }
+  // XR grab ok without getUserMedia
   if (state.webXrActive && webXrNav?.grabFrameBlob) {
     runLiveVprCaptureLoop();
     return;
@@ -235,6 +369,7 @@ function startFloorDetectVpr() {
       state.liveVpr.running = false;
       return;
     }
+    kickCameraPreview();
     runLiveVprCaptureLoop();
   }).catch((err) => {
     state.liveVpr.running = false;
@@ -314,13 +449,15 @@ function elevatorBanner(tf, remM = 0) {
   }
   const cid = tf.connector_id || "";
   const atDoor = remM <= ENTER_CONNECTOR_M;
+  const dir = verticalDir(tf.from_floor, tf.to_floor);
+  const go = dir === "down" ? "Go down" : dir === "up" ? "Go up" : "Change floor";
   return {
     label: atDoor
-      ? (tf.instruction || `Take ${connectorLabel(tf)}${cid ? ` (${cid})` : ""} to Floor ${tf.to_floor}`)
-      : `Walk to ${cid || "lift"} · then ${connectorLabel(tf)} to Floor ${tf.to_floor}`,
+      ? `${go} · ${connectorLabel(tf)}${cid ? ` (${cid})` : ""} to Floor ${tf.to_floor}`
+      : `Walk to ${cid || "lift"} · then ${go.toLowerCase()} to Floor ${tf.to_floor}`,
     distanceM: atDoor ? 0 : Math.max(0, remM),
     isArrival: false,
-    kind: atDoor ? "arrive" : "straight",
+    kind: atDoor ? dir : "straight",
     isFloorChange: true,
   };
 }
@@ -377,10 +514,443 @@ function enterConnectorLeg() {
     }
   }
   if (entered) {
-    // same as camera-nav: keep localizing so new floor unlocks next banner
-    startFloorDetectVpr();
+    // cabin: XR should already be off from approach; keep getUserMedia + PnP
+    void handoffCameraDuringLift();
   }
   return entered;
+}
+
+/** nudge video so android webview keeps compositing frames */
+function kickCameraPreview() {
+  const v = ui.cameraView;
+  if (!v) return;
+  if (state.stream && v.srcObject !== state.stream) v.srcObject = state.stream;
+  if (v.paused) v.play().catch(() => {});
+  v.style.transform = "translateZ(0)";
+  requestAnimationFrame(() => { v.style.transform = ""; });
+  document.body.classList.add("cam-live");
+}
+
+/**
+ * After WebXR, tracks often stay "live" but frozen.
+ * Always tear down and reopen getUserMedia.
+ */
+async function reopenCameraHard({ delayMs = 400 } = {}) {
+  const v = ui.cameraView;
+  if (v) {
+    try { v.pause(); } catch (_) { /* ignore */ }
+    try { v.srcObject = null; } catch (_) { /* ignore */ }
+  }
+  if (state.stream) {
+    state.stream.getTracks().forEach((t) => {
+      try { t.stop(); } catch (_) { /* ignore */ }
+    });
+    state.stream = null;
+  }
+  document.body.classList.remove("cam-live");
+  if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+  if (!navigator.mediaDevices?.getUserMedia) return false;
+  try {
+    state.stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+      audio: false,
+    });
+    if (v) {
+      v.srcObject = state.stream;
+      v.muted = true;
+      v.setAttribute("playsinline", "");
+      v.setAttribute("webkit-playsinline", "");
+      await v.play();
+    }
+    document.body.classList.add("cam-live");
+    return waitForCameraFrame(5000);
+  } catch (err) {
+    console.warn("reopenCameraHard", err);
+    return false;
+  }
+}
+
+/** blit <video> → canvas every frame — unfreezes android webview preview */
+function startLiftCamMirror() {
+  stopLiftCamMirror();
+  const canvas = ui.liftCamCanvas;
+  const video = ui.cameraView;
+  if (!canvas || !video) return;
+  canvas.hidden = false;
+  document.body.classList.add("lift-cam");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) return;
+
+  let lastFrameAt = performance.now();
+  let reopenTries = 0;
+  let rvfcId = 0;
+
+  const onVideoFrame = () => {
+    lastFrameAt = performance.now();
+    if (state.inFloorTransition && typeof video.requestVideoFrameCallback === "function") {
+      rvfcId = video.requestVideoFrameCallback(onVideoFrame);
+    }
+  };
+  if (typeof video.requestVideoFrameCallback === "function") {
+    rvfcId = video.requestVideoFrameCallback(onVideoFrame);
+  }
+
+  const tick = () => {
+    if (!state.inFloorTransition) {
+      if (rvfcId && typeof video.cancelVideoFrameCallback === "function") {
+        try { video.cancelVideoFrameCallback(rvfcId); } catch (_) { /* ignore */ }
+      }
+      stopLiftCamMirror();
+      return;
+    }
+    const w = video.videoWidth | 0;
+    const h = video.videoHeight | 0;
+    if (w > 2 && h > 2) {
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      try {
+        ctx.drawImage(video, 0, 0, w, h);
+      } catch (_) { /* ignore */ }
+    }
+    // no decoded frames → hard reopen (track can stay "live" while frozen)
+    const now = performance.now();
+    const stalled = typeof video.requestVideoFrameCallback === "function"
+      ? now - lastFrameAt > 2500
+      : (video.readyState < 2 || video.paused);
+    if (stalled && reopenTries < 3 && !liftHandoffBusy) {
+      reopenTries += 1;
+      lastFrameAt = now;
+      void reopenCameraHard({ delayMs: 400 }).then((ok) => {
+        if (ok) {
+          kickCameraPreview();
+          lastFrameAt = performance.now();
+          if (typeof video.requestVideoFrameCallback === "function") {
+            rvfcId = video.requestVideoFrameCallback(onVideoFrame);
+          }
+        }
+      });
+    }
+    if (video.paused && state.stream) video.play().catch(() => {});
+    liftCamRaf = requestAnimationFrame(tick);
+  };
+  liftCamRaf = requestAnimationFrame(tick);
+}
+
+function stopLiftCamMirror() {
+  if (liftCamRaf) {
+    cancelAnimationFrame(liftCamRaf);
+    liftCamRaf = 0;
+  }
+  if (ui.liftCamCanvas) {
+    ui.liftCamCanvas.hidden = true;
+  }
+  document.body.classList.remove("lift-cam");
+}
+
+/** meters left on current walk leg toward lift/stairs door */
+function remToConnectorM() {
+  const leg = activeRouteLeg();
+  const wps = leg?.waypoints;
+  if (!wps?.length || leg?.floor_transition) return Infinity;
+  const last = wps[wps.length - 1];
+  return Math.hypot(
+    Number(state.position.x) - Number(last[0]),
+    Number(state.position.y) - Number(last[1]),
+  );
+}
+
+function shouldReleaseXrNearLift(remainM = null) {
+  if (!hasFloorChangeAhead()) return false;
+  if (state.inFloorTransition) return true;
+  const rem = remainM != null ? Number(remainM) : remToConnectorM();
+  return Number.isFinite(rem) && rem <= RELEASE_XR_NEAR_M;
+}
+
+/**
+ * Drop WebXR in the hallway before the lift — camera time-slice.
+ */
+async function releaseXrForLiftApproach(remainM = null) {
+  if (!shouldReleaseXrNearLift(remainM) && !state.inFloorTransition) return;
+  if (liftHandoffBusy) return;
+
+  if (state.webXrActive || webXrNav) {
+    await handXrToCamera("lift");
+    return;
+  }
+
+  // already on camera
+  state.pendingXrResume = true;
+  state.camOwner = "camera";
+  await pauseArVioForCamera();
+  if (!state.stream) {
+    const ok = await ensureCamera().catch(() => false)
+      || await reopenCameraHard({ delayMs: 150 }).catch(() => false);
+    kickCameraPreview();
+    if (ok) restartLiveVprCapture();
+  } else {
+    kickCameraPreview();
+    startLiveVprCapture();
+  }
+}
+
+/** cabin phase: XR → camera slice if needed; keep PnP running */
+async function handoffCameraDuringLift() {
+  state.navActive = true;
+  state.pendingXrResume = true;
+  setRouteBtnMode("stop");
+
+  const tf = activeRouteLeg()?.floor_transition
+    || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
+  if (tf) showLiftHud(tf);
+  showFloorArrows(false);
+
+  try {
+    if (state.webXrActive || webXrNav) {
+      await handXrToCamera("lift");
+    } else if (!state.stream) {
+      await ensureCamera().catch(() => false)
+        || await reopenCameraHard({ delayMs: 200 });
+    }
+    // else: keep hallway getUserMedia — do not reopen inside the cabin
+
+    state.camOwner = "camera";
+    kickCameraPreview();
+    startLiftCamMirror();
+
+    if (!state.stream) {
+      setStatusMsg("Camera unavailable in lift — use Continue on the next floor");
+      return;
+    }
+    startFloorDetectVpr();
+    const dir = tf ? verticalDir(tf.from_floor, tf.to_floor) : "up";
+    const to = tf ? normFloor(tf.to_floor) : "—";
+    setStatusMsg(
+      dir === "down"
+        ? `In lift — go down to Floor ${to}`
+        : `In lift — go up to Floor ${to}`,
+    );
+  } catch (err) {
+    console.warn("lift camera", err);
+    setStatusMsg("Lift camera handoff failed — tap Continue on landing floor");
+  }
+}
+
+/** meters from start of current walk leg (usually the lift door) */
+function distFromLegStartM() {
+  const leg = activeRouteLeg();
+  const wps = leg?.waypoints;
+  if (!wps?.length || leg?.floor_transition) return Infinity;
+  const a = wps[0];
+  return Math.hypot(
+    Number(state.position.x) - Number(a[0]),
+    Number(state.position.y) - Number(a[1]),
+  );
+}
+
+/** ARCore steals the camera from getUserMedia on Android — pause during lift/camera nav */
+async function pauseArVioForCamera() {
+  stopArTracking();
+  if (!window.ArVio || !arVioStarted) return;
+  try {
+    await ArVio.stop();
+  } catch (err) {
+    console.warn("ArVio stop", err);
+  }
+  arVioStarted = false;
+}
+
+/** kill + restart live VPR — same path as tapping Localize after a stall */
+function restartLiveVprCapture() {
+  state.liveVpr.running = false;
+  state.liveVpr.requestInFlight = false;
+  state.liveVpr.lastCaptureTime = 0;
+  state.liveVpr.nextCaptureAllowedAt = 0;
+  setTimeout(() => {
+    void (async () => {
+      if (!state.navActive || state.workflowStep !== "navigation") return;
+      if (!state.hasLocalizedPosition || !state.route) return;
+      if (state.camOwner === "xr" || state.webXrActive) return;
+      if (!state.stream) {
+        await ensureCamera().catch(() => false)
+          || await reopenCameraHard({ delayMs: 200 }).catch(() => false);
+      }
+      kickCameraPreview();
+      startLiveVprCapture();
+    })();
+  }, 50);
+}
+
+function stopXrHealthWatch() {
+  if (xrHealthTimer) {
+    clearInterval(xrHealthTimer);
+    xrHealthTimer = 0;
+  }
+}
+
+/** if XR pose dies, give the camera back to getUserMedia + PnP */
+function startXrHealthWatch() {
+  stopXrHealthWatch();
+  xrHealthTimer = setInterval(() => {
+    if (!state.webXrActive || !webXrNav) {
+      stopXrHealthWatch();
+      return;
+    }
+    if (shouldReleaseXrNearLift(xrRemainM())) {
+      stopXrHealthWatch();
+      void handXrToCamera("lift");
+      return;
+    }
+    if (xrTrackLostAt && performance.now() - xrTrackLostAt > XR_TRACK_LOST_MS) {
+      stopXrHealthWatch();
+      void handXrToCamera("dead");
+    }
+  }, 300);
+}
+
+function clearOfLiftForXr() {
+  if (state.inFloorTransition || state.xrResumeBlocked) return false;
+  if (performance.now() < (state.xrResumeReadyAt || 0)) return false;
+  if ((state.walkSinceLand || 0) < 2.0) return false;
+  const fromLift = distFromLegStartM();
+  if (Number.isFinite(fromLift) && fromLift < RESUME_XR_CLEAR_M) return false;
+  if (hasFloorChangeAhead() && shouldReleaseXrNearLift()) return false;
+  const leg = activeRouteLeg();
+  const wps = leg?.waypoints?.length ? leg.waypoints : [];
+  if (leg?.floor_transition || wps.length < 2) return false;
+  return true;
+}
+
+/**
+ * Time-slice: XR owns the camera.
+ * Stops getUserMedia first — Android allows only one owner.
+ */
+async function claimXrSlice() {
+  if (xrResumeBusy || liftHandoffBusy) return false;
+  if (state.webXrActive || webXrNav) return true;
+  if (!clearOfLiftForXr()) return false;
+  if (!state.navActive || state.workflowStep !== "navigation") return false;
+
+  xrResumeBusy = true;
+  try {
+    // release getUserMedia so WebXR can take the device
+    stopLiveVprCapture({ keepCamera: false });
+    await pauseArVioForCamera();
+    if (ui.arCanvas) ui.arCanvas.style.display = "";
+    const ok = await startWebXrNav();
+    if (!ok) {
+      state.camOwner = "camera";
+      const camOk = await ensureCamera().catch(() => false)
+        || await reopenCameraHard({ delayMs: 400 });
+      kickCameraPreview();
+      startCameraNav();
+      if (camOk) restartLiveVprCapture();
+      setStatusMsg("AR unavailable — staying on camera + PnP");
+      return false;
+    }
+    state.camOwner = "xr";
+    state.pendingXrResume = false;
+    startXrHealthWatch();
+    setStatusChip("AR slice", "live");
+    setStatusMsg("AR on — camera handed to XR (returns if tracking dies)");
+    setHint("If AR freezes, camera + PnP takes over automatically", true);
+    return true;
+  } finally {
+    xrResumeBusy = false;
+  }
+}
+
+/**
+ * Time-slice: getUserMedia + PnP owns the camera.
+ * reason "lift" = approaching cabin; "dead" = XR tracking failed.
+ */
+async function handXrToCamera(reason = "lift") {
+  if (liftHandoffBusy) return;
+  liftHandoffBusy = true;
+  stopXrHealthWatch();
+  stopXrLiftWatch();
+  state.navActive = true;
+  setRouteBtnMode("stop");
+
+  try {
+    state.suppressXrResume = true;
+    const nav = webXrNav;
+    webXrNav = null;
+    state.webXrActive = false;
+    state.camOwner = "camera";
+    ui.arStage?.classList.remove("webxr-on");
+    if (ui.arCanvas) ui.arCanvas.style.display = "none";
+
+    if (nav) {
+      try {
+        if (nav.stopAsync) await nav.stopAsync();
+        else nav.stop?.();
+      } catch (err) {
+        console.warn("handXrToCamera stop", err);
+      }
+    }
+
+    await pauseArVioForCamera();
+    let camOk = await reopenCameraHard({ delayMs: 700 });
+    if (!camOk) camOk = await reopenCameraHard({ delayMs: 1000 });
+    if (!camOk) camOk = await ensureCamera().catch(() => false);
+    kickCameraPreview();
+    showFloorArrows(true);
+    startCameraNav();
+    if (camOk) restartLiveVprCapture();
+
+    if (reason === "dead") {
+      // don't fight XR again on this floor
+      state.xrResumeBlocked = true;
+      state.pendingXrResume = false;
+      setStatusChip("Camera · XR lost", "warn");
+      setStatusMsg("AR lost tracking — camera + PnP until the bay");
+      setHint("Follow the camera arrows", true);
+    } else {
+      state.pendingXrResume = true;
+      state.xrResumeBlocked = false;
+      setStatusChip("Camera · lift", "live");
+      setStatusMsg("Camera + PnP for the lift — AR returns when clear");
+      setHint("AR will retry after you leave the next lift lobby", true);
+    }
+  } catch (err) {
+    console.warn("handXrToCamera", err);
+  } finally {
+    liftHandoffBusy = false;
+    state.suppressXrResume = false;
+  }
+}
+
+/**
+ * After PnP lands: keep camera slice until clear of lobby, then brief XR slice.
+ */
+function maybeResumeXrAfterPnp(pos) {
+  if (!state.pendingXrResume || state.xrResumeBlocked) return;
+  if (!state.navActive || state.workflowStep !== "navigation") return;
+  if (state.inFloorTransition || state.webXrActive || webXrNav) return;
+  if (liftHandoffBusy || state.suppressXrResume || xrResumeBusy) return;
+  if (!pos?.tracking || !(pos.confidence > 0)) return;
+
+  if (!clearOfLiftForXr()) {
+    const fromLift = distFromLegStartM();
+    const left = Number.isFinite(fromLift)
+      ? Math.max(0, Math.ceil(RESUME_XR_CLEAR_M - fromLift))
+      : RESUME_XR_CLEAR_M;
+    setStatusChip("Camera · clear lift", "live");
+    setStatusMsg(
+      (state.walkSinceLand || 0) < 2
+        ? "Floor locked — walk clear of the lift, then AR"
+        : `Floor locked — ~${left}m from lift, then AR slice`,
+    );
+    return;
+  }
+
+  void claimXrSlice();
 }
 
 /** mutate state onto the walk leg for toFloor (no HUD refresh) */
@@ -412,8 +982,29 @@ function landOnFloor(toFloor, transitionIdx = state.activeLegIndex || 0) {
   state.inFloorTransition = false;
   state.floorTransitionAt = 0;
   state.arrivedShown = false;
+  // camera slice now; XR slice only after walk-clear (maybeResumeXrAfterPnp)
+  state.camOwner = "camera";
+  state.pendingXrResume = true;
+  state.xrResumeBlocked = false;
+  state.xrResumeReadyAt = performance.now() + RESUME_XR_SETTLE_MS;
+  state.motion.cumulativeMotion = 0;
+  state.walkSinceLand = 0;
   hideArrivalCelebration();
+  hideLiftHud();
+  stopLiftCamMirror();
+  if (ui.arCanvas) ui.arCanvas.style.display = "none";
   setFloorContinueVisible(false);
+  void pauseArVioForCamera().then(async () => {
+    const ok = await ensureCamera().catch(() => false)
+      || await reopenCameraHard({ delayMs: 300 });
+    kickCameraPreview();
+    if (state.navActive) {
+      showFloorArrows(true);
+      setStatusChip("Camera · landed", "live");
+      setStatusMsg("Floor locked — camera until clear of lift, then AR");
+      if (ok) restartLiveVprCapture();
+    }
+  });
   return true;
 }
 
@@ -423,6 +1014,8 @@ function refreshPathAfterFloorChange({ redraw = false } = {}) {
   if (redraw && wps.length >= 2) {
     drawRoute(wps, ui.slotInput?.value?.trim() || "");
   }
+
+  hideLiftHud();
 
   // refresh WebXR path on this floor without a new session
   if (webXrNav && state.webXrActive && wps.length >= 2) {
@@ -446,6 +1039,17 @@ function refreshPathAfterFloorChange({ redraw = false } = {}) {
   setStatusChip(`Floor ${fl}`, "live");
   setStatusMsg(`Floor ${fl} — follow the path to your bay`);
   setHint("Follow the arrows to your parking bay", true);
+
+  // after the lift: camera slice first; XR claimed later when clear
+  if (state.navActive && !state.webXrActive) {
+    showFloorArrows(true);
+    startLiveVprCapture();
+    setStatusMsg(
+      state.pendingXrResume
+        ? `Floor ${fl} — camera until clear of lift, then AR`
+        : `Floor ${fl} — camera guidance to your bay`,
+    );
+  }
 }
 
 /** leave elevator/stairs — show next floor walk banner + AR path */
@@ -514,12 +1118,14 @@ function nextTurnGuidance(waypoints, traveledDistance = 0) {
   const leg = activeRouteLeg();
   if (leg?.floor_transition) {
     const tf = leg.floor_transition;
+    const dir = verticalDir(tf.from_floor, tf.to_floor);
+    const go = dir === "down" ? "Go down" : dir === "up" ? "Go up" : "Change floor";
     // leg.distance is routing penalty (e.g. 12m), NOT walking remaining
     return {
-      label: tf.instruction || leg.instruction || `Take ${connectorLabel(tf)} to Floor ${tf.to_floor}`,
+      label: `${go} to Floor ${tf.to_floor}`,
       distanceM: 0,
       isArrival: false,
-      kind: "arrive",
+      kind: dir,
       isFloorChange: true,
     };
   }
@@ -532,14 +1138,16 @@ function nextTurnGuidance(waypoints, traveledDistance = 0) {
       const cid = tf.connector_id || "connector";
       const rem = Math.max(0, progress.remainingDistance);
       const atDoor = rem <= ENTER_CONNECTOR_M;
+      const dir = verticalDir(tf.from_floor, tf.to_floor);
+      const go = dir === "down" ? "Go down" : dir === "up" ? "Go up" : "Change floor";
       return {
         label: atDoor
-          ? `Take ${connectorLabel(tf)} (${cid}) to Floor ${tf.to_floor}`
-          : `Walk to ${cid} · then ${connectorLabel(tf)} to Floor ${tf.to_floor}`,
+          ? `${go} · ${connectorLabel(tf)} (${cid}) to Floor ${tf.to_floor}`
+          : `Walk to ${cid} · then ${go.toLowerCase()} to Floor ${tf.to_floor}`,
         // don't freeze a stale ~2m while standing in the lift
         distanceM: atDoor ? 0 : rem,
         isArrival: false,
-        kind: atDoor ? "arrive" : "straight",
+        kind: atDoor ? dir : "straight",
         isFloorChange: true,
       };
     }
@@ -620,6 +1228,8 @@ function routeProgressForWaypoints(waypoints) {
 
 function turnKind(label) {
   const t = String(label || "").toLowerCase();
+  if (t.includes("go down") || t.includes("down to")) return "down";
+  if (t.includes("go up") || t.includes("up to")) return "up";
   if (t.includes("left")) return "left";
   if (t.includes("right")) return "right";
   if (t.includes("around") || t.includes("u-turn")) return "uturn";
@@ -630,6 +1240,8 @@ function turnKind(label) {
 // distinct glyphs — never rotate a straight arrow for left/right
 const TURN_ICON_PATHS = {
   straight: "M12 20V4M5 11l7-7 7 7",
+  up: "M12 20V4M5 11l7-7 7 7",
+  down: "M12 4v16M5 13l7 7 7-7",
   left: "M18 20v-7a4 4 0 0 0-4-4H5M9 5 5 9l4 4",
   right: "M6 20v-7a4 4 0 0 1 4-4h9M15 5l4 4-4 4",
   uturn: "M9 7v7a3 3 0 0 0 6 0V8M15 8l-3-3M15 8l3-3",
@@ -808,7 +1420,14 @@ function paintTurnBanner(next) {
       || (next.isFloorChange && next.distanceM < 1);
     ui.turnDistance.textContent = now ? "Now" : `${Math.round(next.distanceM)} m`;
   }
-  setTurnIcon(turnKind(next.label) || next.kind || "straight");
+  const kind = next.kind || turnKind(next.label) || "straight";
+  setTurnIcon(kind);
+  if (state.inFloorTransition && next.isFloorChange) {
+    const tf = activeRouteLeg()?.floor_transition;
+    if (tf) showLiftHud(tf);
+  } else if (!next.isFloorChange) {
+    hideLiftHud();
+  }
   updateFloorArrowTilt(next);
 }
 
@@ -893,7 +1512,7 @@ function updateWorkflowControls() {
   ui.destinationContinueBtn.disabled = !hasDestination;
   if (ui.calibrationContinueBtn) ui.calibrationContinueBtn.disabled = !state.sessionReady;
   if (ui.selectedSlotSummary) {
-    ui.selectedSlotSummary.textContent = hasDestination ? ui.slotInput.value.trim() : "No slot selected";
+  ui.selectedSlotSummary.textContent = hasDestination ? ui.slotInput.value.trim() : "No slot selected";
   }
   if (ui.hudSlot) ui.hudSlot.textContent = hasDestination ? ui.slotInput.value.trim() : "—";
 
@@ -1070,8 +1689,8 @@ function setCalibrationStep(stepLabel, stepIndex = null, stepKey = null) {
   const animationKey = stepKey || state.calibration.stepKey || "stillness";
   state.calibration.stepKey = animationKey;
   if (ui.calibrationVisual) {
-    ui.calibrationVisual.classList.remove("step-stillness", "step-compass", "step-walk");
-    ui.calibrationVisual.classList.add(`step-${animationKey}`);
+  ui.calibrationVisual.classList.remove("step-stillness", "step-compass", "step-walk");
+  ui.calibrationVisual.classList.add(`step-${animationKey}`);
   }
 
   const hints = {
@@ -1166,6 +1785,7 @@ function onDeviceMotion(event) {
     if (motion.lastMagnitude !== null) {
       const magnitudeChange = Math.abs(magnitude - motion.lastMagnitude);
       motion.cumulativeMotion += magnitudeChange;
+      if (state.pendingXrResume) state.walkSinceLand += magnitudeChange;
       if (magnitudeChange >= 0.25) motion.lastMeaningfulMotionAt = performance.now();
     }
     motion.lastMagnitude = magnitude;
@@ -1419,6 +2039,7 @@ async function ensureCamera() {
   if (cameraIsActive) {
     if (ui.cameraView.srcObject !== state.stream) ui.cameraView.srcObject = state.stream;
     if (ui.cameraView.paused) await ui.cameraView.play();
+    document.body.classList.add("cam-live");
     return waitForCameraFrame();
   }
 
@@ -1430,6 +2051,7 @@ async function ensureCamera() {
     });
     ui.cameraView.srcObject = state.stream;
     await ui.cameraView.play();
+    document.body.classList.add("cam-live");
     const ready = await waitForCameraFrame();
     if (!ready) {
       setStatusMsg("Camera opened but no frame yet — try Localize again.");
@@ -1670,9 +2292,12 @@ function applyVprFix(pos) {
   ui.metricCoords.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`;
   ui.metricHeading.textContent = `${Math.round(pos.heading)}°`;
   startLiveHeartbeat();
-  ensureArVio().then((ok) => {
-    if (ok) startArTracking();
-  });
+  // don't start ArCore during/after lift — it steals getUserMedia on Android
+  if (!state.inFloorTransition && !state.pendingXrResume && !state.xrResumeBlocked) {
+    ensureArVio().then((ok) => {
+      if (ok) startArTracking();
+    });
+  }
   updateRouteStatus();
 
   // camera-nav style: floor change after lift → next banner automatically
@@ -1683,6 +2308,7 @@ function applyVprFix(pos) {
       exitFloorTransition(tf.to_floor);
     }
   }
+  maybeResumeXrAfterPnp(pos);
 }
 
 async function localizeParkingPosition() {
@@ -1735,12 +2361,13 @@ async function localizeParkingPosition() {
 }
 
 function startLiveVprCapture() {
+  const xrGrab = state.webXrActive && Boolean(webXrNav?.grabFrameBlob);
+  // was blocking all VPR during XR — log showed zero /localize after Start nav
   if (
     state.liveVpr.running
-    || (state.webXrActive && !state.inFloorTransition)
     || !state.hasLocalizedPosition
     || !state.route
-    || !state.stream
+    || (!state.stream && !xrGrab)
     || state.workflowStep !== "navigation"
   ) return;
 
@@ -1766,6 +2393,7 @@ function stopLiveVprCapture({ keepCamera = false } = {}) {
     state.stream = null;
   }
   if (ui.cameraView) ui.cameraView.srcObject = null;
+  document.body.classList.remove("cam-live");
 }
 
 function setRouteBtnMode(mode) {
@@ -1795,9 +2423,18 @@ function stopWebXrSession({ resumeCamera = false } = {}) {
 }
 
 function stopCameraNav() {
+  stopXrLiftWatch();
+  stopXrHealthWatch();
   stopWebXrSession({ resumeCamera: false });
   state.navActive = false;
+  state.pendingXrResume = false;
+  state.xrResumeBlocked = false;
+  state.xrResumeReadyAt = 0;
+  state.camOwner = "camera";
   showFloorArrows(false);
+  hideLiftHud();
+  stopLiftCamMirror();
+  if (ui.arCanvas) ui.arCanvas.style.display = "";
   setRouteBtnMode("start");
   stopLiveVprCapture({ keepCamera: true });
   if (ui.turnBanner) ui.turnBanner.hidden = true;
@@ -1808,6 +2445,7 @@ function stopCameraNav() {
 function startCameraNav() {
   state.navActive = true;
   state.webXrActive = false;
+  state.camOwner = "camera";
   showFloorArrows(true);
   setRouteBtnMode("stop");
   const via = localizeMethodLabel(state.lastLocalizeMethod);
@@ -1820,6 +2458,13 @@ function startCameraNav() {
 
 /** WebXR with camera-style V chevrons on the floor */
 async function startWebXrNav() {
+  // time-slice: no XR in cabin / near lift / after XR died this floor
+  if (state.inFloorTransition || liftHandoffBusy || state.xrResumeBlocked) return false;
+  if (hasFloorChangeAhead() && remToConnectorM() <= RELEASE_XR_NEAR_M) {
+    state.pendingXrResume = true;
+    return false;
+  }
+
   const api = window.ParkingWebXr;
   if (!api || !state.route || !ui.arCanvas || !ui.arStage) return false;
 
@@ -1864,10 +2509,15 @@ async function startWebXrNav() {
         paintTurnBanner(nextTurnFromLegs(legs, along));
       },
       onWalk: (progress, remain) => {
+        xrTrackLostAt = 0;
         if (ui.metricDistance) {
           ui.metricDistance.textContent = hasFloorChangeAhead() && remain <= ENTER_CONNECTOR_M
             ? "Now"
             : `${remain.toFixed(1)} m`;
+        }
+        // release AR in the hallway — before cabin freezes the XR camera
+        if (shouldReleaseXrNearLift(remain)) {
+          void releaseXrForLiftApproach(remain);
         }
         const next = nextTurnFromLegs(legs, progress);
         paintTurnBanner({
@@ -1875,9 +2525,24 @@ async function startWebXrNav() {
           distanceM: Math.min(next.distanceM, remain),
         });
       },
+      onTracking: (ok) => {
+        if (ok) {
+          xrTrackLostAt = 0;
+          return;
+        }
+        if (!xrTrackLostAt) xrTrackLostAt = performance.now();
+        const lost = performance.now() - xrTrackLostAt;
+        // near lift → camera for PnP; otherwise XR died → hand camera back
+        if (hasFloorChangeAhead() && lost > 600) {
+          void handXrToCamera("lift");
+        } else if (!hasFloorChangeAhead() && lost > XR_TRACK_LOST_MS) {
+          void handXrToCamera("dead");
+        }
+      },
       onArrived: () => {
         // end of this floor's AR path — often the elevator, not the bay
         if (!onDestFloor() || hasFloorChangeAhead()) {
+          void handXrToCamera("lift");
           enterConnectorLeg();
           const tf = activeRouteLeg()?.floor_transition
             || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
@@ -1900,21 +2565,34 @@ async function startWebXrNav() {
         showArrivalCelebration(ui.slotInput?.value?.trim() || "");
       },
       onEnd: () => {
+        stopXrLiftWatch();
+        stopXrHealthWatch();
         webXrNav = null;
         state.webXrActive = false;
+        state.camOwner = "camera";
         ui.arStage?.classList.remove("webxr-on");
+        if (state.suppressXrResume || liftHandoffBusy) return;
         if (state.route && state.workflowStep === "navigation" && state.navActive) {
-          startCameraNav();
+          void (async () => {
+            await ensureCamera().catch(() => false)
+              || await reopenCameraHard({ delayMs: 400 });
+            startCameraNav();
+            restartLiveVprCapture();
+          })();
         } else {
           setRouteBtnMode("start");
           state.navActive = false;
         }
       },
       onErr: () => {
+        stopXrLiftWatch();
+        stopXrHealthWatch();
         webXrNav?.dispose();
         webXrNav = null;
         state.webXrActive = false;
+        state.camOwner = "camera";
         ui.arStage?.classList.remove("webxr-on");
+        if (state.navActive) void handXrToCamera("dead");
       },
     },
   });
@@ -1928,11 +2606,21 @@ async function startWebXrNav() {
 
   state.webXrActive = true;
   state.navActive = true;
+  state.camOwner = "xr";
   ui.arStage.classList.add("webxr-on");
   setRouteBtnMode("stop");
   setStatusChip("AR nav", "live");
-  setStatusMsg("Point at the floor ahead — lime chevrons guide the route");
-  setHint("Follow the chevrons on the floor", true);
+  if (hasFloorChangeAhead()) {
+    state.pendingXrResume = true;
+    startXrLiftWatch();
+    startXrHealthWatch();
+    setStatusMsg("AR on — switches to camera near the lift");
+    setHint("Near the lift, camera + PnP takes over", true);
+  } else {
+    startXrHealthWatch();
+    setStatusMsg("Point at the floor ahead — lime chevrons guide the route");
+    setHint("Follow the chevrons — camera returns if AR dies", true);
+  }
   return true;
 }
 
@@ -1942,19 +2630,42 @@ async function runLiveVprCaptureLoop() {
   const stillnessWindowMs = 350;
 
   while (state.liveVpr.running) {
-    // keep /localize during elevator so PnP can unlock the next banner
-    if (state.webXrActive && !state.inFloorTransition) {
-      await new Promise((r) => setTimeout(r, 200));
-      continue;
-    }
     if (state.workflowStep !== "navigation" || !state.route) {
       stopLiveVprCapture();
       return;
     }
+    // release XR from the VPR loop too — onWalk often dies in the cabin
+    if (state.webXrActive && hasFloorChangeAhead()) {
+      const rem = xrRemainM();
+      if (rem != null && rem <= RELEASE_XR_NEAR_M) {
+        await releaseXrForLiftApproach(rem);
+      }
+    }
+    // in lift we want getUserMedia, not a frozen XR grab
+    if (state.inFloorTransition && state.webXrActive) {
+      await handoffCameraDuringLift();
+    }
+    // pure single-floor XR: no need for continuous /localize
+    if (state.webXrActive && !state.inFloorTransition && !hasFloorChangeAhead()) {
+      await new Promise((r) => setTimeout(r, 200));
+      continue;
+    }
+    if (state.inFloorTransition || state.xrResumeBlocked) kickCameraPreview();
     const canXrGrab = state.webXrActive && Boolean(webXrNav?.grabFrameBlob);
     if (!state.stream && !canXrGrab) {
-      stopLiveVprCapture();
-      return;
+      // after land, pendingXrResume is cleared — used to kill the loop here (manual Localize still worked)
+      if (state.navActive || state.inFloorTransition || state.pendingXrResume || state.xrResumeBlocked) {
+        const ok = await ensureCamera().catch(() => false)
+          || await reopenCameraHard({ delayMs: 300 }).catch(() => false);
+        if (!ok) {
+          await new Promise((r) => setTimeout(r, 800));
+          continue;
+        }
+        kickCameraPreview();
+      } else {
+        stopLiveVprCapture();
+        return;
+      }
     }
 
     const now = performance.now();
@@ -1979,7 +2690,7 @@ async function runLiveVprCaptureLoop() {
       const trigger = floorPoll
         ? "floor_detect"
         : (intervalElapsed && !motionReady
-          ? "max_interval"
+        ? "max_interval"
           : triggerMode === "motion_then_stillness" ? "motion_then_stillness" : "motion");
 
       try {
@@ -1990,33 +2701,45 @@ async function runLiveVprCaptureLoop() {
         if (capture.skipped) {
           state.liveVpr.nextCaptureAllowedAt = performance.now() + 400;
           setStatusMsg(`Skipped blurry frame (sharpness ${capture.diagnostics.client_laplacian_variance.toFixed(1)})`);
-          continue;
-        }
+        } else {
         state.motion.cumulativeMotion = 0;
         state.liveVpr.lastCaptureTime = performance.now();
         const fix = capture.position;
-        if (!state.liveVpr.running) return;
-
+          if (state.liveVpr.running) {
         if (!fix.tracking || fix.confidence <= 0) {
-          setStatusMsg(
-            state.inFloorTransition
-              ? "Looking for Floor lock (PnP)…"
-              : "VPR miss — continuing with VIO/PDR until next fix",
-          );
+              setStatusMsg(
+                state.inFloorTransition
+                  ? "Looking for Floor lock (PnP)…"
+                  : "VPR miss — continuing with VIO/PDR until next fix",
+              );
         } else {
-          const via = localizeMethodLabel(fix.method);
+              const via = localizeMethodLabel(fix.method);
           applyVprFix(fix);
           try {
             await updateRouteForSlot(ui.slotInput.value.trim());
           } catch (error) {
-            setStatusMsg(`${via} ok, route refresh failed: ${error.message}`);
-          }
-          if (!state.inFloorTransition) {
-            setStatusMsg(`Live guidance active · ${via} + VIO/PDR`);
+                setStatusMsg(`${via} ok, route refresh failed: ${error.message}`);
+              }
+              if (!state.inFloorTransition) {
+                setStatusMsg(`Live guidance active · ${via} + VIO/PDR`);
+              }
+              // after land, keep camera VPR alive until XR slice is claimed
+              if (state.camOwner === "camera" && state.pendingXrResume) {
+                state.liveVpr.requestInFlight = false;
+                restartLiveVprCapture();
+                return;
+              }
+            }
           }
         }
       } catch (error) {
         console.warn("Live localize failed; PDR will continue.", error);
+        // frame not ready after land — reopen like manual Localize
+        if (/frame is not ready|camera/i.test(String(error.message || ""))) {
+          await ensureCamera().catch(() => false)
+            || await reopenCameraHard({ delayMs: 200 }).catch(() => false);
+          kickCameraPreview();
+        }
         setStatusMsg(
           state.inFloorTransition
             ? `Floor detect retry… ${error.message}`
@@ -2118,6 +2841,7 @@ async function updateRouteForSlot(slotId) {
   }
 
   const route = await response.json();
+  await ensureFloorOrder();
   const keepNav = state.navActive || state.webXrActive;
   state.route = route;
   if (!keepNav) {
@@ -2137,9 +2861,9 @@ async function updateRouteForSlot(slotId) {
     if (walkIdx >= 0) state.activeLegIndex = walkIdx;
   }
   if (ui.routeBadge) {
-    ui.routeBadge.classList.remove("neutral", "warning");
-    ui.routeBadge.classList.add("success");
-    ui.routeBadge.textContent = "Guidance ready";
+  ui.routeBadge.classList.remove("neutral", "warning");
+  ui.routeBadge.classList.add("success");
+  ui.routeBadge.textContent = "Guidance ready";
   }
   if (ui.routeDestination) ui.routeDestination.textContent = slotId;
   if (ui.routeTotalDistance) ui.routeTotalDistance.textContent = `${route.total_distance.toFixed(1)} m`;
@@ -2182,7 +2906,28 @@ async function navigateToSlot() {
   try {
     await updateRouteForSlot(slotId);
 
-    // prefer WebXR with the same lime V-chevron style; else camera overlay
+    // multi-floor: camera slice to the lift; XR slice only after landing clear
+    if (hasFloorChangeAhead()) {
+      state.pendingXrResume = true;
+      state.xrResumeBlocked = false;
+      state.camOwner = "camera";
+      await pauseArVioForCamera();
+      const camOk = state.stream
+        || await ensureCamera().catch(() => false)
+        || await reopenCameraHard({ delayMs: 200 });
+      if (!camOk) {
+        setStatusMsg("Route ready, but camera is unavailable.");
+        setRouteBtnMode("start");
+        return;
+      }
+      startCameraNav();
+      setStatusChip("Camera · lift route", "live");
+      setStatusMsg("Camera + PnP to the lift — AR starts when clear on the next floor");
+      setHint("Time-sliced: camera owns cam near lifts; AR only when clear", true);
+      return;
+    }
+
+    // single-floor (or already clear): XR slice first; else camera
     const xrOk = await startWebXrNav();
     if (xrOk) return;
 
@@ -2198,9 +2943,9 @@ async function navigateToSlot() {
     showFloorArrows(false);
     if (ui.turnBanner) ui.turnBanner.hidden = true;
     if (ui.routeBadge) {
-      ui.routeBadge.classList.remove("neutral", "success");
-      ui.routeBadge.classList.add("warning");
-      ui.routeBadge.textContent = "Route unavailable";
+    ui.routeBadge.classList.remove("neutral", "success");
+    ui.routeBadge.classList.add("warning");
+    ui.routeBadge.textContent = "Route unavailable";
     }
     if (ui.routeStatus) ui.routeStatus.textContent = "No path";
     if (ui.routeDistance) ui.routeDistance.textContent = "0.0 m";
@@ -2275,12 +3020,23 @@ function updateRouteProgress() {
   if (wasInTransition && !state.inFloorTransition) {
     refreshPathAfterFloorChange({ redraw: false });
   }
+  // camera slice: keep VPR alive; try XR slice when clear of lift
+  if (!state.inFloorTransition && state.hasLocalizedPosition && state.navActive) {
+    if (state.camOwner === "camera" && !state.webXrActive && !state.liveVpr.running) {
+      restartLiveVprCapture();
+    }
+    if (state.pendingXrResume && !state.xrResumeBlocked && !state.webXrActive) {
+      maybeResumeXrAfterPnp(state.position);
+    }
+  }
 
   const leg = activeRouteLeg();
   if (state.inFloorTransition && leg?.floor_transition) {
     const tf = leg.floor_transition;
-    const msg = tf.instruction
-      || `Take ${connectorLabel(tf)} (${tf.connector_id || ""}) to Floor ${tf.to_floor}`;
+    const dir = verticalDir(tf.from_floor, tf.to_floor);
+    const go = dir === "down" ? "Go down" : dir === "up" ? "Go up" : "Change floor";
+    const msg = `${go} to Floor ${tf.to_floor}`;
+    showLiftHud(tf);
     // auto-detect landing via /localize (PnP first) — same as camera-nav
     startFloorDetectVpr();
     const dwell = performance.now() - (state.floorTransitionAt || performance.now());
@@ -2302,6 +3058,7 @@ function updateRouteProgress() {
     return;
   }
 
+  hideLiftHud();
   setFloorContinueVisible(false);
 
   const guideWps = leg?.waypoints?.length ? leg.waypoints : state.route.waypoints;
@@ -2336,6 +3093,13 @@ function updateRouteProgress() {
     const distLift = lastWp
       ? Math.hypot(state.position.x - lastWp[0], state.position.y - lastWp[1])
       : Infinity;
+    // drop XR ~8m out — open getUserMedia in hallway before cabin
+    if (
+      upcoming?.floor_transition
+      && (progress.remainingDistance <= RELEASE_XR_NEAR_M || distLift <= RELEASE_XR_NEAR_M)
+    ) {
+      void releaseXrForLiftApproach(Math.min(progress.remainingDistance, distLift));
+    }
     // enter lift/stairs early — PDR often freezes inside the cabin (~2m left)
     const nearConnector = Boolean(upcoming?.floor_transition)
       && (progress.remainingDistance <= ENTER_CONNECTOR_M || distLift <= ENTER_CONNECTOR_M);
@@ -2551,10 +3315,11 @@ ui.slotInput.addEventListener("keydown", (event) => {
 
 window.addEventListener("load", async () => {
   await initSlots();
+  await ensureFloorOrder();
   updateCalibrationReadiness();
   setWorkflowStep("destination");
   if (!SKIP_CALIBRATION) {
-    setCalibrationStep("Waiting for calibration to begin.", 0, "stillness");
+  setCalibrationStep("Waiting for calibration to begin.", 0, "stillness");
   }
   updateRouteStatus();
   setInterval(refreshCurrentPosition, 2000);

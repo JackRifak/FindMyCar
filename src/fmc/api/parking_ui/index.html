@@ -8,11 +8,15 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
     <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
-    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261005-pnpfloor" />
+    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261005-lift-slice1" />
   </head>
   <body>
     <div class="ar-stage" id="arStage">
+      <!-- keeps android webview compositing getUserMedia frames -->
+      <div class="cam-keepalive" aria-hidden="true"></div>
       <video id="cameraView" playsinline muted autoplay></video>
+      <!-- mirrored frames during lift — forces webview to refresh when <video> freezes -->
+      <canvas id="liftCamCanvas" class="lift-cam-canvas" hidden aria-hidden="true"></canvas>
       <img id="arPreview" alt="" />
       <canvas id="arCanvas" aria-hidden="true"></canvas>
 
@@ -83,6 +87,13 @@
           Slot
           <strong id="hudSlot">—</strong>
         </div>
+      </div>
+
+      <!-- big up/down cue while riding a vertical connector -->
+      <div id="liftHud" class="lift-hud" hidden>
+        <div class="lift-hud__glyph" id="liftHudGlyph" aria-hidden="true">↑</div>
+        <p class="lift-hud__dir" id="liftHudDir">Go up</p>
+        <p class="lift-hud__floor" id="liftHudFloor">Floor —</p>
       </div>
 
       <p id="arHint" class="ar-hint">Choose your parking slot to begin</p>
@@ -209,7 +220,7 @@
     </div>
 
     <script src="/ar-vio.js"></script>
-    <script type="module" src="/parking-ui/webxr-nav.js?v=20261005-pnpfloor"></script>
-    <script src="/parking-ui/app.js?v=20261005-pnpfloor"></script>
+    <script type="module" src="/parking-ui/webxr-nav.js?v=20261005-lift-slice1"></script>
+    <script src="/parking-ui/app.js?v=20261005-lift-slice1"></script>
   </body>
 </html>

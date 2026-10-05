@@ -501,10 +501,41 @@ export class WebXrNav {
   }
 
   stop() {
-    const s = this.session;
-    this.session = null;
-    if (s) void s.end().catch(() => {});
-    else this.cleanup();
+    void this.stopAsync();
+  }
+
+  /** end XR and resolve once the session is fully gone (camera can be reclaimed) */
+  stopAsync() {
+    return new Promise((resolve) => {
+      const s = this.session;
+      if (!s) {
+        this.cleanup();
+        resolve();
+        return;
+      }
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try { this.cleanup(); } catch (_) { /* ignore */ }
+        resolve();
+      };
+      const onEnd = () => {
+        try { s.removeEventListener("end", onEnd); } catch (_) { /* ignore */ }
+        finish();
+      };
+      s.addEventListener("end", onEnd);
+      this.session = null;
+      try {
+        this.renderer?.setAnimationLoop?.(null);
+      } catch (_) { /* ignore */ }
+      // drop XR camera binding before getUserMedia reclaims the device
+      try {
+        this.renderer?.xr?.setSession?.(null);
+      } catch (_) { /* ignore */ }
+      s.end().then(finish).catch(finish);
+      setTimeout(finish, 2500);
+    });
   }
 
   onSessionEnd() {
