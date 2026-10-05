@@ -150,7 +150,13 @@ def diagnostic_locations():
 @app.post("/diagnostics/client-event")
 def diagnostics_client_event(event: dict):
     """Persist client-side capture events such as frames rejected as blurry."""
-    append_client_event(_site.data_dir, {"site_id": _SITE_ID, "received_at": time.time(), **event})
+    payload = {"site_id": _SITE_ID, "received_at": time.time(), **event}
+    append_client_event(_site.data_dir, payload)
+    device_id = event.get("device_id") or "?"
+    ev = event.get("event") or "client_event"
+    if ev in ("webxr_skip", "webxr_start", "webxr_end", "nav_mode", "frame_skipped_blur"):
+        reason = event.get("reason") or event.get("nav_mode") or event.get("frame_source") or ""
+        logger.info(f"[{device_id}] client {ev} {reason}".strip())
     return {"logged": True}
 
 
@@ -179,6 +185,9 @@ async def localize(
     vio_qy: float | None = Form(None),
     vio_qz: float | None = Form(None),
     prior_floor: str | None = Form(None),
+    frame_source: str | None = Form(None),
+    nav_mode: str | None = Form(None),
+    trigger: str | None = Form(None),
 ):
     """First fix / relocalisation: submit a camera frame, get a VPR-based position."""
     t0 = time.perf_counter()
@@ -191,7 +200,13 @@ async def localize(
         raise HTTPException(status_code=400, detail="Failed to decode image")
 
     h, w, _ = frame.shape
-    logger.info(f"[{device_id}] POST /localize received: frame={w}x{h} ({len(contents)/1024:.1f} KB)")
+    cap_trigger = capture_trigger or trigger or "manual"
+    frame_src = frame_source or "unknown"
+    nav = nav_mode or "unknown"
+    logger.info(
+        f"[{device_id}] POST /localize received: frame={w}x{h} ({len(contents)/1024:.1f} KB) "
+        f"trigger={cap_trigger} frame_source={frame_src} nav_mode={nav}"
+    )
 
     pipeline = _get_vpr_pipeline()
     fuser = _sessions.setdefault(device_id, PositionFuser(TrueVIOTracker(), floor=_default_floor()))
@@ -245,7 +260,9 @@ async def localize(
             "site_id": _SITE_ID,
             "received_at": time.time(),
             "device_id": device_id,
-            "capture_trigger": capture_trigger,
+            "capture_trigger": cap_trigger,
+            "frame_source": frame_src,
+            "nav_mode": nav,
             "ground_truth_location_id": ground_truth_location_id or None,
             "ground_truth_in_top_k": ground_truth_retrieved,
             "failure_stage": failure_stage,
@@ -283,6 +300,7 @@ async def localize(
             logger.exception("Could not persist live VPR miss diagnostics")
         logger.warning(
             f"[{device_id}] VPR MISS (no verified candidate) | "
+            f"frame_source={frame_src} nav_mode={nav} | "
             f"vpr={t_vpr_ms:.1f}ms | total_server={total_ms:.1f}ms"
         )
         return PositionResponse(
@@ -300,8 +318,11 @@ async def localize(
     fuser.mark_live()
 
     rec_id = result.record.image_id if result.record else "unknown"
+    loc_method = result.method or "unknown"
+    loc_kind = "pnp" if str(loc_method).lower() == "pnp" else "vpr"
     logger.info(
-        f"[{device_id}] LOCALIZE MATCH method={result.method} photo={rec_id} (floor={fused.floor}) | "
+        f"[{device_id}] LOCALIZE MATCH loc={loc_kind} method={loc_method} photo={rec_id} (floor={fused.floor}) | "
+        f"frame_source={frame_src} nav_mode={nav} | "
         f"raw=({fused.x:.2f}, {fused.y:.2f}) -> snapped=({snapped_x:.2f}, {snapped_y:.2f}) "
         f"[snap_dist={snap_drift:.2f}m] | heading={fused.heading:.1f}° | conf={fused.confidence:.2f} | "
         f"vpr={t_vpr_ms:.1f}ms | total_server={total_ms:.1f}ms"

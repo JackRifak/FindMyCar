@@ -2,12 +2,13 @@ const ARRIVE_M = 2.0; // along-route remaining / approach-node threshold
 const ARRIVE_SLOT_M = 8.0; // euclidean to slot (bays sit off the walkable line)
 const LEG_ADVANCE_M = 0.7; // snap to next walk leg
 const ENTER_CONNECTOR_M = 3.0; // enter lift/stairs guidance (PDR freezes in elevator)
-/** Floor A: end XR this far from the connector (hallway handoff) */
-const RELEASE_XR_NEAR_M = 14.0;
-/** Floor B: stay on camera until this far from the lift door before fresh XR */
-const RESUME_XR_CLEAR_M = 8.0;
-const RESUME_XR_SETTLE_MS = 2500;
-const XR_TRACK_LOST_MS = 900; // hand camera back if XR pose dies this long
+/** Floor B: soft prefer this far from lift door before fresh XR */
+const RESUME_XR_CLEAR_M = 1.5;
+/** after settle, start XR even if still near the lift (DeviceMotion/dist often stall) */
+const RESUME_XR_FORCE_MS = 3500;
+const RESUME_XR_SETTLE_MS = 1200;
+const XR_TRACK_LOST_MS = 4500; // allow time to point at floor / calibrate before killing XR
+const XR_TRACK_GRACE_MS = 12000; // after session start, ignore tracking-lost handoff
 /** after this + walk motion, assume user exited lift (camera-nav used VPR; XR often can't) */
 const ELEVATOR_AUTO_MS = 7000;
 const ELEVATOR_WALK_MOTION = 1.6;
@@ -58,10 +59,14 @@ const state = {
   },
   stream: null,
   video: null,
+  lastVideoTime: null,
+  lastVideoFrameAt: 0,
+  camWatchWired: false,
   suppressXrResume: false, // true while handing XR → camera
   pendingXrResume: false, // want fresh XR after landing lock + clear lobby
   xrResumeReadyAt: 0, // earliest time to try WebXR after landing
   xrResumeBlocked: false, // XR died this floor — stay on camera
+  xrResumeAttempts: 0, // soft retries after denied / camera busy
   camOwner: "camera", // "camera" | "xr" — exclusive ownership
   walkSinceLand: 0, // motion since landOnFloor (not cleared by PnP fixes)
   landingPose: null, // PnP/VPR lock on Floor B — origin for fresh XR
@@ -130,6 +135,7 @@ const ui = {
   arriveSlot: document.getElementById("arriveSlot"),
   arriveDismissBtn: document.getElementById("arriveDismissBtn"),
   floorContinueBtn: document.getElementById("floorContinueBtn"),
+  startArBtn: document.getElementById("startArBtn"),
   arStage: document.getElementById("arStage"),
   arCanvas: document.getElementById("arCanvas"),
   floorArrows: document.getElementById("floorArrows"),
@@ -144,10 +150,14 @@ const ui = {
 let webXrNav = null;
 let liftHandoffBusy = false;
 let xrResumeBusy = false;
+let xrResumePollTimer = 0;
+/** "continue" = manual floor advance · "start_ar" = user-gesture WebXR after lift */
+let floorBtnMode = "continue";
 let liftCamRaf = 0;
 let xrLiftWatchTimer = 0;
 let xrHealthTimer = 0;
 let xrTrackLostAt = 0;
+let xrSessionStartedAt = 0;
 
 function setStatusChip(text, kind = "warn") {
   if (ui.sessionState) ui.sessionState.textContent = text;
@@ -296,6 +306,9 @@ function setFloorContinueVisible(on, toFloor = "") {
   // fallback only — primary path auto-detects like camera-nav VPR
   const btn = ui.floorContinueBtn;
   if (!btn) return;
+  // never wipe the post-landing Start AR CTA
+  if (!on && (floorBtnMode === "start_ar" || state.pendingXrResume)) return;
+  floorBtnMode = "continue";
   btn.hidden = !on;
   if (on) {
     btn.textContent = toFloor
@@ -303,6 +316,60 @@ function setFloorContinueVisible(on, toFloor = "") {
       : "I've left the elevator — continue";
   }
   ui.turnBanner?.classList.toggle("turn-banner--action", Boolean(on));
+}
+
+/** Chrome immersive-ar needs a tap — show CTA and free the camera ahead of time */
+function promptStartArAfterLand() {
+  if (!state.landingPose) return;
+  if (state.xrResumeBlocked) return;
+  if (state.webXrActive || webXrNav) return;
+  if (!state.navActive) return;
+
+  state.pendingXrResume = true;
+
+  // release getUserMedia now so the tap can requestSession without a long await
+  stopLiveVprCapture({ keepCamera: false });
+  state.stream?.getTracks?.().forEach((t) => {
+    try { t.stop(); } catch (_) { /* ignore */ }
+  });
+  state.stream = null;
+  try {
+    if (ui.cameraView) ui.cameraView.srcObject = null;
+  } catch (_) { /* ignore */ }
+  document.body.classList.remove("cam-live");
+
+  floorBtnMode = "start_ar";
+  const btn = ui.floorContinueBtn;
+  if (btn) {
+    btn.hidden = false;
+    btn.textContent = "Tap to start AR";
+  }
+  if (ui.startArBtn) {
+    ui.startArBtn.hidden = false;
+    ui.startArBtn.textContent = "Tap to start AR";
+  }
+  if (ui.turnBanner) ui.turnBanner.hidden = false;
+  ui.turnBanner?.classList.toggle("turn-banner--action", true);
+  hideLiftHud();
+  setStatusChip("Tap Start AR", "live");
+  setStatusMsg("Floor locked — tap Start AR");
+  setHint("Tap Start AR to place floor arrows", true);
+  void logClientDiagnostic({
+    event: "start_ar_prompt",
+    nav_mode: "camera",
+    reason: "landing_pnp",
+  });
+}
+
+function setStartArVisible(on) {
+  if (!on) {
+    floorBtnMode = "continue";
+    if (ui.floorContinueBtn) ui.floorContinueBtn.hidden = true;
+    if (ui.startArBtn) ui.startArBtn.hidden = true;
+    ui.turnBanner?.classList.toggle("turn-banner--action", false);
+    return;
+  }
+  promptStartArAfterLand();
 }
 
 /** resume live /localize (PnP first) so landing floor advances without Continue */
@@ -319,7 +386,12 @@ function stopXrLiftWatch() {
   xrTrackLostAt = 0;
 }
 
-/** poll XR remain / tracking — onWalk dies when the cabin kills pose */
+function xrInTrackGrace() {
+  return xrSessionStartedAt > 0
+    && (performance.now() - xrSessionStartedAt) < XR_TRACK_GRACE_MS;
+}
+
+/** poll XR tracking only — keep AR near the lift; hand off when pose dies hard */
 function startXrLiftWatch() {
   stopXrLiftWatch();
   if (!hasFloorChangeAhead()) return;
@@ -329,11 +401,11 @@ function startXrLiftWatch() {
       return;
     }
     if (!hasFloorChangeAhead()) return;
-    const rem = xrRemainM();
+    if (xrInTrackGrace()) return;
     const lostMs = xrTrackLostAt ? performance.now() - xrTrackLostAt : 0;
-    if ((rem != null && rem <= RELEASE_XR_NEAR_M) || lostMs >= 800) {
+    if (lostMs >= XR_TRACK_LOST_MS) {
       stopXrLiftWatch();
-      void releaseXrForLiftApproach(rem != null ? rem : 0);
+      void handXrToCamera("dead");
     }
   }, 350);
 }
@@ -667,42 +739,16 @@ function remToConnectorM() {
   );
 }
 
-function shouldReleaseXrNearLift(remainM = null) {
-  if (!hasFloorChangeAhead()) return false;
-  if (state.inFloorTransition) return true;
-  const rem = remainM != null ? Number(remainM) : remToConnectorM();
-  return Number.isFinite(rem) && rem <= RELEASE_XR_NEAR_M;
-}
-
-/**
- * Drop WebXR in the hallway before the lift — camera time-slice.
- */
-async function releaseXrForLiftApproach(remainM = null) {
-  if (!shouldReleaseXrNearLift(remainM) && !state.inFloorTransition) return;
-  if (liftHandoffBusy) return;
-
-  if (state.webXrActive || webXrNav) {
-    await handXrToCamera("lift");
-    return;
-  }
-
-  // already on camera — stay there through the lift
-  state.camOwner = "camera";
-  state.awaitingLandingLock = true;
-  state.landingPose = null;
-  state.pendingXrResume = false;
-  await pauseArVioForCamera();
-  if (!state.stream) {
-    const ok = await ensureCamera().catch(() => false)
-      || await reopenCameraHard({ delayMs: 150 }).catch(() => false);
-    kickCameraPreview();
-    if (ok) restartLiveVprCapture();
-  } else {
-    kickCameraPreview();
-    startLiveVprCapture();
-  }
-  setStatusChip("Camera · lift", "live");
-  setStatusMsg("Camera + PnP through the lift — fresh AR after floor lock");
+/** meters from start of current walk leg (usually the lift door) */
+function distFromLegStartM() {
+  const leg = activeRouteLeg();
+  const wps = leg?.waypoints;
+  if (!wps?.length || leg?.floor_transition) return Infinity;
+  const a = wps[0];
+  return Math.hypot(
+    Number(state.position.x) - Number(a[0]),
+    Number(state.position.y) - Number(a[1]),
+  );
 }
 
 /** cabin phase: XR → camera if needed; keep PnP running (biased to to_floor) */
@@ -725,7 +771,6 @@ async function handoffCameraDuringLift() {
       await ensureCamera().catch(() => false)
         || await reopenCameraHard({ delayMs: 200 });
     }
-    // else: keep hallway getUserMedia — do not reopen inside the cabin
 
     state.camOwner = "camera";
     kickCameraPreview();
@@ -749,18 +794,6 @@ async function handoffCameraDuringLift() {
   }
 }
 
-/** meters from start of current walk leg (usually the lift door) */
-function distFromLegStartM() {
-  const leg = activeRouteLeg();
-  const wps = leg?.waypoints;
-  if (!wps?.length || leg?.floor_transition) return Infinity;
-  const a = wps[0];
-  return Math.hypot(
-    Number(state.position.x) - Number(a[0]),
-    Number(state.position.y) - Number(a[1]),
-  );
-}
-
 /** ARCore steals the camera from getUserMedia on Android — pause during lift/camera nav */
 async function pauseArVioForCamera() {
   stopArTracking();
@@ -775,6 +808,8 @@ async function pauseArVioForCamera() {
 
 /** kill + restart live VPR — same path as tapping Localize after a stall */
 function restartLiveVprCapture() {
+  // waiting for Start AR tap — keep camera free for requestSession
+  if (state.pendingXrResume && floorBtnMode === "start_ar") return;
   state.liveVpr.running = false;
   state.liveVpr.requestInFlight = false;
   state.liveVpr.lastCaptureTime = 0;
@@ -784,6 +819,7 @@ function restartLiveVprCapture() {
       if (!state.navActive || state.workflowStep !== "navigation") return;
       if (!state.hasLocalizedPosition || !state.route) return;
       if (state.camOwner === "xr" || state.webXrActive) return;
+      if (state.pendingXrResume && floorBtnMode === "start_ar") return;
       if (!state.stream) {
         await ensureCamera().catch(() => false)
           || await reopenCameraHard({ delayMs: 200 }).catch(() => false);
@@ -809,11 +845,13 @@ function startXrHealthWatch() {
       stopXrHealthWatch();
       return;
     }
-    if (shouldReleaseXrNearLift(xrRemainM())) {
+    // in cabin (floor transition) → camera for PnP
+    if (state.inFloorTransition) {
       stopXrHealthWatch();
       void handXrToCamera("lift");
       return;
     }
+    if (xrInTrackGrace()) return;
     if (xrTrackLostAt && performance.now() - xrTrackLostAt > XR_TRACK_LOST_MS) {
       stopXrHealthWatch();
       void handXrToCamera("dead");
@@ -823,31 +861,66 @@ function startXrHealthWatch() {
 
 function clearOfLiftForXr() {
   if (state.inFloorTransition || state.xrResumeBlocked) return false;
-  if (performance.now() < (state.xrResumeReadyAt || 0)) return false;
-  if ((state.walkSinceLand || 0) < 2.0) return false;
-  const fromLift = distFromLegStartM();
-  if (Number.isFinite(fromLift) && fromLift < RESUME_XR_CLEAR_M) return false;
-  if (hasFloorChangeAhead() && shouldReleaseXrNearLift()) return false;
+  const readyAt = state.xrResumeReadyAt || 0;
+  if (performance.now() < readyAt) return false;
   const leg = activeRouteLeg();
   const wps = leg?.waypoints?.length ? leg.waypoints : [];
   if (leg?.floor_transition || wps.length < 2) return false;
+  const fromLift = distFromLegStartM();
+  const readyFor = performance.now() - readyAt;
+  // soft clear of door; force soon so AR isn't stuck waiting on motion/PDR
+  if (
+    Number.isFinite(fromLift)
+    && fromLift < RESUME_XR_CLEAR_M
+    && readyFor < RESUME_XR_FORCE_MS
+  ) {
+    return false;
+  }
   return true;
+}
+
+/** keep reminding user to tap — never auto requestSession (no user gesture → denied) */
+function scheduleXrResumePoll() {
+  if (xrResumePollTimer) return;
+  xrResumePollTimer = setInterval(() => {
+    if (
+      !state.pendingXrResume
+      || state.webXrActive
+      || webXrNav
+      || state.xrResumeBlocked
+      || !state.navActive
+    ) {
+      clearInterval(xrResumePollTimer);
+      xrResumePollTimer = 0;
+      return;
+    }
+    if (xrResumeBusy) return;
+    promptStartArAfterLand();
+  }, 2500);
+}
+
+function stopXrResumePoll() {
+  if (!xrResumePollTimer) return;
+  clearInterval(xrResumePollTimer);
+  xrResumePollTimer = 0;
 }
 
 /**
  * Fresh XR session on Floor B — never resumes the Floor A session.
- * Uses landing PnP pose as facility origin + current-floor waypoints only.
+ * Prefer calling from a click (fromGesture) — Chrome denies immersive-ar without activation.
  */
-async function claimXrSlice() {
+async function claimXrSlice({ fromGesture = false } = {}) {
   if (xrResumeBusy || liftHandoffBusy) return false;
   if (state.webXrActive || webXrNav) return true;
   if (!state.landingPose) return false;
-  if (!clearOfLiftForXr()) return false;
+  if (!fromGesture && !clearOfLiftForXr()) return false;
   if (!state.navActive || state.workflowStep !== "navigation") return false;
+  if (state.xrResumeBlocked) return false;
 
   xrResumeBusy = true;
+  state.xrResumeAttempts = (state.xrResumeAttempts || 0) + 1;
+  setStartArVisible(false);
   try {
-    // hard-kill any leftover XR — new floor = new session
     if (webXrNav) {
       try {
         if (webXrNav.stopAsync) await webXrNav.stopAsync();
@@ -858,9 +931,17 @@ async function claimXrSlice() {
     }
     state.webXrActive = false;
 
-    // release getUserMedia so WebXR can take the device
+    // camera should already be free from promptStartArAfterLand — keep awaits tiny for gesture
     stopLiveVprCapture({ keepCamera: false });
-    await pauseArVioForCamera();
+    state.stream?.getTracks?.().forEach((t) => {
+      try { t.stop(); } catch (_) { /* ignore */ }
+    });
+    state.stream = null;
+    try {
+      if (ui.cameraView) ui.cameraView.srcObject = null;
+    } catch (_) { /* ignore */ }
+    document.body.classList.remove("cam-live");
+    void pauseArVioForCamera();
     if (ui.arCanvas) ui.arCanvas.style.display = "";
 
     const lp = state.landingPose;
@@ -871,20 +952,30 @@ async function claimXrSlice() {
         heading: Number(lp.heading),
       },
       fresh: true,
+      skipCamRelease: true,
+      fromGesture: Boolean(fromGesture),
     });
     if (!ok) {
       state.camOwner = "camera";
+      state.pendingXrResume = true;
+      state.xrResumeBlocked = false;
       const camOk = await ensureCamera().catch(() => false)
         || await reopenCameraHard({ delayMs: 400 });
       kickCameraPreview();
       startCameraNav();
       if (camOk) restartLiveVprCapture();
-      setStatusMsg("AR unavailable on this floor — camera + PnP continues");
+      // do not auto requestSession again — wait for another tap
+      promptStartArAfterLand();
+      scheduleXrResumePoll();
+      setStatusMsg("AR denied — tap Start AR again");
       return false;
     }
     state.camOwner = "xr";
     state.pendingXrResume = false;
     state.awaitingLandingLock = false;
+    state.xrResumeAttempts = 0;
+    setStartArVisible(false);
+    stopXrResumePoll();
     startXrHealthWatch();
     setStatusChip("AR · Floor B", "live");
     setStatusMsg("Fresh AR session — calibrated from landing PnP");
@@ -906,6 +997,11 @@ async function handXrToCamera(reason = "lift") {
   stopXrLiftWatch();
   state.navActive = true;
   setRouteBtnMode("stop");
+  void logClientDiagnostic({
+    event: "webxr_end",
+    nav_mode: "camera",
+    reason: String(reason || "lift"),
+  });
 
   try {
     state.suppressXrResume = true;
@@ -931,7 +1027,7 @@ async function handXrToCamera(reason = "lift") {
     if (!camOk) camOk = await reopenCameraHard({ delayMs: 1000 });
     if (!camOk) camOk = await ensureCamera().catch(() => false);
     kickCameraPreview();
-    showFloorArrows(true);
+    showFloorArrows(false);
     startCameraNav();
     if (camOk) restartLiveVprCapture();
 
@@ -941,7 +1037,7 @@ async function handXrToCamera(reason = "lift") {
       state.pendingXrResume = false;
       setStatusChip("Camera · XR lost", "warn");
       setStatusMsg("AR lost tracking — camera + PnP until the bay");
-      setHint("Follow the camera arrows", true);
+      setHint("Follow the turn banner until AR is available", true);
     } else {
       // approaching / in lift — wait for PnP on destination floor
       state.awaitingLandingLock = true;
@@ -961,7 +1057,7 @@ async function handXrToCamera(reason = "lift") {
 }
 
 /**
- * After a real PnP/VPR lock on Floor B + clear of lobby → fresh XR session.
+ * After landing PnP — prompt for a tap. Auto requestSession is always denied on Chrome.
  */
 function maybeResumeXrAfterPnp(pos) {
   if (!state.pendingXrResume || state.xrResumeBlocked) return;
@@ -969,23 +1065,10 @@ function maybeResumeXrAfterPnp(pos) {
   if (!state.navActive || state.workflowStep !== "navigation") return;
   if (state.inFloorTransition || state.webXrActive || webXrNav) return;
   if (liftHandoffBusy || state.suppressXrResume || xrResumeBusy) return;
-  if (!pos?.tracking || !(pos.confidence > 0)) return;
+  if (!(Number(state.landingPose.confidence) > 0) && !(Number(pos?.confidence) > 0)) return;
 
-  if (!clearOfLiftForXr()) {
-    const fromLift = distFromLegStartM();
-    const left = Number.isFinite(fromLift)
-      ? Math.max(0, Math.ceil(RESUME_XR_CLEAR_M - fromLift))
-      : RESUME_XR_CLEAR_M;
-    setStatusChip("Camera · clear lift", "live");
-    setStatusMsg(
-      (state.walkSinceLand || 0) < 2
-        ? "PnP locked — walk clear of the lift, then fresh AR"
-        : `PnP locked — ~${left}m from lift, then fresh AR`,
-    );
-    return;
-  }
-
-  void claimXrSlice();
+  promptStartArAfterLand();
+  scheduleXrResumePoll();
 }
 
 /** mutate state onto the walk leg for toFloor (no HUD refresh) */
@@ -1028,17 +1111,24 @@ function landOnFloor(toFloor, transitionIdx = state.activeLegIndex || 0) {
   hideLiftHud();
   stopLiftCamMirror();
   if (ui.arCanvas) ui.arCanvas.style.display = "none";
-  setFloorContinueVisible(false);
+  // keep Start AR CTA if PnP already locked this landing
+  if (!(state.pendingXrResume && state.landingPose)) {
+    setFloorContinueVisible(false);
+  }
   void pauseArVioForCamera().then(async () => {
+    if (state.pendingXrResume && state.landingPose) {
+      promptStartArAfterLand();
+      return;
+    }
     const ok = await ensureCamera().catch(() => false)
       || await reopenCameraHard({ delayMs: 300 });
     kickCameraPreview();
     if (state.navActive) {
-      showFloorArrows(true);
+      showFloorArrows(false);
       setStatusChip("Camera · Floor B", "live");
       setStatusMsg(
         state.landingPose
-          ? "Floor locked — walk clear of lobby, then fresh AR"
+          ? "Floor locked — tap Start AR"
           : "On landing floor — need PnP lock before AR",
       );
       if (ok) restartLiveVprCapture();
@@ -1073,11 +1163,11 @@ function refreshPathAfterFloorChange({ redraw = false } = {}) {
   setHint("Follow the path on this floor", true);
 
   if (state.navActive && !state.webXrActive) {
-    showFloorArrows(true);
+    showFloorArrows(false);
     startLiveVprCapture();
     setStatusMsg(
       state.pendingXrResume && state.landingPose
-        ? `Floor ${fl} — camera until clear of lift, then fresh AR`
+        ? `Floor ${fl} locked — AR starting shortly`
         : state.awaitingLandingLock
           ? `Floor ${fl} — pointing for PnP lock…`
           : `Floor ${fl} — camera guidance`,
@@ -1435,9 +1525,10 @@ function updateFloorArrowTilt(next) {
 }
 
 function showFloorArrows(on) {
+  // DOM chevrons only for legacy; guidance arrows live in WebXR — keep camera/PnP clear
   if (!ui.floorArrows) return;
-  ui.floorArrows.hidden = !on;
-  if (!on && ui.floorPath) {
+  ui.floorArrows.hidden = true;
+  if (ui.floorPath) {
     ui.floorPath.style.transform = "translateX(-50%) rotateX(62deg) rotateZ(0deg)";
   }
 }
@@ -1681,7 +1772,9 @@ function setWorkflowStep(step, moveFocus = false) {
   updateWorkflowControls();
 
   if (step === "destination") {
-    showSheet("slot");
+    const onHome = !document.getElementById("shell")?.hidden;
+    if (!onHome) showSheet("slot");
+    else hideSheets();
     setHint("Choose your parking slot to begin", true);
     setStatusMsg(SKIP_CALIBRATION
       ? "Select a parking slot, then continue to localize."
@@ -1696,7 +1789,7 @@ function setWorkflowStep(step, moveFocus = false) {
       ? (state.route ? "" : "Tap Start nav for AR chevrons")
       : "Point the camera and tap Localize", !state.route);
     setStatusMsg(state.hasLocalizedPosition
-      ? "Localized. Start nav for WebXR / camera chevrons."
+      ? "Localized. Start nav for WebXR floor arrows."
       : "Camera ready. Tap Localize to lock your position.");
     ensureCamera().catch(() => {});
     ensureArVio().catch(() => {});
@@ -2062,29 +2155,107 @@ async function waitForCameraFrame(timeoutMs = 4000) {
   return false;
 }
 
-async function ensureCamera() {
+function kickVideoFrameWatch(v) {
+  if (!v || typeof v.requestVideoFrameCallback !== "function") return;
+  const onFrame = () => {
+    state.lastVideoFrameAt = performance.now();
+    if (state.stream && typeof v.requestVideoFrameCallback === "function") {
+      v.requestVideoFrameCallback(onFrame);
+    }
+  };
+  v.requestVideoFrameCallback(onFrame);
+}
+
+function wireCameraWatchdog() {
+  const v = ui.cameraView;
+  if (!v) return;
+  kickVideoFrameWatch(v);
+  if (state.camWatchWired) return;
+  state.camWatchWired = true;
+  v.addEventListener("pause", () => {
+    if (state.workflowStep !== "navigation" && state.workflowStep !== "destination") return;
+    if (!state.stream || state.webXrActive) return;
+    console.warn("camera video paused — auto-resume");
+    v.play().catch(() => {});
+  });
+  v.addEventListener("stalled", () => {
+    if (state.webXrActive) return;
+    console.warn("camera video stalled — reopening stream");
+    void ensureCamera(true);
+  });
+}
+
+async function ensureLiveCameraFrame() {
+  if (state.webXrActive) return;
+  const track = state.stream?.getVideoTracks?.()[0];
+  if (!track || track.readyState !== "live" || track.muted) {
+    console.warn("camera track lost or muted — restarting stream");
+    const ok = await ensureCamera(true);
+    if (!ok) throw new Error("Camera track unavailable");
+  }
+  const v = ui.cameraView;
+  if (!v || v.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    throw new Error("Camera frame is not ready yet.");
+  }
+  if (v.paused) {
+    await v.play().catch(() => {});
+  }
+  if (
+    typeof v.requestVideoFrameCallback === "function"
+    && state.lastVideoFrameAt > 0
+    && performance.now() - state.lastVideoFrameAt > 2500
+  ) {
+    console.warn("no new video frames — reopening stream");
+    const ok = await ensureCamera(true);
+    if (!ok) throw new Error("Camera feed frozen");
+  }
+  const t = v.currentTime;
+  if (state.lastVideoTime != null && t === state.lastVideoTime && t > 0) {
+    throw new Error("Camera feed is frozen or hasn't updated new frame");
+  }
+  if (t > 0) state.lastVideoTime = t;
+}
+
+async function ensureCamera(forceReopen = false) {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     alert("This browser does not support camera capture.");
     return false;
   }
 
-  const cameraIsActive = state.stream?.getVideoTracks().some((track) => track.readyState === "live");
-  if (cameraIsActive) {
+  const track = state.stream?.getVideoTracks?.()[0];
+  const cameraIsActive = Boolean(track)
+    && track.readyState === "live"
+    && !track.muted;
+
+  if (cameraIsActive && !forceReopen) {
     if (ui.cameraView.srcObject !== state.stream) ui.cameraView.srcObject = state.stream;
-    if (ui.cameraView.paused) await ui.cameraView.play();
+    if (ui.cameraView.paused) await ui.cameraView.play().catch(() => {});
     document.body.classList.add("cam-live");
+    wireCameraWatchdog();
     return waitForCameraFrame();
   }
 
-  state.stream?.getTracks().forEach((track) => track.stop());
+  state.stream?.getTracks().forEach((t) => {
+    try { t.stop(); } catch (_) { /* ignore */ }
+  });
+  state.stream = null;
+  state.lastVideoTime = null;
+  state.lastVideoFrameAt = 0;
+  try {
+    if (ui.cameraView) ui.cameraView.srcObject = null;
+  } catch (_) { /* ignore */ }
+
   try {
     state.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "environment" },
+      video: { facingMode: { ideal: "environment" } },
       audio: false,
     });
     ui.cameraView.srcObject = state.stream;
+    ui.cameraView.muted = true;
+    ui.cameraView.setAttribute("playsinline", "");
     await ui.cameraView.play();
     document.body.classList.add("cam-live");
+    wireCameraWatchdog();
     const ready = await waitForCameraFrame();
     if (!ready) {
       setStatusMsg("Camera opened but no frame yet — try Localize again.");
@@ -2106,11 +2277,13 @@ function varianceOfLaplacian(imageData, width, height) {
     gray[index] = 0.299 * pixels[pixel] + 0.587 * pixels[pixel + 1] + 0.114 * pixels[pixel + 2];
   }
 
+  // subsample — full-res laplacian on main thread can stall the camera compositor
+  const step = Math.max(1, Math.round(Math.min(width, height) / 240));
   let sum = 0;
   let sumSquared = 0;
   let count = 0;
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
+  for (let y = 1; y < height - 1; y += step) {
+    for (let x = 1; x < width - 1; x += step) {
       const index = y * width + x;
       const laplacian = 4 * gray[index] - gray[index - 1] - gray[index + 1] - gray[index - width] - gray[index + width];
       sum += laplacian;
@@ -2135,6 +2308,12 @@ async function logClientDiagnostic(event) {
 }
 
 async function encodeCameraViewFrame(maxDimension, jpegQuality) {
+  try {
+    await ensureLiveCameraFrame();
+  } catch (err) {
+    console.warn("live camera frame check failed", err);
+    return null;
+  }
   if (!state.stream || ui.cameraView.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
     return null;
   }
@@ -2245,6 +2424,8 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
   if (priorFloor != null && priorFloor !== "") {
     form.append("prior_floor", String(priorFloor));
   }
+  form.append("capture_trigger", String(trigger));
+  form.append("nav_mode", clientNavMode());
   for (const [key, value] of Object.entries(diagnostics)) form.append(key, String(value));
 
   // lock ARCore frame at the moment of this fix
@@ -2272,6 +2453,14 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
     throw new Error(error || "Localization failed");
   }
   return { position: await response.json(), diagnostics };
+}
+
+/** server-side nav debug: webxr | camera | idle */
+function clientNavMode() {
+  if (state.webXrActive) return "webxr";
+  if (state.navActive && state.stream) return "camera";
+  if (state.navActive) return "camera_no_stream";
+  return "idle";
 }
 
 function localizeMethodLabel(method) {
@@ -2348,10 +2537,20 @@ function applyVprFix(pos) {
     return destFloorId();
   })();
   const onLandingFloor = sameFloor(pos.floor, landFl);
+  // after elevator: on dest walk leg even if lift flags were cleared early
+  const afterConnector = Boolean(
+    state.route?.legs?.some((l) => l.floor_transition)
+    && !state.inFloorTransition
+    && !hasFloorChangeAhead()
+    && sameFloor(pos.floor, destFloorId())
+    && state.camOwner === "camera"
+    && !state.webXrActive
+  );
   if (
     pos.tracking
     && onLandingFloor
-    && (landed || state.inFloorTransition || state.awaitingLandingLock || state.pendingXrResume)
+    && (landed || state.inFloorTransition || state.awaitingLandingLock
+      || state.pendingXrResume || afterConnector)
   ) {
     const firstLock = !state.landingPose;
     state.landingPose = {
@@ -2368,13 +2567,16 @@ function applyVprFix(pos) {
     if (firstLock) {
       state.xrResumeReadyAt = performance.now() + RESUME_XR_SETTLE_MS;
       state.walkSinceLand = 0;
+      state.xrResumeAttempts = 0;
       setStatusMsg(
-        `${localizeMethodLabel(pos.method)} locked Floor ${pos.floor} — walk clear, then fresh AR`,
+        `${localizeMethodLabel(pos.method)} locked Floor ${pos.floor} — tap Start AR`,
       );
+      scheduleXrResumePoll();
     }
     if (state.inFloorTransition || landed) {
       exitFloorTransition(landFl);
     }
+    promptStartArAfterLand();
   }
   maybeResumeXrAfterPnp(pos);
 }
@@ -2486,13 +2688,14 @@ function stopWebXrSession({ resumeCamera = false } = {}) {
   ui.arStage?.classList.remove("webxr-on");
   if (resumeCamera && state.route && state.workflowStep === "navigation") {
     startCameraNav();
-    setStatusMsg("WebXR ended — camera chevrons continue.");
+    setStatusMsg("WebXR ended — camera + PnP continues.");
   }
 }
 
 function stopCameraNav() {
   stopXrLiftWatch();
   stopXrHealthWatch();
+  stopXrResumePoll();
   stopWebXrSession({ resumeCamera: false });
   state.navActive = false;
   state.pendingXrResume = false;
@@ -2501,6 +2704,8 @@ function stopCameraNav() {
   state.camOwner = "camera";
   state.landingPose = null;
   state.awaitingLandingLock = false;
+  state.xrResumeAttempts = 0;
+  setStartArVisible(false);
   showFloorArrows(false);
   hideLiftHud();
   stopLiftCamMirror();
@@ -2511,17 +2716,18 @@ function stopCameraNav() {
   setStatusMsg("Navigation stopped.");
 }
 
-/** camera fallback: same chevron style + bearing tilt */
+/** camera + PnP/VPR guidance — no DOM chevrons (those are WebXR-only) */
 function startCameraNav() {
   state.navActive = true;
   state.webXrActive = false;
   state.camOwner = "camera";
-  showFloorArrows(true);
+  void logClientDiagnostic({ event: "nav_mode", nav_mode: "camera", reason: "floor_chevrons_pnp" });
+  showFloorArrows(false);
   setRouteBtnMode("stop");
   const via = localizeMethodLabel(state.lastLocalizeMethod);
   setStatusChip("Navigating", "live");
-  setStatusMsg(`Follow the arrows · ${via} + VIO/PDR`);
-  setHint("Walk with the camera — arrows lean left/right at turns", true);
+  setStatusMsg(`Camera · ${via} + VIO/PDR — AR arrows when WebXR is on`);
+  setHint("Follow the turn banner — floor arrows appear in AR", true);
   updateRouteProgress();
   startLiveVprCapture();
 }
@@ -2531,40 +2737,73 @@ function startCameraNav() {
  * @param {{ facilityPose?: {x,y,heading}, fresh?: boolean }} [opts]
  * fresh=true → new session after lift (never continues Floor A XR)
  */
+function waitForParkingWebXr(timeoutMs = 4000) {
+  if (window.ParkingWebXr) return Promise.resolve(window.ParkingWebXr);
+  return new Promise((resolve) => {
+    const done = () => {
+      cleanup();
+      resolve(window.ParkingWebXr || null);
+    };
+    const cleanup = () => {
+      clearTimeout(t);
+      window.removeEventListener("parking-webxr-ready", done);
+    };
+    window.addEventListener("parking-webxr-ready", done, { once: true });
+    const t = setTimeout(done, timeoutMs);
+  });
+}
+
 async function startWebXrNav(opts = {}) {
-  // no XR in cabin / near lift / after XR died this floor
+  // no XR only while already in cabin / after XR died this floor
   if (state.inFloorTransition || liftHandoffBusy || state.xrResumeBlocked) return false;
-  if (!opts.fresh && hasFloorChangeAhead() && remToConnectorM() <= RELEASE_XR_NEAR_M) {
-    state.awaitingLandingLock = true;
+
+  const api = window.ParkingWebXr || await waitForParkingWebXr();
+  if (!api) {
+    console.warn("WebXR: ParkingWebXr not loaded — check webxr-nav.js / three.module.js");
+    void logClientDiagnostic({ event: "webxr_skip", reason: "module_missing" });
     return false;
   }
-
-  const api = window.ParkingWebXr;
-  if (!api || !state.route || !ui.arCanvas || !ui.arStage) return false;
-
-  let canXr = false;
-  try {
-    canXr = await api.canUseWebXr();
-  } catch {
-    canXr = false;
-  }
-  if (!canXr) return false;
+  if (!state.route || !ui.arCanvas || !ui.arStage) return false;
 
   // current floor walk leg only (never the connector / other floors)
   const wps = guideWaypoints();
   if (!wps || wps.length < 2) return false;
 
-  // release camera for XR (exclusive)
-  stopLiveVprCapture({ keepCamera: opts.fresh ? false : true });
-  if (opts.fresh) {
+  // skip isSessionSupported await when launched from a tap — preserves user activation
+  if (!opts.fromGesture) {
+    let canXr = false;
+    try {
+      canXr = await api.canUseWebXr();
+    } catch (err) {
+      console.warn("WebXR: isSessionSupported failed", err);
+      canXr = false;
+    }
+    if (!canXr) {
+      void logClientDiagnostic({
+        event: "webxr_skip",
+        reason: window.isSecureContext ? "unsupported_or_denied" : "insecure_context",
+      });
+      return false;
+    }
+  }
+
+  // WebXR needs exclusive camera — always drop getUserMedia first
+  if (!opts.skipCamRelease) {
+    stopLiveVprCapture({ keepCamera: false });
     state.stream?.getTracks?.().forEach((t) => {
       try { t.stop(); } catch (_) { /* ignore */ }
     });
     state.stream = null;
-    if (ui.cameraView) ui.cameraView.srcObject = null;
+    try {
+      if (ui.cameraView) ui.cameraView.srcObject = null;
+    } catch (_) { /* ignore */ }
+    document.body.classList.remove("cam-live");
+    showFloorArrows(false);
+    // Android/ARCore needs a longer gap after continuous VPR getUserMedia
+    await new Promise((r) => setTimeout(r, opts.fresh ? 700 : 280));
+  } else {
+    showFloorArrows(false);
   }
-  showFloorArrows(false);
-
   const facilityPose = opts.facilityPose || {
     x: Number(state.position.x),
     y: Number(state.position.y),
@@ -2591,6 +2830,8 @@ async function startWebXrNav(opts = {}) {
     legs,
     distanceM,
     facilityPose,
+    // pin bay when this floor's path ends at the slot (not a lift door)
+    destXY: (!hasFloorChangeAhead() && onDestFloor()) ? routeDestPoint() : null,
     handlers: {
       onStep: (idx) => {
         const along = legs.slice(0, idx).reduce((s, l) => s + l.dist, 0);
@@ -2603,8 +2844,8 @@ async function startWebXrNav(opts = {}) {
             ? "Now"
             : `${remain.toFixed(1)} m`;
         }
-        // ~14 m from connector: end XR (never resume this session)
-        if (shouldReleaseXrNearLift(remain)) {
+        // keep AR in the hallway; only hand off once we enter the connector
+        if (state.inFloorTransition) {
           void handXrToCamera("lift");
         }
         const next = nextTurnFromLegs(legs, progress);
@@ -2618,20 +2859,18 @@ async function startWebXrNav(opts = {}) {
           xrTrackLostAt = 0;
           return;
         }
+        if (xrInTrackGrace()) return;
         if (!xrTrackLostAt) xrTrackLostAt = performance.now();
         const lost = performance.now() - xrTrackLostAt;
-        // near lift → camera for PnP; otherwise XR died → hand camera back
-        if (hasFloorChangeAhead() && lost > 600) {
-          void handXrToCamera("lift");
-        } else if (!hasFloorChangeAhead() && lost > XR_TRACK_LOST_MS) {
-          void handXrToCamera("dead");
+        if (lost > XR_TRACK_LOST_MS) {
+          void handXrToCamera(state.inFloorTransition ? "lift" : "dead");
         }
       },
       onArrived: () => {
         // end of this floor's AR path — often the elevator, not the bay
         if (!onDestFloor() || hasFloorChangeAhead()) {
-          void handXrToCamera("lift");
           enterConnectorLeg();
+          void handXrToCamera("lift");
           const tf = activeRouteLeg()?.floor_transition
             || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
           const ban = elevatorBanner(tf, 0);
@@ -2659,6 +2898,11 @@ async function startWebXrNav(opts = {}) {
         state.webXrActive = false;
         state.camOwner = "camera";
         ui.arStage?.classList.remove("webxr-on");
+        void logClientDiagnostic({
+          event: "webxr_end",
+          nav_mode: "camera",
+          reason: "session_end",
+        });
         if (state.suppressXrResume || liftHandoffBusy) return;
         if (state.route && state.workflowStep === "navigation" && state.navActive) {
           void (async () => {
@@ -2672,7 +2916,7 @@ async function startWebXrNav(opts = {}) {
           state.navActive = false;
         }
       },
-      onErr: () => {
+      onErr: (why) => {
         stopXrLiftWatch();
         stopXrHealthWatch();
         webXrNav?.dispose();
@@ -2680,6 +2924,21 @@ async function startWebXrNav(opts = {}) {
         state.webXrActive = false;
         state.camOwner = "camera";
         ui.arStage?.classList.remove("webxr-on");
+        void logClientDiagnostic({
+          event: "webxr_end",
+          nav_mode: "camera",
+          reason: `err_${why || "unknown"}`,
+        });
+        // denied/unsupported = session never started (often camera still held) — soft fail
+        if (why === "denied" || why === "unsupported") {
+          if (state.pendingXrResume || state.landingPose) {
+            state.xrResumeBlocked = false;
+            state.pendingXrResume = true;
+            state.xrResumeReadyAt = performance.now() + 2000;
+            scheduleXrResumePoll();
+          }
+          return;
+        }
         if (state.navActive) void handXrToCamera("dead");
       },
     },
@@ -2687,7 +2946,9 @@ async function startWebXrNav(opts = {}) {
 
   const ok = await webXrNav.start();
   if (!ok) {
-    webXrNav.dispose();
+    console.warn("WebXR: session start failed — falling back to camera + PnP");
+    void logClientDiagnostic({ event: "webxr_skip", reason: "session_start_failed" });
+    try { webXrNav?.dispose?.(); } catch (_) { /* ignore */ }
     webXrNav = null;
     return false;
   }
@@ -2701,14 +2962,22 @@ async function startWebXrNav(opts = {}) {
   state.webXrActive = true;
   state.navActive = true;
   state.camOwner = "xr";
+  xrSessionStartedAt = performance.now();
+  xrTrackLostAt = 0;
   ui.arStage.classList.add("webxr-on");
+  if (ui.arCanvas) ui.arCanvas.style.display = "block";
+  void logClientDiagnostic({
+    event: "webxr_start",
+    nav_mode: "webxr",
+    reason: opts.fresh ? "fresh_floor" : "start_nav",
+  });
   setRouteBtnMode("stop");
   setStatusChip(opts.fresh ? "AR · new floor" : "AR nav", "live");
   if (hasFloorChangeAhead()) {
     startXrLiftWatch();
     startXrHealthWatch();
-    setStatusMsg("AR to the lift — camera + PnP takes over ~14 m out");
-    setHint("Near the connector, XR ends and live camera starts", true);
+    setStatusMsg("AR on — point at the floor to place arrows (keep AR near the lift)");
+    setHint("Point the camera at the floor ahead", true);
   } else if (opts.fresh) {
     startXrHealthWatch();
     setStatusMsg("Fresh AR on this floor — origin from landing PnP");
@@ -2716,7 +2985,7 @@ async function startWebXrNav(opts = {}) {
   } else {
     startXrHealthWatch();
     setStatusMsg("Point at the floor ahead — lime chevrons guide the route");
-    setHint("Follow the chevrons on the floor", true);
+    setHint("Point the camera at the floor to place AR arrows", true);
   }
   return true;
 }
@@ -2730,13 +2999,6 @@ async function runLiveVprCaptureLoop() {
     if (state.workflowStep !== "navigation" || !state.route) {
       stopLiveVprCapture();
       return;
-    }
-    // release XR from the VPR loop too — onWalk often dies in the cabin
-    if (state.webXrActive && hasFloorChangeAhead()) {
-      const rem = xrRemainM();
-      if (rem != null && rem <= RELEASE_XR_NEAR_M) {
-        await releaseXrForLiftApproach(rem);
-      }
     }
     // in lift we want getUserMedia, not a frozen XR grab
     if (state.inFloorTransition && state.webXrActive) {
@@ -2818,12 +3080,18 @@ async function runLiveVprCaptureLoop() {
                 setStatusMsg(`${via} ok, route refresh failed: ${error.message}`);
               }
               if (!state.inFloorTransition) {
-                setStatusMsg(`Live guidance active · ${via} + VIO/PDR`);
+                if (state.pendingXrResume && state.landingPose) {
+                  setStatusMsg(`Floor ${state.position.floor} locked — tap Start AR`);
+                  promptStartArAfterLand();
+                  scheduleXrResumePoll();
+                } else {
+                  setStatusMsg(`Live guidance active · ${via} + VIO/PDR`);
+                }
               }
-              // after land, keep camera VPR alive until XR slice is claimed
+              // after land: wait for Start AR tap — do not reclaim camera for VPR
               if (state.camOwner === "camera" && state.pendingXrResume) {
                 state.liveVpr.requestInFlight = false;
-                restartLiveVprCapture();
+                state.liveVpr.running = false;
                 return;
               }
             }
@@ -3008,30 +3276,11 @@ async function navigateToSlot() {
     state.pendingXrResume = false;
     state.xrResumeBlocked = false;
 
-    // Floor A already at the connector → skip XR, go straight to camera + PnP
-    if (hasFloorChangeAhead() && remToConnectorM() <= RELEASE_XR_NEAR_M) {
-      state.awaitingLandingLock = true;
-      state.camOwner = "camera";
-      await pauseArVioForCamera();
-      const camOk = state.stream
-        || await ensureCamera().catch(() => false)
-        || await reopenCameraHard({ delayMs: 200 });
-      if (!camOk) {
-        setStatusMsg("Route ready, but camera is unavailable.");
-        setRouteBtnMode("start");
-        return;
-      }
-      startCameraNav();
-      if (enterConnectorLeg()) { /* HUD + floor detect */ }
-      setStatusChip("Camera · lift", "live");
-      setStatusMsg("Near the lift — camera + PnP (no XR in cabin)");
-      return;
-    }
-
-    // Floor A (or single-floor): XR owns the camera and tracks normally
+    // XR stays available near the lift — only cabin handoff drops it
     const xrOk = await startWebXrNav({ fresh: false });
     if (xrOk) return;
 
+    setStatusMsg("WebXR unavailable — camera + live localize (no floor arrows)");
     const camOk = state.stream || await ensureCamera();
     if (!camOk) {
       setStatusMsg("Route ready, but camera is unavailable.");
@@ -3161,7 +3410,12 @@ function updateRouteProgress() {
   }
 
   hideLiftHud();
-  setFloorContinueVisible(false);
+  // don't hide Start AR CTA after landing lock
+  if (!(state.pendingXrResume && state.landingPose) && floorBtnMode !== "start_ar") {
+    setFloorContinueVisible(false);
+  } else {
+    promptStartArAfterLand();
+  }
 
   const guideWps = leg?.waypoints?.length ? leg.waypoints : state.route.waypoints;
   const progress = guideWps?.length
@@ -3195,14 +3449,7 @@ function updateRouteProgress() {
     const distLift = lastWp
       ? Math.hypot(state.position.x - lastWp[0], state.position.y - lastWp[1])
       : Infinity;
-    // drop XR ~8m out — open getUserMedia in hallway before cabin
-    if (
-      upcoming?.floor_transition
-      && (progress.remainingDistance <= RELEASE_XR_NEAR_M || distLift <= RELEASE_XR_NEAR_M)
-    ) {
-      void releaseXrForLiftApproach(Math.min(progress.remainingDistance, distLift));
-    }
-    // enter lift/stairs early — PDR often freezes inside the cabin (~2m left)
+    // enter lift/stairs when close — XR hands off only after connector entry
     const nearConnector = Boolean(upcoming?.floor_transition)
       && (progress.remainingDistance <= ENTER_CONNECTOR_M || distLift <= ENTER_CONNECTOR_M);
     if (hasMoreLegs && nearConnector) {
@@ -3404,9 +3651,16 @@ ui.arriveDismissBtn?.addEventListener("click", () => {
   setHint("Tap Slot to navigate somewhere else", true);
 });
 ui.floorContinueBtn?.addEventListener("click", () => {
+  if (floorBtnMode === "start_ar") {
+    void claimXrSlice({ fromGesture: true });
+    return;
+  }
   const tf = activeRouteLeg()?.floor_transition
     || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
   exitFloorTransition(tf?.to_floor || destFloorId());
+});
+ui.startArBtn?.addEventListener("click", () => {
+  void claimXrSlice({ fromGesture: true });
 });
 ui.slotInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -3426,3 +3680,30 @@ window.addEventListener("load", async () => {
   updateRouteStatus();
   setInterval(refreshCurrentPosition, 2000);
 });
+
+/** called from home.js after bay is chosen */
+function startGuidanceFromHome(bay) {
+  const id = String(bay || "").trim().toUpperCase();
+  if (!id) return;
+  if (ui.slotInput) {
+    ui.slotInput.value = id;
+    ui.slotInput.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  if (SKIP_CALIBRATION) markCalibrationSkipped();
+  updateCalibrationReadiness();
+  hideSheets();
+  setWorkflowStep("navigation", true);
+  setStatusMsg(`Bay ${id} — point camera and tap Localize`);
+  setHint("Point the camera and tap Localize", true);
+}
+
+window.ParkingUiEntry = {
+  startGuidance: startGuidanceFromHome,
+  showHome: () => {
+    if (typeof window.ParkingHome?.showHome === "function") {
+      window.ParkingHome.showHome();
+      setWorkflowStep("destination");
+    }
+  },
+};
+

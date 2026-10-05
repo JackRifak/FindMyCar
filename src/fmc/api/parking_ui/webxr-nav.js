@@ -3,97 +3,136 @@
  * Path is built from facility waypoints (not turn/dist only) so bends match the route.
  * Exposes window.ParkingWebXr for classic app.js.
  */
-import * as THREE from "https://unpkg.com/three@0.186.1/build/three.module.js";
+import * as THREE from "./three.module.js";
 
 const LIME = 0xc9d64f;
+const LIME_SOFT = 0xd4e070;
+const LIME_HOT = 0xe8f28a;
 const ARROW_N = 8;
-const ARROW_GAP = 0.65;
-const FIRST_GAP = 0.7;
-const ARRIVAL_M = 2.0;
-/** how far past the corner the turn glyph stays visible */
-const TURN_MARK_AFTER_M = 1.6;
+const ARROW_GAP = 0.72;
+const FIRST_GAP = 0.5;
+const ARRIVAL_M = 0.85;
+/** how far past the corner turn glyphs stay visible */
+const TURN_MARK_AFTER_M = 1.2;
+/** corner fillet radius (meters) for smooth path bends */
+const CORNER_RADIUS_M = 1.55;
+const CORNER_SEGS = 16;
 
-function limeMat(emissive = 0.85) {
+function limeMat(emissive = 0.85, color = LIME) {
   return new THREE.MeshStandardMaterial({
-    color: LIME,
-    emissive: LIME,
+    color,
+    emissive: color,
     emissiveIntensity: emissive,
-    metalness: 0.05,
-    roughness: 0.28,
+    metalness: 0.12,
+    roughness: 0.18,
     side: THREE.DoubleSide,
   });
 }
 
 function addFloorGlow(g, scale) {
   const glow = new THREE.Mesh(
-    new THREE.CircleGeometry(0.28 * scale, 28),
+    new THREE.CircleGeometry(0.42 * scale, 36),
     new THREE.MeshBasicMaterial({
-      color: LIME,
+      color: LIME_SOFT,
       transparent: true,
-      opacity: 0.22,
+      opacity: 0.28,
       depthWrite: false,
     }),
   );
   glow.rotation.x = -Math.PI / 2;
-  glow.position.y = 0.003;
+  glow.position.y = 0.002;
   g.add(glow);
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.22 * scale, 0.3 * scale, 40),
+    new THREE.MeshBasicMaterial({
+      color: LIME_HOT,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.004;
+  g.add(ring);
+  g.userData.ring = ring;
 }
 
 /**
- * Camera-style V chevron (matches SVG: M8 62 55 12l47 50).
- * Tip along local -Z after rotateX(-90).
+ * Bold floating chevron — thick tip + soft body + ground halo.
  */
 function makeFloorChevron(scale = 1) {
   const g = new THREE.Group();
-  const shape = new THREE.Shape();
-  const w = 0.075;
-  shape.moveTo(0, 0.36);
-  shape.lineTo(0.42, -0.28);
-  shape.lineTo(0.42 - w * 1.5, -0.28 - w * 0.9);
-  shape.lineTo(0, 0.36 - w * 2.8);
-  shape.lineTo(-0.42 + w * 1.5, -0.28 - w * 0.9);
-  shape.lineTo(-0.42, -0.28);
-  shape.closePath();
 
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.012, bevelEnabled: false });
-  geo.rotateX(-Math.PI / 2);
-  geo.translate(0, 0.016, 0);
-  const mesh = new THREE.Mesh(geo, limeMat(0.85));
+  // outer soft chevron
+  const outer = new THREE.Shape();
+  outer.moveTo(0, 0.42);
+  outer.quadraticCurveTo(0.16, 0.14, 0.48, -0.28);
+  outer.lineTo(0.3, -0.38);
+  outer.quadraticCurveTo(0.1, 0.02, 0, 0.18);
+  outer.quadraticCurveTo(-0.1, 0.02, -0.3, -0.38);
+  outer.lineTo(-0.48, -0.28);
+  outer.quadraticCurveTo(-0.16, 0.14, 0, 0.42);
+  outer.closePath();
+
+  const outerGeo = new THREE.ExtrudeGeometry(outer, {
+    depth: 0.008,
+    bevelEnabled: true,
+    bevelThickness: 0.005,
+    bevelSize: 0.005,
+    bevelSegments: 3,
+  });
+  outerGeo.rotateX(-Math.PI / 2);
+  outerGeo.translate(0, 0.012, 0);
+  const outerMesh = new THREE.Mesh(
+    outerGeo,
+    new THREE.MeshBasicMaterial({
+      color: LIME_SOFT,
+      transparent: true,
+      opacity: 0.45,
+      depthWrite: false,
+    }),
+  );
+  outerMesh.scale.setScalar(scale);
+  g.add(outerMesh);
+
+  // crisp inner arrow
+  const inner = new THREE.Shape();
+  inner.moveTo(0, 0.36);
+  inner.quadraticCurveTo(0.12, 0.12, 0.38, -0.22);
+  inner.lineTo(0.22, -0.32);
+  inner.quadraticCurveTo(0.08, 0.0, 0, 0.14);
+  inner.quadraticCurveTo(-0.08, 0.0, -0.22, -0.32);
+  inner.lineTo(-0.38, -0.22);
+  inner.quadraticCurveTo(-0.12, 0.12, 0, 0.36);
+  inner.closePath();
+
+  const innerGeo = new THREE.ExtrudeGeometry(inner, {
+    depth: 0.016,
+    bevelEnabled: true,
+    bevelThickness: 0.006,
+    bevelSize: 0.006,
+    bevelSegments: 3,
+  });
+  innerGeo.rotateX(-Math.PI / 2);
+  innerGeo.translate(0, 0.02, 0);
+  const mesh = new THREE.Mesh(innerGeo, limeMat(1.15, LIME_HOT));
   mesh.scale.setScalar(scale);
   g.add(mesh);
+
   addFloorGlow(g, scale);
   g.userData.kind = "straight";
+  g.userData.body = mesh;
   return g;
 }
 
 /**
- * L turn glyph — stem along approach (-Z), tip exits left (-X) or right (+X).
- * Shown only at/after the turn (banner: "Turn left · 4 m" → straight 4 m, then this).
+ * Turn cue = same bold chevron, just larger — no weird L overlays.
  */
 function makeFloorTurn(kind = "left", scale = 1) {
-  const left = kind === "left";
-  const s = left ? -1 : 1;
-  const g = new THREE.Group();
-  const shape = new THREE.Shape();
-  shape.moveTo(-0.09 * s, -0.3);
-  shape.lineTo(0.09 * s, -0.3);
-  shape.lineTo(0.09 * s, 0.05);
-  shape.lineTo(0.3 * s, 0.05);
-  shape.lineTo(0.3 * s, 0.18);
-  shape.lineTo(0.5 * s, 0);
-  shape.lineTo(0.3 * s, -0.18);
-  shape.lineTo(0.3 * s, -0.05);
-  shape.lineTo(-0.09 * s, -0.05);
-  shape.closePath();
-
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.014, bevelEnabled: false });
-  geo.rotateX(-Math.PI / 2);
-  geo.translate(0, 0.018, 0);
-  const mesh = new THREE.Mesh(geo, limeMat(0.95));
-  mesh.scale.setScalar(scale);
-  g.add(mesh);
-  addFloorGlow(g, scale * 1.1);
-  g.userData.kind = left ? "left" : "right";
+  const g = makeFloorChevron(scale);
+  g.userData.kind = kind === "left" ? "left" : "right";
   return g;
 }
 
@@ -216,8 +255,10 @@ export function remainingWaypoints(waypoints, userX, userY) {
  * - anchor: user (x,y) → XR origin
  * - rotate: facility heading → phone forward at calibrate
  * PnP heading: 0° = +Y, 90° = +X (atan2(dx, dy))
+ * opts.destXY: optional bay [x,y] — pull path end back onto the aisle near the bay
+ *   (never append bay center; that overshoots ~1 m past the stop point)
  */
-export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = null) {
+export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = null, destXY = null) {
   let wps = (waypoints || []).map((w) => [Number(w[0]), Number(w[1])]);
   if (wps.length < 2) return [origin.clone()];
 
@@ -227,6 +268,10 @@ export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = 
   if (hasPose) {
     wps = remainingWaypoints(wps, pose.x, pose.y);
   }
+
+  // bay sits off-corridor — snap end to the closest point on the last segment
+  // toward the slot, then pull back slightly so arrows don't overshoot the stall
+  wps = snapPathEndToBay(wps, destXY);
 
   const fwd = initialFwd.clone();
   fwd.y = 0;
@@ -265,12 +310,147 @@ export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = 
   });
 }
 
+/** project bay onto corridor; shorten so guidance stops at the stall face (~1 m early) */
+function snapPathEndToBay(wps, destXY, pullBackM = 1.0) {
+  if (!wps || wps.length < 2) return wps;
+  let out = wps.map((w) => [Number(w[0]), Number(w[1])]);
+
+  if (destXY && Number.isFinite(Number(destXY[0])) && Number.isFinite(Number(destXY[1]))) {
+    const bx = Number(destXY[0]);
+    const by = Number(destXY[1]);
+    // nearest point on the whole polyline to the bay
+    let bestD = Infinity;
+    let best = null;
+    let bestI = out.length - 2;
+    for (let i = 0; i < out.length - 1; i++) {
+      const a = out[i];
+      const b = out[i + 1];
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const len2 = dx * dx + dy * dy || 1e-12;
+      let t = ((bx - a[0]) * dx + (by - a[1]) * dy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      const px = a[0] + dx * t;
+      const py = a[1] + dy * t;
+      const d = Math.hypot(bx - px, by - py);
+      if (d < bestD) {
+        bestD = d;
+        best = [px, py];
+        bestI = i;
+      }
+    }
+    if (best) {
+      // keep path up to the projected bay, drop anything past it
+      out = [...out.slice(0, bestI + 1), best];
+    }
+  }
+
+  // always pull end back so arrows don't run past the stall
+  return trimPolylineEnd(out, pullBackM);
+}
+
+function trimPolylineEnd(wps, trimM) {
+  if (!wps || wps.length < 2 || !(trimM > 0)) return wps;
+  let left = trimM;
+  const out = wps.map((w) => [w[0], w[1]]);
+  while (out.length >= 2 && left > 0) {
+    const a = out[out.length - 2];
+    const b = out[out.length - 1];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len <= 1e-4) {
+      out.pop();
+      continue;
+    }
+    if (len > left) {
+      const t = (len - left) / len;
+      out[out.length - 1] = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      left = 0;
+      break;
+    }
+    left -= len;
+    out.pop();
+  }
+  if (out.length < 2 && wps.length >= 2) {
+    return [wps[0], wps[Math.min(1, wps.length - 1)]];
+  }
+  return out;
+}
+
+/** public helper: facility polyline → XR path with soft corners */
+export function smoothPath(pts) {
+  return smoothPolylineXZ(pts);
+}
+
 function polyLen(pts) {
   let n = 0;
   for (let i = 0; i < pts.length - 1; i++) {
     n += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].z - pts[i].z);
   }
   return n;
+}
+
+/**
+ * Fillet sharp polyline corners with quadratic arcs so guidance bends smoothly.
+ */
+function smoothPolylineXZ(pts, radius = CORNER_RADIUS_M, segs = CORNER_SEGS) {
+  if (!pts || pts.length < 3) {
+    return (pts || []).map((p) => p.clone());
+  }
+  const y = pts[0].y;
+  const out = [pts[0].clone()];
+
+  for (let i = 1; i < pts.length - 1; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const c = pts[i + 1];
+    const vIn = new THREE.Vector3(a.x - b.x, 0, a.z - b.z);
+    const vOut = new THREE.Vector3(c.x - b.x, 0, c.z - b.z);
+    const lenIn = vIn.length();
+    const lenOut = vOut.length();
+    if (lenIn < 0.08 || lenOut < 0.08) {
+      out.push(b.clone());
+      continue;
+    }
+    vIn.multiplyScalar(1 / lenIn);
+    vOut.multiplyScalar(1 / lenOut);
+    const dot = Math.max(-1, Math.min(1, vIn.dot(vOut)));
+    const ang = Math.acos(dot);
+    // nearly straight — keep vertex
+    if (ang > Math.PI - 0.18) {
+      out.push(b.clone());
+      continue;
+    }
+    const cut = Math.min(radius, lenIn * 0.42, lenOut * 0.42);
+    if (cut < 0.12) {
+      out.push(b.clone());
+      continue;
+    }
+    const p0 = new THREE.Vector3(b.x + vIn.x * cut, y, b.z + vIn.z * cut);
+    const p2 = new THREE.Vector3(b.x + vOut.x * cut, y, b.z + vOut.z * cut);
+    // soften control: pull slightly off the sharp corner for a rounder bend
+    const mid = new THREE.Vector3(
+      b.x * 0.55 + (p0.x + p2.x) * 0.225,
+      y,
+      b.z * 0.55 + (p0.z + p2.z) * 0.225,
+    );
+
+    const last = out[out.length - 1];
+    if (Math.hypot(last.x - p0.x, last.z - p0.z) > 0.04) {
+      out.push(p0);
+    }
+    for (let s = 1; s <= segs; s++) {
+      const t = s / segs;
+      const u = 1 - t;
+      out.push(new THREE.Vector3(
+        u * u * p0.x + 2 * u * t * mid.x + t * t * p2.x,
+        y,
+        u * u * p0.z + 2 * u * t * mid.z + t * t * p2.z,
+      ));
+    }
+  }
+
+  out.push(pts[pts.length - 1].clone());
+  return out;
 }
 
 function closestOnPath(pts, x, z) {
@@ -427,6 +607,7 @@ export class WebXrNav {
     this.path = [];
     this.pathLen = 0;
     this.pathLine = null;
+    this.pathGlow = null;
     this.calibrated = false;
     this.progressM = 0;
     this.maxProgressM = 0;
@@ -566,8 +747,15 @@ export class WebXrNav {
     this._capCanvas = null;
     if (this.pathLine) {
       this.scene.remove(this.pathLine);
-      this.pathLine.geometry.dispose();
+      this.pathLine.geometry?.dispose?.();
+      this.pathLine.material?.dispose?.();
       this.pathLine = null;
+    }
+    if (this.pathGlow) {
+      this.scene.remove(this.pathGlow);
+      this.pathGlow.geometry?.dispose?.();
+      this.pathGlow.material?.dispose?.();
+      this.pathGlow = null;
     }
   }
 
@@ -726,10 +914,17 @@ export class WebXrNav {
 
     const wps = this.opts.waypoints;
     if (wps?.length >= 2) {
-      this.path = pathFromWaypoints(wps, origin, this.fwd, this.opts.facilityPose || null);
+      this.path = pathFromWaypoints(
+        wps,
+        origin,
+        this.fwd,
+        this.opts.facilityPose || null,
+        this.opts.destXY || null,
+      );
     } else {
       this.path = pathFromLegs(this.legs, origin, this.fwd);
     }
+    this.path = smoothPolylineXZ(this.path);
     this.pathLen = polyLen(this.path) || this.opts.distanceM || 1;
     this.calibrated = true;
     this.progressM = 0;
@@ -744,18 +939,19 @@ export class WebXrNav {
   }
 
   drawPathRibbon() {
+    // no continuous path line — guidance is arrows only
     if (this.pathLine) {
       this.scene.remove(this.pathLine);
-      this.pathLine.geometry.dispose();
+      this.pathLine.geometry?.dispose?.();
+      this.pathLine.material?.dispose?.();
+      this.pathLine = null;
     }
-    if (this.path.length < 2) return;
-    const y = (this.floorY ?? this.path[0].y) + 0.012;
-    const pts = this.path.map((p) => new THREE.Vector3(p.x, y, p.z));
-    this.pathLine = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints(pts),
-      new THREE.LineBasicMaterial({ color: LIME, transparent: true, opacity: 0.55 }),
-    );
-    this.scene.add(this.pathLine);
+    if (this.pathGlow) {
+      this.scene.remove(this.pathGlow);
+      this.pathGlow.geometry?.dispose?.();
+      this.pathGlow.material?.dispose?.();
+      this.pathGlow = null;
+    }
   }
 
   onFrame(t, frame) {
@@ -832,64 +1028,54 @@ export class WebXrNav {
     mesh.position.copy(pos);
     aimOnFloor(mesh, dir);
     mesh.scale.setScalar(scale);
+    const ring = mesh.userData.ring;
+    if (ring?.material) {
+      ring.material.opacity = 0.22 + Math.max(0, 0.2 * (scale - 0.7));
+    }
   }
 
   /**
-   * Banner "Turn left · 4 m" → straight chevrons for those 4 m,
-   * then left L-marks at/after the corner (not left marks during the approach).
+   * Chevrons only — follow path tangent through bends (no turn glyph overlays).
    */
   placeArrows(remain) {
-    const y = (this.floorY ?? this.path[0]?.y ?? 0) + 0.02;
+    const y = (this.floorY ?? this.path[0]?.y ?? 0) + 0.028;
     const samples = sampleAhead(this.path, this.progressM, ARROW_N, ARROW_GAP, FIRST_GAP);
-    const pulse = 1 + Math.sin(this.pulseT * 4) * 0.04;
-    const mnv = nextManeuverFromLegs(this.legs, this.progressM);
-    const isTurn = mnv.kind === "left" || mnv.kind === "right";
-    const turnAt = mnv.atM;
+    const pulse = 1 + Math.sin(this.pulseT * 3.6) * 0.06;
 
     for (const m of Object.values(this.cornerMark)) m.visible = false;
-    if (isTurn && turnAt >= this.progressM - 0.4 && mnv.distanceM < 40) {
-      const at = pointAt(this.path, turnAt);
-      const approach = pointAt(this.path, Math.max(0, turnAt - 0.45));
-      const mark = this.cornerMark[mnv.kind];
-      mark.visible = true;
-      mark.position.set(at.pos.x, y + 0.012, at.pos.z);
-      aimOnFloor(mark, approach.dir);
-      mark.scale.setScalar(1.4 + pulse * 0.1);
-    }
 
     for (let i = 0; i < ARROW_N; i++) {
       const slot = this.arrowSlots[i];
       const s = samples[i];
       const along = FIRST_GAP + i * ARROW_GAP;
-      const sampleM = this.progressM + along;
-      if (!s || remain < along * 0.35) {
+      if (!s || remain < along * 0.3) {
         this.hideSlot(slot);
         continue;
       }
       const end = pointAt(this.path, this.pathLen);
       const distToEnd = Math.hypot(s.pos.x - end.pos.x, s.pos.z - end.pos.z);
-      if (distToEnd < 0.15 && i > 0) {
+      if (distToEnd < 0.45 && i > 0) {
+        this.hideSlot(slot);
+        continue;
+      }
+      // stop guiding past the stall face
+      if (remain < along + 0.35) {
         this.hideSlot(slot);
         continue;
       }
 
-      // before turn → straight; at/just after turn → left/right; further → straight again
-      let kind = "straight";
-      let dir = s.dir;
-      if (isTurn) {
-        if (sampleM < turnAt - 0.35) {
-          kind = "straight";
-        } else if (sampleM <= turnAt + TURN_MARK_AFTER_M) {
-          kind = mnv.kind;
-          // L glyph oriented by approach into the corner
-          dir = pointAt(this.path, Math.max(0, turnAt - 0.45)).dir;
-        } else {
-          kind = "straight";
-        }
-      }
-
-      const scale = (i === 0 ? 1.15 : 1) * pulse * Math.max(0.5, 1 - i * 0.07);
-      this.showSlot(slot, kind, new THREE.Vector3(s.pos.x, y, s.pos.z), dir, scale);
+      // wave: nearer arrows bob + lead the pack
+      const wave = 1 + Math.sin(this.pulseT * 4.2 - i * 0.55) * 0.08;
+      const fade = Math.max(0.5, 1 - i * 0.07);
+      const scale = (i === 0 ? 1.28 : 1.05 - i * 0.03) * pulse * wave * fade;
+      const lift = y + Math.max(0, Math.sin(this.pulseT * 4.2 - i * 0.55) * 0.012);
+      this.showSlot(
+        slot,
+        "straight",
+        new THREE.Vector3(s.pos.x, lift, s.pos.z),
+        s.dir,
+        scale,
+      );
     }
   }
 
@@ -955,4 +1141,6 @@ window.ParkingWebXr = {
   remainingWaypoints,
   nextManeuverFromLegs,
   turnDeg,
+  smoothPath,
 };
+window.dispatchEvent(new Event("parking-webxr-ready"));

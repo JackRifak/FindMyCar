@@ -14,8 +14,8 @@
       rel="stylesheet"
     />
     <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
-    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261005-hometrim" />
-    <link rel="stylesheet" href="/parking-ui/home.css?v=20261005-hometrim" />
+    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261005-dest1m" />
+    <link rel="stylesheet" href="/parking-ui/home.css?v=20261005-dest1m" />
   </head>
   <body class="entry-mode">
     <!-- React-matched splash + home -->
@@ -100,11 +100,36 @@
     </div>
 
     <div class="ar-stage" id="arStage" hidden>
+      <div class="cam-keepalive" aria-hidden="true"></div>
       <video id="cameraView" playsinline muted autoplay></video>
+      <canvas id="liftCamCanvas" class="lift-cam-canvas" hidden aria-hidden="true"></canvas>
       <img id="arPreview" alt="" />
-      <canvas id="arCanvas"></canvas>
+      <canvas id="arCanvas" aria-hidden="true"></canvas>
 
-      <div class="ar-top">
+      <div id="floorArrows" class="floor" hidden>
+        <div id="floorPath" class="path">
+          <div class="chev" style="animation-delay: 0s">
+            <svg viewBox="0 0 110 70"><path d="M10 58 Q32 22 55 12 Q78 22 100 58" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="chev" style="animation-delay: 0.3s">
+            <svg viewBox="0 0 110 70"><path d="M10 58 Q32 22 55 12 Q78 22 100 58" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="chev" style="animation-delay: 0.6s">
+            <svg viewBox="0 0 110 70"><path d="M10 58 Q32 22 55 12 Q78 22 100 58" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="chev" style="animation-delay: 0.9s">
+            <svg viewBox="0 0 110 70"><path d="M10 58 Q32 22 55 12 Q78 22 100 58" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="chev" style="animation-delay: 1.2s">
+            <svg viewBox="0 0 110 70"><path d="M10 58 Q32 22 55 12 Q78 22 100 58" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="chev" style="animation-delay: 1.5s">
+            <svg viewBox="0 0 110 70"><path d="M10 58 Q32 22 55 12 Q78 22 100 58" fill="none" stroke="#C9D64F" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+        </div>
+      </div>
+
+<div class="ar-top">
         <div class="brand-chip">
           <span class="mark">F</span>
           <span>Find My Car</span>
@@ -139,12 +164,25 @@
         <div class="turn-copy">
           <p id="turnLabel" class="turn-label">Continue straight</p>
           <p id="turnDistance" class="turn-distance">—</p>
+          <button id="floorContinueBtn" type="button" class="floor-continue-btn" hidden>
+            I've left the elevator — continue
+          </button>
         </div>
         <div class="turn-dest">
           Slot
           <strong id="hudSlot">—</strong>
         </div>
       </div>
+
+      <div id="liftHud" class="lift-hud" hidden>
+        <div class="lift-hud__glyph" id="liftHudGlyph" aria-hidden="true">↑</div>
+        <p class="lift-hud__dir" id="liftHudDir">Go up</p>
+        <p class="lift-hud__floor" id="liftHudFloor">Floor —</p>
+      </div>
+
+      <button id="startArBtn" type="button" class="start-ar-btn" hidden>
+        Tap to start AR
+      </button>
 
       <p id="arHint" class="ar-hint">Choose your parking slot to begin</p>
 
@@ -224,7 +262,8 @@
     </div>
 
     <script src="/ar-vio.js"></script>
-    <script src="/parking-ui/home.js?v=20261005-hometrim"></script>
-    <script src="/parking-ui/app.js?v=20261005-hometrim"></script>
+    <script type="module" src="/parking-ui/webxr-nav.js?v=20261005-dest1m"></script>
+    <script src="/parking-ui/home.js?v=20261005-dest1m"></script>
+    <script src="/parking-ui/app.js?v=20261005-dest1m"></script>
   </body>
 </html>
