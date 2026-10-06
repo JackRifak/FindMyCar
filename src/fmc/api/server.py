@@ -44,6 +44,7 @@ from fmc.fusion.map_matching import snap_to_walkable
 from fmc.fusion.sensor_fusion import PositionFuser
 from fmc.navigation.routing import calculate_multifloor_route, calculate_route
 from fmc.vio.tracker import SixDofPose, TrueVIOTracker
+from fmc.vpr import cabin_colour
 from fmc.vpr.pipeline import VPRPipeline
 from fmc.mapping.continuous_mapper import ContinuousMapper
 
@@ -132,6 +133,14 @@ class PositionResponse(BaseModel):
     z: float | None = None
     num_inliers: int | None = None
     num_matches: int | None = None
+    # unsnapped localizer pose — where the phone really is (AR anchors here, map uses x/y)
+    raw_x: float | None = None
+    raw_y: float | None = None
+    # camera yaw from PnP (0° = +Y, 90° = +X) — AR alignment pairs it with the ARCore pose
+    raw_heading: float | None = None
+    # lift-lobby colour check (only when the client asked for it)
+    cabin_floor: str | None = None
+    cabin_score: float | None = None
 
 
 @app.get("/diagnostics/locations")
@@ -188,6 +197,8 @@ async def localize(
     frame_source: str | None = Form(None),
     nav_mode: str | None = Form(None),
     trigger: str | None = Form(None),
+    # "1" right after a lift: classify lobby colour, restrict PnP to that floor
+    cabin_check: str | None = Form(None),
 ):
     """First fix / relocalisation: submit a camera frame, get a VPR-based position."""
     t0 = time.perf_counter()
@@ -215,8 +226,21 @@ async def localize(
         if prior_floor is not None
         else getattr(fuser, "floor", None)
     )
+    cabin = None
+    restrict_floor = False
+    if cabin_check and cabin_check not in ("0", "false"):
+        refs = cabin_colour.load_references(_site.index_dir)
+        cabin = cabin_colour.classify(frame, refs)
+        logger.info(
+            f"[{device_id}] CABIN colour floor={cabin.floor or '-'} score={cabin.score:.2f} "
+            f"margin={cabin.margin:.2f} coloured={cabin.colour_frac:.0%} "
+            f"(prior={floor_prior}, refs={sorted(refs)})"
+        )
+        if cabin.floor is not None:
+            floor_prior = normalize_floor_id(cabin.floor)
+            restrict_floor = True
     t_vpr0 = time.perf_counter()
-    result = pipeline.localize(frame, prior_floor=floor_prior)
+    result = pipeline.localize(frame, prior_floor=floor_prior, restrict_floor=restrict_floor)
     t_vpr_ms = (time.perf_counter() - t_vpr0) * 1000
     # seed VIO pose before reset so facility lock is relative to current ARCore frame
     if vio_x is not None and vio_z is not None:
@@ -306,6 +330,8 @@ async def localize(
         return PositionResponse(
             floor=normalize_floor_id(fuser.floor), x=0.0, y=0.0, heading=0.0,
             confidence=0.0, tracking=False, timestamp=time.time(),
+            cabin_floor=cabin.floor if cabin else None,
+            cabin_score=round(cabin.score, 3) if cabin else None,
         )
 
     snapped_x, snapped_y = snap_to_walkable(fused.x, fused.y, _site.walkable_segments(fused.floor))
@@ -341,7 +367,98 @@ async def localize(
         z=pose.z if pose else None,
         num_inliers=pose.num_inliers if pose else None,
         num_matches=pose.num_matches if pose else None,
+        raw_x=float(pose.x if pose else fused.x),
+        raw_y=float(pose.y if pose else fused.y),
+        raw_heading=float(pose.heading if pose else fused.heading),
+        cabin_floor=cabin.floor if cabin else None,
+        cabin_score=round(cabin.score, 3) if cabin else None,
     )
+
+
+class SeedPoseBody(BaseModel):
+    floor: str
+    x: float
+    y: float
+    heading: float = 0.0
+    reason: str = "door"
+
+
+@app.post("/position/{device_id}/seed")
+def seed_position(device_id: str, body: SeedPoseBody):
+    """Client placed itself without PnP (e.g. lift door after a cabin-colour match) —
+    keep server routing on the new floor until the next real fix."""
+    fuser = _sessions.setdefault(device_id, PositionFuser(TrueVIOTracker(), floor=_default_floor()))
+    floor = normalize_floor_id(body.floor)
+    fuser.floor = floor
+    fuser._last_x, fuser._last_y = float(body.x), float(body.y)
+    fuser._last_heading = float(body.heading)
+    fuser._last_method = f"seed_{body.reason}"
+    fuser._last_confidence = 0.2
+    fuser.mark_live()
+    logger.info(
+        f"[{device_id}] POSITION SEED reason={body.reason} floor={floor} "
+        f"at ({body.x:.2f}, {body.y:.2f}) heading={body.heading:.0f}°"
+    )
+    return {"status": "ok", "floor": floor, "x": body.x, "y": body.y}
+
+
+@app.get("/map/cabin-colours")
+def get_cabin_colours():
+    """Per-floor lift-lobby colour references (for the mapping app)."""
+    refs = cabin_colour.load_references(_site.index_dir)
+    out = {}
+    for f, ref in refs.items():
+        info = {k: v for k, v in ref.items() if k != "hist"}
+        # nearest other floor — the mapping UI warns when two lobbies look alike
+        others = [
+            (cabin_colour.similarity(ref["hist"], o["hist"]), of)
+            for of, o in refs.items() if of != f
+        ]
+        if others:
+            sim, of = max(others)
+            info["closest_floor"] = of
+            info["closest_sim"] = round(sim, 3)
+            info["too_similar"] = sim >= 1.0 - cabin_colour.MATCH_MARGIN
+        out[f] = info
+    return {"floors": out, "min_colour_frac": cabin_colour.MIN_COLOUR_FRAC}
+
+
+@app.post("/map/cabin-colour")
+async def add_cabin_colour(floor: str = Form(...), image: UploadFile = File(...)):
+    """Average one frame of the lift-lobby walls into this floor's colour reference."""
+    contents = await image.read()
+    frame = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Failed to decode image")
+    fl = normalize_floor_id(floor)
+    try:
+        ref = cabin_colour.add_reference(_site.index_dir, fl, frame)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    # how distinct is this floor from the others now?
+    refs = cabin_colour.load_references(_site.index_dir)
+    check = cabin_colour.classify(frame, refs)
+    logger.info(
+        f"[API /map/cabin-colour] floor={fl} samples={ref['samples']} hue~{ref['dominant_hue_deg']}° "
+        f"coloured={ref['colour_frac']:.0%} self-check={check.floor} margin={check.margin:.2f}"
+    )
+    return {
+        "status": "ok",
+        "floor": fl,
+        "samples": ref["samples"],
+        "dominant_hue_deg": ref["dominant_hue_deg"],
+        "colour_frac": ref["colour_frac"],
+        "self_check_floor": check.floor,
+        "self_check_margin": round(check.margin, 3),
+    }
+
+
+@app.delete("/map/cabin-colour/{floor}")
+def delete_cabin_colour(floor: str):
+    refs = cabin_colour.load_references(_site.index_dir)
+    removed = refs.pop(normalize_floor_id(floor), None) is not None
+    cabin_colour.save_references(_site.index_dir, refs)
+    return {"status": "ok", "removed": removed}
 
 
 @app.get("/map/live-poses")
@@ -1036,6 +1153,17 @@ async def map_keyframe(
                     )
         except Exception as e:
             logger.warning("[API /map/keyframe] Disk hydrate failed: %s", e)
+
+    # a walk recorded into an already-aligned session is never aligned (finalize skips it)
+    # and gets exported in raw ARCore coords — start a fresh session instead
+    if _global_mapper._session_id in getattr(_global_mapper, "_aligned_sessions", set()):
+        old_sid = _global_mapper._session_id
+        _global_mapper._session_id = _global_mapper._next_free_session_id()
+        logger.warning(
+            "[API /map/keyframe] Session %s is already aligned — new keyframes go to session %s "
+            "(drop 2+ tags in this walk, then Finalize)",
+            old_sid, _global_mapper._session_id,
+        )
 
     frame_id = _global_mapper.add_keyframe(frame, timestamp, pose, heading_deg=heading_deg)
     new_landmarks = getattr(_global_mapper, 'last_new_landmarks', 0)

@@ -26,6 +26,9 @@ import android.view.WindowManager;
 import com.getcapacitor.JSObject;
 import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.Camera;
+import com.google.ar.core.CameraConfig;
+import com.google.ar.core.CameraConfigFilter;
+import com.google.ar.core.CameraIntrinsics;
 import com.google.ar.core.Frame;
 import com.google.ar.core.Pose;
 import com.google.ar.core.Session;
@@ -35,6 +38,8 @@ import com.google.ar.core.exceptions.UnavailableException;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
+import java.util.EnumSet;
+import java.util.List;
 
 /**
  * Headless ARCore session: EGL + camera texture, pose + JPEG capture on a worker thread.
@@ -43,7 +48,10 @@ import java.nio.ByteBuffer;
 public class ArVioSession {
     private static final String TAG = "ArVioSession";
     private static final int UPDATE_MS = 33;
-    private static final int JPEG_QUALITY = 85;
+    private static final int JPEG_QUALITY = 95;
+    /** preferred ARCore CPU image size (long x short side) for mapping / PnP */
+    private static final int TARGET_CPU_W = 1280;
+    private static final int TARGET_CPU_H = 720;
 
     private final Context context;
     private final Object lock = new Object();
@@ -71,6 +79,10 @@ public class ArVioSession {
     private int captureW;
     private int captureH;
     private String captureErr;
+    // intrinsics of the captured JPEG (after display rotation), pixels: fx, fy, cx, cy
+    private float[] captureIntr;
+    // ARCore pose of the exact frame in the captured JPEG (same convention as latestPoseJson)
+    private JSObject capturePose;
 
     // rolling preview (~8–10 fps) — separate from hi-res keyframe grabs
     private String previewBase64;
@@ -108,6 +120,7 @@ public class ArVioSession {
                 throw new UnavailableException("device does not support ARCore");
             }
             session = new Session(context);
+            selectCpuImageConfig();
             com.google.ar.core.Config cfg = new com.google.ar.core.Config(session);
             cfg.setUpdateMode(com.google.ar.core.Config.UpdateMode.LATEST_CAMERA_IMAGE);
             cfg.setFocusMode(com.google.ar.core.Config.FocusMode.AUTO);
@@ -196,6 +209,8 @@ public class ArVioSession {
             captureErr = null;
             captureW = 0;
             captureH = 0;
+            captureIntr = null;
+            capturePose = null;
             captureLock.wait(timeoutMs);
             JSObject ret = new JSObject();
             if (captureBase64 != null) {
@@ -203,6 +218,15 @@ public class ArVioSession {
                 ret.put("jpegBase64", captureBase64);
                 ret.put("width", captureW);
                 ret.put("height", captureH);
+                if (capturePose != null) {
+                    ret.put("pose", capturePose);
+                }
+                if (captureIntr != null) {
+                    ret.put("fx", captureIntr[0]);
+                    ret.put("fy", captureIntr[1]);
+                    ret.put("cx", captureIntr[2]);
+                    ret.put("cy", captureIntr[3]);
+                }
             } else {
                 ret.put("ok", false);
                 ret.put("error", captureErr != null ? captureErr : "timeout");
@@ -333,6 +357,9 @@ public class ArVioSession {
 
             byte[] previewJpeg = null;
             byte[] keyJpeg = null;
+            float[] keyIntr = null;
+            // updateOnce stored this frame's pose just before calling us — snapshot it now
+            JSObject keyPose = hiRes ? latestPoseJson() : null;
             if (preview) {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 yuv.compressToJpeg(new Rect(0, 0, w, h), PREVIEW_QUALITY, baos);
@@ -340,8 +367,10 @@ public class ArVioSession {
             }
             if (hiRes) {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                yuv.compressToJpeg(new Rect(0, 0, w, h), JPEG_QUALITY, baos);
+                // near-lossless first pass when rotateJpegForDisplay re-encodes at JPEG_QUALITY
+                yuv.compressToJpeg(new Rect(0, 0, w, h), displayRotationDeg() == 0 ? JPEG_QUALITY : 100, baos);
                 keyJpeg = rotateJpegForDisplay(baos.toByteArray());
+                keyIntr = rotatedIntrinsics(frame.getCamera().getImageIntrinsics(), w, h);
             } else if (previewJpeg != null) {
                 // reuse preview bytes for dimensions if only preview
                 keyJpeg = null;
@@ -367,6 +396,8 @@ public class ArVioSession {
                     captureBase64 = Base64.encodeToString(keyJpeg, Base64.NO_WRAP);
                     captureW = opts.outWidth > 0 ? opts.outWidth : w;
                     captureH = opts.outHeight > 0 ? opts.outHeight : h;
+                    captureIntr = keyIntr;
+                    capturePose = keyPose;
                     captureErr = null;
                     captureRequested = false;
                     captureLock.notifyAll();
@@ -392,15 +423,78 @@ public class ArVioSession {
         }
     }
 
+    /** clockwise degrees the sensor image is rotated to match the display */
+    private int displayRotationDeg() {
+        WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        int rot = wm != null ? wm.getDefaultDisplay().getRotation() : Surface.ROTATION_0;
+        if (rot == Surface.ROTATION_0) return 90;
+        if (rot == Surface.ROTATION_180) return 270;
+        if (rot == Surface.ROTATION_270) return 180;
+        return 0;
+    }
+
+    /**
+     * ARCore CPU-image intrinsics (sensor orientation, w x h) mapped onto the JPEG produced by
+     * rotateJpegForDisplay. Returns {fx, fy, cx, cy} in pixels, or null.
+     */
+    private float[] rotatedIntrinsics(CameraIntrinsics intr, int w, int h) {
+        try {
+            float[] f = intr.getFocalLength();
+            float[] c = intr.getPrincipalPoint();
+            int[] dims = intr.getImageDimensions();
+            // intrinsics belong to the CPU image; rescale if dims ever differ from the buffer
+            float sx = dims[0] > 0 ? (float) w / dims[0] : 1f;
+            float sy = dims[1] > 0 ? (float) h / dims[1] : 1f;
+            float fx = f[0] * sx, fy = f[1] * sy, cx = c[0] * sx, cy = c[1] * sy;
+            switch (displayRotationDeg()) {
+                case 90: // clockwise: (u, v) -> (h - v, u)
+                    return new float[] { fy, fx, h - cy, cx };
+                case 180: // (u, v) -> (w - u, h - v)
+                    return new float[] { fx, fy, w - cx, h - cy };
+                case 270: // (u, v) -> (v, w - u)
+                    return new float[] { fy, fx, cy, w - cx };
+                default:
+                    return new float[] { fx, fy, cx, cy };
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "intrinsics", t);
+            return null;
+        }
+    }
+
+    /** pick the back-camera config whose CPU image is closest to TARGET_CPU_W x TARGET_CPU_H */
+    private void selectCpuImageConfig() {
+        try {
+            CameraConfigFilter filter = new CameraConfigFilter(session)
+                .setFacingDirection(CameraConfig.FacingDirection.BACK)
+                .setTargetFps(EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30));
+            List<CameraConfig> configs = session.getSupportedCameraConfigs(filter);
+            CameraConfig best = null;
+            long bestScore = Long.MAX_VALUE;
+            for (CameraConfig cc : configs) {
+                android.util.Size sz = cc.getImageSize();
+                int lw = Math.max(sz.getWidth(), sz.getHeight());
+                int sh = Math.min(sz.getWidth(), sz.getHeight());
+                long score = Math.abs(lw - TARGET_CPU_W) + Math.abs(sh - TARGET_CPU_H);
+                // smaller than target only if nothing at or above it exists
+                if (lw < TARGET_CPU_W) score += 10000;
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = cc;
+                }
+            }
+            if (best != null) {
+                session.setCameraConfig(best);
+                Log.i(TAG, "CPU image config " + best.getImageSize() + " (of " + configs.size() + ")");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "camera config select failed, using ARCore default CPU image", t);
+        }
+    }
+
     private byte[] rotateJpegForDisplay(byte[] jpeg) {
         try {
-            WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
-            int rot = wm != null ? wm.getDefaultDisplay().getRotation() : Surface.ROTATION_0;
-            int deg = 0;
-            if (rot == Surface.ROTATION_0) deg = 90;
-            else if (rot == Surface.ROTATION_90) deg = 0;
-            else if (rot == Surface.ROTATION_180) deg = 270;
-            else if (rot == Surface.ROTATION_270) deg = 180;
+            int deg = displayRotationDeg();
             if (deg == 0) return jpeg;
 
             Bitmap bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length);

@@ -11,12 +11,24 @@ const LIME_HOT = 0xe8f28a;
 const ARROW_N = 8;
 const ARROW_GAP = 0.72;
 const FIRST_GAP = 0.5;
-const ARRIVAL_M = 0.85;
+const ARRIVAL_M = 1.0;
 /** how far past the corner turn glyphs stay visible */
 const TURN_MARK_AFTER_M = 1.2;
 /** corner fillet radius (meters) for smooth path bends */
 const CORNER_RADIUS_M = 1.55;
 const CORNER_SEGS = 16;
+/** destination pin shows once the corridor stop is this close (m) */
+const DEST_MARKER_SHOW_M = 15;
+const DEST_PIN_H = 1.15;
+/** PnP re-alignment: keep this many recent fixes */
+const ALIGN_KEEP = 6;
+/** fixes this far apart (m) start to define rotation from positions, not PnP heading */
+const ALIGN_SPAN_MIN_M = 3;
+/** fix further than this from where the current alignment expects → outlier */
+const ALIGN_OUTLIER_M = 3.5;
+/** destination moves more than this → snap instead of easing */
+const ALIGN_SNAP_M = 2.0;
+const ALIGN_EASE_MS = 900;
 
 function limeMat(emissive = 0.85, color = LIME) {
   return new THREE.MeshStandardMaterial({
@@ -136,6 +148,76 @@ function makeFloorTurn(kind = "left", scale = 1) {
   return g;
 }
 
+/** slot label that always faces the camera */
+function makeLabelSprite(text) {
+  const c = document.createElement("canvas");
+  c.width = 512;
+  c.height = 160;
+  const g = c.getContext("2d");
+  g.beginPath();
+  g.roundRect(10, 10, 492, 140, 60);
+  g.fillStyle = "rgba(18, 22, 10, 0.82)";
+  g.fill();
+  g.lineWidth = 6;
+  g.strokeStyle = "#e8f28a";
+  g.stroke();
+  g.fillStyle = "#e8f28a";
+  g.font = "bold 76px system-ui, sans-serif";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText(text ? "P  " + text : "Your car", 256, 84);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthTest: false, depthWrite: false,
+  }));
+  sprite.scale.set(0.9, 0.28, 1);
+  sprite.renderOrder = 10;
+  return sprite;
+}
+
+/** destination: pulsing floor ring + pole + pin head + slot label + chevron into the bay */
+function makeDestMarker(label) {
+  const g = new THREE.Group();
+  g.visible = false;
+
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(0.55, 48),
+    new THREE.MeshBasicMaterial({ color: LIME_SOFT, transparent: true, opacity: 0.3, depthWrite: false }),
+  );
+  disc.rotation.x = -Math.PI / 2;
+  g.add(disc);
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.55, 0.68, 56),
+    new THREE.MeshBasicMaterial({
+      color: LIME_HOT, transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide,
+    }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.003;
+  g.add(ring);
+
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, DEST_PIN_H, 12), limeMat(0.6));
+  pole.position.y = DEST_PIN_H / 2;
+  g.add(pole);
+
+  const pin = new THREE.Mesh(new THREE.SphereGeometry(0.14, 24, 16), limeMat(1.0, LIME_HOT));
+  pin.position.y = DEST_PIN_H;
+  g.add(pin);
+
+  const text = makeLabelSprite(label);
+  text.position.y = DEST_PIN_H + 0.42;
+  g.add(text);
+
+  const bayArrow = makeFloorChevron(1.15);
+  bayArrow.visible = false;
+  g.add(bayArrow);
+
+  g.userData = { ring, pin, label: text, bayArrow };
+  return g;
+}
+
 function aimOnFloor(obj, dir) {
   const d = dir.clone();
   d.y = 0;
@@ -251,12 +333,62 @@ export function remainingWaypoints(waypoints, userX, userY) {
 }
 
 /**
+ * trim polyline so it ends in the walking corridor beside the bay — no spur into the
+ * bay itself, and no continuing to the next corridor node.
+ */
+function clampPathToDest(waypoints, destXY) {
+  let wps = (waypoints || []).map((w) => [Number(w[0]), Number(w[1])]);
+  if (!destXY || wps.length < 2) return wps;
+  const dx = Number(destXY[0]);
+  const dy = Number(destXY[1]);
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return wps;
+  // route ends with an off-graph hop corridor → bay centre; search the corridor only
+  const tail = wps[wps.length - 1];
+  if (wps.length >= 3 && Math.hypot(tail[0] - dx, tail[1] - dy) < 0.3) {
+    wps = wps.slice(0, -1);
+  }
+
+  let bestD = Infinity;
+  let bestI = 0;
+  let bestT = 0;
+  for (let i = 0; i < wps.length - 1; i++) {
+    const a = wps[i];
+    const b = wps[i + 1];
+    const sx = b[0] - a[0];
+    const sy = b[1] - a[1];
+    const len2 = sx * sx + sy * sy || 1e-12;
+    let t = ((dx - a[0]) * sx + (dy - a[1]) * sy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const px = a[0] + sx * t;
+    const py = a[1] + sy * t;
+    const d = Math.hypot(dx - px, dy - py);
+    if (d < bestD) {
+      bestD = d;
+      bestI = i;
+      bestT = t;
+    }
+  }
+
+  const a = wps[bestI];
+  const b = wps[bestI + 1];
+  const cut = [a[0] + (b[0] - a[0]) * bestT, a[1] + (b[1] - a[1]) * bestT];
+  const out = [...wps.slice(0, bestI + 1)];
+  const last = out[out.length - 1];
+  if (!last || Math.hypot(last[0] - cut[0], last[1] - cut[1]) > 0.05) {
+    out.push(cut);
+  } else {
+    out[out.length - 1] = cut;
+  }
+
+  return out.length >= 2 ? out : wps;
+}
+
+/**
  * map facility polyline into XR xz using PnP pose.
  * - anchor: user (x,y) → XR origin
  * - rotate: facility heading → phone forward at calibrate
  * PnP heading: 0° = +Y, 90° = +X (atan2(dx, dy))
- * opts.destXY: optional bay [x,y] — pull path end back onto the aisle near the bay
- *   (never append bay center; that overshoots ~1 m past the stop point)
+ * destXY: bay coords — clamp path so it stops at this bay (not the next node)
  */
 export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = null, destXY = null) {
   let wps = (waypoints || []).map((w) => [Number(w[0]), Number(w[1])]);
@@ -269,9 +401,10 @@ export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = 
     wps = remainingWaypoints(wps, pose.x, pose.y);
   }
 
-  // bay sits off-corridor — snap end to the closest point on the last segment
-  // toward the slot, then pull back slightly so arrows don't overshoot the stall
-  wps = snapPathEndToBay(wps, destXY);
+  // stop at this bay — walkable graph often continues ~1 m past to the next node
+  if (destXY) {
+    wps = clampPathToDest(wps, destXY);
+  }
 
   const fwd = initialFwd.clone();
   fwd.y = 0;
@@ -301,79 +434,97 @@ export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = 
   const ox = hasPose ? pose.x : wps[0][0];
   const oy = hasPose ? pose.y : wps[0][1];
 
-  return wps.map(([fx, fy]) => {
-    const lx = fx - ox;
-    const ly = fy - oy;
-    const x2 = lx * cos - ly * sin;
-    const y2 = lx * sin + ly * cos;
-    return new THREE.Vector3(origin.x + x2, origin.y, origin.z - y2);
-  });
-}
-
-/** project bay onto corridor; shorten so guidance stops at the stall face (~1 m early) */
-function snapPathEndToBay(wps, destXY, pullBackM = 1.0) {
-  if (!wps || wps.length < 2) return wps;
-  let out = wps.map((w) => [Number(w[0]), Number(w[1])]);
-
-  if (destXY && Number.isFinite(Number(destXY[0])) && Number.isFinite(Number(destXY[1]))) {
-    const bx = Number(destXY[0]);
-    const by = Number(destXY[1]);
-    // nearest point on the whole polyline to the bay
-    let bestD = Infinity;
-    let best = null;
-    let bestI = out.length - 2;
-    for (let i = 0; i < out.length - 1; i++) {
-      const a = out[i];
-      const b = out[i + 1];
-      const dx = b[0] - a[0];
-      const dy = b[1] - a[1];
-      const len2 = dx * dx + dy * dy || 1e-12;
-      let t = ((bx - a[0]) * dx + (by - a[1]) * dy) / len2;
-      t = Math.max(0, Math.min(1, t));
-      const px = a[0] + dx * t;
-      const py = a[1] + dy * t;
-      const d = Math.hypot(bx - px, by - py);
-      if (d < bestD) {
-        bestD = d;
-        best = [px, py];
-        bestI = i;
-      }
-    }
-    if (best) {
-      // keep path up to the projected bay, drop anything past it
-      out = [...out.slice(0, bestI + 1), best];
-    }
-  }
-
-  // always pull end back so arrows don't run past the stall
-  return trimPolylineEnd(out, pullBackM);
-}
-
-function trimPolylineEnd(wps, trimM) {
-  if (!wps || wps.length < 2 || !(trimM > 0)) return wps;
-  let left = trimM;
-  const out = wps.map((w) => [w[0], w[1]]);
-  while (out.length >= 2 && left > 0) {
-    const a = out[out.length - 2];
-    const b = out[out.length - 1];
-    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    if (len <= 1e-4) {
-      out.pop();
-      continue;
-    }
-    if (len > left) {
-      const t = (len - left) / len;
-      out[out.length - 1] = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-      left = 0;
-      break;
-    }
-    left -= len;
-    out.pop();
-  }
-  if (out.length < 2 && wps.length >= 2) {
-    return [wps[0], wps[Math.min(1, wps.length - 1)]];
-  }
+  // facility (fx, fy) → XR plane p = (x, -z):  p = R(rot)·f + t
+  const xf = {
+    rot,
+    tx: origin.x - (ox * cos - oy * sin),
+    ty: -origin.z - (ox * sin + oy * cos),
+  };
+  const out = wps.map(([fx, fy]) => xfApply(xf, fx, fy, origin.y));
+  out.xf = xf;
+  out.facWps = wps; // trimmed + clamped facility polyline — rebuilt on PnP re-alignment
   return out;
+}
+
+/** facility point → XR world (floor height y) */
+function xfApply(xf, fx, fy, y = 0) {
+  const c = Math.cos(xf.rot);
+  const s = Math.sin(xf.rot);
+  const px = fx * c - fy * s + xf.tx;
+  const py = fx * s + fy * c + xf.ty;
+  return new THREE.Vector3(px, y, -py);
+}
+
+/** signed smallest difference a - b (radians) */
+function angDiff(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+}
+
+/**
+ * fit facility→XR rigid transform from PnP fixes {fx, fy, heading°, xr:{x, z, yaw}}.
+ * heading pairs pin rotation early; position spread takes over once fixes are metres apart.
+ * recent fixes weigh more (ARCore drift).
+ */
+function fitXf(fixes, prevRot) {
+  const n = fixes.length;
+  let wSum = 0;
+  let fcx = 0;
+  let fcy = 0;
+  let pcx = 0;
+  let pcy = 0;
+  let hs = 0;
+  let hc = 0;
+  let hN = 0;
+  fixes.forEach((f, i) => {
+    const w = i + 1;
+    wSum += w;
+    fcx += w * f.fx;
+    fcy += w * f.fy;
+    pcx += w * f.xr.x;
+    pcy += w * -f.xr.z;
+    if (f.xr.yaw != null && Number.isFinite(f.heading)) {
+      const th = (f.heading * Math.PI) / 180 - f.xr.yaw;
+      hs += w * Math.sin(th);
+      hc += w * Math.cos(th);
+      hN += 1;
+    }
+  });
+  fcx /= wSum; fcy /= wSum; pcx /= wSum; pcy /= wSum;
+
+  let span = 0;
+  let sCross = 0;
+  let sDot = 0;
+  fixes.forEach((f, i) => {
+    const w = i + 1;
+    const ax = f.fx - fcx;
+    const ay = f.fy - fcy;
+    const bx = f.xr.x - pcx;
+    const by = -f.xr.z - pcy;
+    sCross += w * (ax * by - ay * bx);
+    sDot += w * (ax * bx + ay * by);
+    for (let j = i + 1; j < n; j++) {
+      span = Math.max(span, Math.hypot(f.fx - fixes[j].fx, f.fy - fixes[j].fy));
+    }
+  });
+
+  const posRot = n >= 2 && span >= ALIGN_SPAN_MIN_M ? Math.atan2(sCross, sDot) : null;
+  let rot = prevRot;
+  if (hN > 0) {
+    rot = Math.atan2(hs, hc);
+    if (posRot != null) {
+      const wPos = Math.min(0.8, (span - ALIGN_SPAN_MIN_M) / 12 + 0.2);
+      rot += wPos * angDiff(posRot, rot);
+    }
+  } else if (posRot != null) {
+    rot = posRot;
+  }
+
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  return { rot, tx: pcx - (fcx * c - fcy * s), ty: pcy - (fcx * s + fcy * c), span };
 }
 
 /** public helper: facility polyline → XR path with soft corners */
@@ -676,6 +827,8 @@ export class WebXrNav {
     }
 
     session.addEventListener("end", () => this.onSessionEnd());
+    // ARCore may re-origin the space after a long tracking loss
+    this.refSpace.addEventListener?.("reset", () => this.opts.handlers?.onReset?.());
     this.renderer.setAnimationLoop((t, frame) => this.onFrame(t, frame));
     this.opts.handlers?.onStep?.(0);
     return true;
@@ -788,6 +941,8 @@ export class WebXrNav {
     clearTimeout(pending.timer);
     this.capturePending = null;
     this._capBusy = false;
+    // ARCore pose of the exact frame in this jpeg — pairs with its PnP fix for alignment
+    if (blob) blob.xrPose = pending.xrPose || null;
     if (blob) pending.resolve(blob);
     else pending.reject(new Error("xr camera frame empty"));
   }
@@ -859,6 +1014,7 @@ export class WebXrNav {
 
     const pending = this.capturePending;
     const { maxDim, quality } = pending;
+    pending.xrPose = this.alignPoseOf(pose);
     this._capBusy = true;
     const scale = Math.min(1, maxDim / Math.max(w, h));
     const dw = Math.max(1, Math.round(w * scale));
@@ -880,6 +1036,25 @@ export class WebXrNav {
     ctx.drawImage(srcCanvas, 0, 0, dw, dh);
     canvas.toBlob((blob) => this._finishCapture(blob), "image/jpeg", quality);
     return true;
+  }
+
+  /** camera xz + yaw (same convention as PnP heading: atan2(x, -z)); yaw null when pointing at the floor */
+  alignPoseOf(pose) {
+    const p = pose.transform.position;
+    const o = pose.transform.orientation;
+    const q = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+    const view = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
+    const flat = Math.hypot(view.x, view.z);
+    return {
+      x: p.x,
+      z: p.z,
+      yaw: flat > 0.35 ? Math.atan2(view.x, -view.z) : null,
+    };
+  }
+
+  /** current XR camera position on the floor plane */
+  xrPosition() {
+    return this.calibrated ? { x: this.tmp.x, z: this.tmp.z } : null;
   }
 
   /**
@@ -913,19 +1088,29 @@ export class WebXrNav {
     if (this.floorY != null) origin.y = this.floorY;
 
     const wps = this.opts.waypoints;
+    this.xf = null;
+    this.facWps = null;
+    this.alignFixes = [];
+    this.alignRejects = 0;
+    this.xfEase = null;
+    this.groundY = origin.y;
     if (wps?.length >= 2) {
-      this.path = pathFromWaypoints(
+      const raw = pathFromWaypoints(
         wps,
         origin,
         this.fwd,
         this.opts.facilityPose || null,
         this.opts.destXY || null,
       );
+      this.xf = raw.xf || null;
+      this.facWps = raw.facWps || null;
+      this.path = raw;
     } else {
       this.path = pathFromLegs(this.legs, origin, this.fwd);
     }
     this.path = smoothPolylineXZ(this.path);
     this.pathLen = polyLen(this.path) || this.opts.distanceM || 1;
+    this.placeDestMarker();
     this.calibrated = true;
     this.progressM = 0;
     this.maxProgressM = 0;
@@ -960,10 +1145,13 @@ export class WebXrNav {
 
     const pose = frame.getViewerPose(this.refSpace);
     if (!pose) {
+      // stale arrows would float off the floor — hide until ARCore relocalizes
+      this.scene.visible = false;
       this.opts.handlers?.onTracking?.(false);
       this.renderer.render(this.scene, this.camera);
       return;
     }
+    this.scene.visible = true;
     this.opts.handlers?.onTracking?.(true);
 
     // snag passthrough frame for PnP while elevator / floor detect is active
@@ -1003,6 +1191,7 @@ export class WebXrNav {
       this.calibrate(this.tmp, pose.transform.orientation, hitPos);
     }
 
+    this.stepAlignEase();
     const closest = closestOnPath(this.path, this.tmp.x, this.tmp.z);
     this.progressM = closest.progressM;
     if (this.progressM > this.maxProgressM) this.maxProgressM = this.progressM;
@@ -1011,7 +1200,125 @@ export class WebXrNav {
     this.opts.handlers?.onWalk?.(this.progressM, remain);
     this.bumpSteps(this.maxProgressM);
     this.placeArrows(remain);
+    this.animateDestMarker(remain);
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /** re-project the facility path with the current transform (after PnP re-alignment) */
+  rebuildPath() {
+    if (!this.xf || !this.facWps?.length) return;
+    const y = this.floorY ?? this.groundY ?? 0;
+    this.path = smoothPolylineXZ(this.facWps.map(([fx, fy]) => xfApply(this.xf, fx, fy, y)));
+    this.pathLen = polyLen(this.path) || this.pathLen;
+    this.placeDestMarker();
+  }
+
+  /**
+   * PnP fix taken on an XR camera frame: {fx, fy, heading°} in facility coords + xr:{x, z, yaw}
+   * = ARCore pose of that same frame. Refits facility→XR and moves the path.
+   */
+  addAlignFix(fix) {
+    if (!this.calibrated || !this.xf || !this.facWps) return { accepted: false, why: "not_ready" };
+    const pred = xfApply(this.xf, fix.fx, fix.fy);
+    const residual = Math.hypot(pred.x - fix.xr.x, pred.z - fix.xr.z);
+
+    // a single bad PnP must not yank the path — unless it keeps disagreeing (then the old fixes were wrong)
+    if (this.alignFixes.length >= 2 && residual > ALIGN_OUTLIER_M) {
+      this.alignRejects += 1;
+      if (this.alignRejects < 3) return { accepted: false, why: "outlier", residual };
+      this.alignFixes = [];
+    }
+    this.alignRejects = 0;
+    this.alignFixes.push(fix);
+    if (this.alignFixes.length > ALIGN_KEEP) this.alignFixes.shift();
+
+    const target = fitXf(this.alignFixes, this.xf.rot);
+    const end = this.facWps[this.facWps.length - 1];
+    const a = xfApply(this.xf, end[0], end[1]);
+    const b = xfApply(target, end[0], end[1]);
+    const destShift = Math.hypot(a.x - b.x, a.z - b.z);
+    const rotDeg = (angDiff(target.rot, this.xf.rot) * 180) / Math.PI;
+
+    const first = this.alignFixes.length === 1;
+    if (first || destShift > ALIGN_SNAP_M) {
+      this.xfEase = null;
+      this.xf = { rot: target.rot, tx: target.tx, ty: target.ty };
+      this.rebuildPath();
+    } else if (destShift > 0.05 || Math.abs(rotDeg) > 0.3) {
+      this.xfEase = { from: { ...this.xf }, to: target, t0: performance.now() };
+    }
+    return {
+      accepted: true,
+      residual,
+      destShift,
+      rotDeg,
+      snapped: first || destShift > ALIGN_SNAP_M,
+      fixes: this.alignFixes.length,
+      span: target.span,
+    };
+  }
+
+  stepAlignEase() {
+    const e = this.xfEase;
+    if (!e) return;
+    const k = Math.min(1, (performance.now() - e.t0) / ALIGN_EASE_MS);
+    const s = k * k * (3 - 2 * k);
+    this.xf = {
+      rot: e.from.rot + angDiff(e.to.rot, e.from.rot) * s,
+      tx: e.from.tx + (e.to.tx - e.from.tx) * s,
+      ty: e.from.ty + (e.to.ty - e.from.ty) * s,
+    };
+    this.rebuildPath();
+    if (k >= 1) this.xfEase = null;
+  }
+
+  /** pin at the corridor stop + chevron turning toward the bay */
+  placeDestMarker() {
+    const dest = this.opts.destXY;
+    const bayXr = dest && this.xf ? xfApply(this.xf, Number(dest[0]), Number(dest[1])) : null;
+    if (!this.destMarker) {
+      this.destMarker = makeDestMarker(this.opts.destLabel || "");
+      this.scene.add(this.destMarker);
+    }
+    const m = this.destMarker;
+    if (!this.opts.destXY || !this.path?.length) {
+      m.visible = false;
+      return;
+    }
+    const end = this.path[this.path.length - 1];
+    m.position.set(end.x, (this.floorY ?? end.y) + 0.03, end.z);
+    const { bayArrow } = m.userData;
+    bayArrow.visible = false;
+    if (bayXr) {
+      const toBay = new THREE.Vector3(bayXr.x - end.x, 0, bayXr.z - end.z);
+      if (toBay.length() > 0.6) {
+        toBay.normalize();
+        // just off the pin on the bay side, pointing into the bay
+        bayArrow.position.set(toBay.x * 0.95, 0, toBay.z * 0.95);
+        // lookAt wants a world target — child of the marker group, so resolve world pos first
+        m.updateMatrixWorld(true);
+        const w = bayArrow.getWorldPosition(new THREE.Vector3());
+        // same flip as aimOnFloor: chevron tip faces -lookAt
+        bayArrow.up.set(0, 1, 0);
+        bayArrow.lookAt(w.x - toBay.x, w.y, w.z - toBay.z);
+        bayArrow.visible = true;
+      }
+    }
+  }
+
+  animateDestMarker(remain) {
+    const m = this.destMarker;
+    if (!m || !this.opts.destXY) return;
+    // only near the stop — a pin far away would float through walls/cars
+    m.visible = remain < DEST_MARKER_SHOW_M;
+    if (!m.visible) return;
+    const { ring, pin, label } = m.userData;
+    const p = (Math.sin(this.pulseT * 3.0) + 1) / 2;
+    const bob = Math.sin(this.pulseT * 2.4) * 0.05;
+    ring.scale.setScalar(1 + p * 0.35);
+    ring.material.opacity = 0.75 - p * 0.45;
+    pin.position.y = DEST_PIN_H + bob;
+    label.position.y = DEST_PIN_H + 0.42 + bob;
   }
 
   hideSlot(slot) {
@@ -1054,12 +1361,7 @@ export class WebXrNav {
       }
       const end = pointAt(this.path, this.pathLen);
       const distToEnd = Math.hypot(s.pos.x - end.pos.x, s.pos.z - end.pos.z);
-      if (distToEnd < 0.45 && i > 0) {
-        this.hideSlot(slot);
-        continue;
-      }
-      // stop guiding past the stall face
-      if (remain < along + 0.35) {
+      if (distToEnd < 0.25 && i > 0) {
         this.hideSlot(slot);
         continue;
       }

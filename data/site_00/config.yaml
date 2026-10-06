@@ -1,5 +1,4 @@
 site_id: site_00
-# vertical gap between stacked floors in the 3D viewer (meters)
 stack_m: 6.0
 floors:
 - floor: B1

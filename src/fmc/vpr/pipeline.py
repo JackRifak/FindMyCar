@@ -124,11 +124,16 @@ class VPRPipeline:
         self,
         query_image: np.ndarray,
         prior_floor=None,
+        restrict_floor: bool = False,
     ) -> VPRResult:
+        """restrict_floor: only try prior_floor (floor already confirmed, e.g. by cabin colour)."""
         from fmc.floors import normalize_floor_id
 
         # --- Stage A: floor-partitioned 2D-to-3D PnP ---
-        floors = self._candidate_floors(prior_floor, query_image)
+        if restrict_floor and prior_floor is not None:
+            floors = [normalize_floor_id(prior_floor)]
+        else:
+            floors = self._candidate_floors(prior_floor, query_image)
         for floor in floors:
             idx = self._index_for_floor(floor)
             if idx is None:
@@ -197,10 +202,21 @@ class VPRPipeline:
                     pose_6dof=pose,
                     method="pnp",
                 )
-            logger.info("[VPR] PnP failed (%.1fms) — falling back to image VPR", t_pnp)
+            logger.info("[VPR] PnP failed (%.1fms)", t_pnp)
 
         # --- Stage B: classic image retrieval + geometric verification ---
-        return self._localize_image_vpr(query_image)
+        # disabled for now: image_vpr returns the reference photo's pose (not the camera's),
+        # which is too coarse for AR anchoring/alignment — PnP or nothing.
+        # return self._localize_image_vpr(query_image)
+        logger.info("[VPR] PnP failed — image_vpr fallback disabled, no fix")
+        return VPRResult(
+            matched=False,
+            record=None,
+            similarity=0.0,
+            inlier_ratio=0.0,
+            candidates=[],
+            method="none",
+        )
 
     def _localize_image_vpr(self, query_image: np.ndarray) -> VPRResult:
         t0 = time.perf_counter()

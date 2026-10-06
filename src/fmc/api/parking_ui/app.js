@@ -7,8 +7,20 @@ const RESUME_XR_CLEAR_M = 1.5;
 /** after settle, start XR even if still near the lift (DeviceMotion/dist often stall) */
 const RESUME_XR_FORCE_MS = 3500;
 const RESUME_XR_SETTLE_MS = 1200;
-const XR_TRACK_LOST_MS = 4500; // allow time to point at floor / calibrate before killing XR
-const XR_TRACK_GRACE_MS = 12000; // after session start, ignore tracking-lost handoff
+const XR_TRACK_LOST_MS = 1200; // pose gone this long → hide arrows + "point at the floor" hint
+/** pose gone this long → give up on XR, hand back to camera + PnP */
+const XR_TRACK_DEAD_MS = 4500;
+const XR_TRACK_GRACE_MS = 12000;
+/** consecutive cabin-colour matches before seeding AR at the lift door */
+const CABIN_HITS_NEEDED = 2;
+/** AR re-alignment: PnP on XR frames — only strong fixes move the path */
+/** AR alignment only trusts PnP fixes at or above this confidence */
+const XR_ALIGN_MIN_CONF = 0.5;
+const XR_ALIGN_WARMUP_MS = 2500; // min gap between attempts
+const XR_ALIGN_WALK_M = 4; // after warm-up: re-fix every ~4 m walked…
+const XR_ALIGN_MAX_GAP_MS = 8000; // …or at least this often
+/** use the unsnapped fix as AR origin unless snap moved it further than this (likely a bad fix) */
+const AR_RAW_ANCHOR_MAX_M = 2.5; // after session start, ignore tracking-lost handoff
 /** after this + walk motion, assume user exited lift (camera-nav used VPR; XR often can't) */
 const ELEVATOR_AUTO_MS = 7000;
 const ELEVATOR_WALK_MOTION = 1.6;
@@ -70,6 +82,7 @@ const state = {
   camOwner: "camera", // "camera" | "xr" — exclusive ownership
   walkSinceLand: 0, // motion since landOnFloor (not cleared by PnP fixes)
   landingPose: null, // PnP/VPR lock on Floor B — origin for fresh XR
+  cabinHits: 0, // consecutive lift-lobby colour matches for the landing floor
   awaitingLandingLock: false, // true from lift handoff until PnP on dest floor
   floorOrder: [], // site floor labels, bottom→top when available
   lastCompassSample: null,
@@ -157,6 +170,7 @@ let liftCamRaf = 0;
 let xrLiftWatchTimer = 0;
 let xrHealthTimer = 0;
 let xrTrackLostAt = 0;
+let xrLostHinted = false; // "AR paused" hint shown for the current loss
 let xrSessionStartedAt = 0;
 
 function setStatusChip(text, kind = "warn") {
@@ -318,6 +332,108 @@ function setFloorContinueVisible(on, toFloor = "") {
   ui.turnBanner?.classList.toggle("turn-banner--action", Boolean(on));
 }
 
+/** floor the current/next lift ride lands on */
+function landingFloorId() {
+  const tf = activeRouteLeg()?.floor_transition
+    || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
+  return tf ? normFloor(tf.to_floor) : null;
+}
+
+/**
+ * lift door on `floor` + the direction you walk out of it. The walk leg after a lift
+ * starts at the connector node, so its first ≥0.5 m segment points down the corridor.
+ * heading: 0° = +Y, 90° = +X (same as PnP)
+ */
+function liftDoorPose(floor) {
+  const legs = state.route?.legs || [];
+  const from = Math.max(0, state.activeLegIndex || 0);
+  const leg = legs.slice(from).find((l) => (
+    !l.floor_transition && sameFloor(l.floor, floor) && (l.waypoints?.length || 0) >= 2
+  ));
+  if (!leg) return null;
+  const wps = leg.waypoints;
+  const [x0, y0] = wps[0].map(Number);
+  for (let i = 1; i < wps.length; i += 1) {
+    const dx = Number(wps[i][0]) - x0;
+    const dy = Number(wps[i][1]) - y0;
+    if (Math.hypot(dx, dy) >= 0.5) {
+      const heading = ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
+      return { x: x0, y: y0, heading };
+    }
+  }
+  return null;
+}
+
+/**
+ * lift lobbies have no texture for PnP but each floor's is painted differently.
+ * Colour can't give a pose, so once it confirms the landing floor we start AR at the
+ * known door (±1–1.5 m, ±20°) and let the PnP re-alignment loop fix it in the corridor.
+ * returns true when it seeded the landing.
+ */
+function maybeSeedLandingFromCabin(fix) {
+  if (!(state.inFloorTransition || state.awaitingLandingLock) || state.landingPose) return false;
+  const land = landingFloorId() || (state.awaitingLandingLock ? destFloorId() : null);
+  const seen = fix?.cabin_floor ? normFloor(fix.cabin_floor) : null;
+  if (!land || !seen) {
+    state.cabinHits = 0;
+    return false;
+  }
+  if (!sameFloor(seen, land)) {
+    state.cabinHits = 0;
+    setStatusMsg(`Lobby colour looks like Floor ${seen} — your car is on Floor ${land}`);
+    return false;
+  }
+  state.cabinHits += 1;
+  if (state.cabinHits < CABIN_HITS_NEEDED) {
+    setStatusMsg(`Floor ${land} lobby colour seen — confirming…`);
+    return false;
+  }
+
+  const door = liftDoorPose(land);
+  if (!door) return false;
+  state.landingPose = {
+    x: door.x,
+    y: door.y,
+    heading: door.heading,
+    floor: land,
+    method: "cabin_door",
+    confidence: 0.2,
+  };
+  state.position = {
+    ...state.position,
+    floor: land,
+    x: door.x,
+    y: door.y,
+    rawX: null,
+    rawY: null,
+    heading: door.heading,
+    confidence: 0.2,
+    tracking: true,
+  };
+  state.awaitingLandingLock = false;
+  state.pendingXrResume = true;
+  state.xrResumeReadyAt = performance.now() + RESUME_XR_SETTLE_MS;
+  state.walkSinceLand = 0;
+  state.xrResumeAttempts = 0;
+  if (state.inFloorTransition) exitFloorTransition(land);
+  // keep server-side routing on the new floor until the next real PnP fix
+  void fetch(`/position/${encodeURIComponent(state.deviceId)}/seed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ floor: land, x: door.x, y: door.y, heading: door.heading, reason: "cabin_door" }),
+  }).catch(() => {});
+  void logClientDiagnostic({
+    event: "landing_seed",
+    nav_mode: "camera",
+    reason: `cabin_${land}_score${Number(fix.cabin_score || 0).toFixed(2)}`,
+  });
+  promptStartArAfterLand();
+  setStatusChip(`Floor ${land} · lobby colour`, "live");
+  setStatusMsg(`Floor ${land} confirmed by lobby colour — step out, face the corridor, tap Start AR`);
+  setHint("Step out of the lobby facing the corridor, then tap Start AR", true);
+  return true;
+}
+
 /** Chrome immersive-ar needs a tap — show CTA and free the camera ahead of time */
 function promptStartArAfterLand() {
   if (!state.landingPose) return;
@@ -403,7 +519,7 @@ function startXrLiftWatch() {
     if (!hasFloorChangeAhead()) return;
     if (xrInTrackGrace()) return;
     const lostMs = xrTrackLostAt ? performance.now() - xrTrackLostAt : 0;
-    if (lostMs >= XR_TRACK_LOST_MS) {
+    if (lostMs >= XR_TRACK_DEAD_MS) {
       stopXrLiftWatch();
       void handXrToCamera("dead");
     }
@@ -470,6 +586,22 @@ function routeDestPoint() {
   const wps = state.route?.waypoints;
   if (wps?.length) return wps[wps.length - 1];
   return null;
+}
+
+/**
+ * AR origin = where the phone really is. The snapped pose sits on the walk line, so anchoring
+ * XR there shifts the whole path sideways by the snap distance (bay lands ~1 m off).
+ */
+function arAnchorXY(x, y, rawX, rawY) {
+  const sx = Number(x);
+  const sy = Number(y);
+  const rx = Number(rawX);
+  const ry = Number(rawY);
+  if (rawX == null || rawY == null || !Number.isFinite(rx) || !Number.isFinite(ry)) {
+    return { x: sx, y: sy };
+  }
+  if (Math.hypot(rx - sx, ry - sy) > AR_RAW_ANCHOR_MAX_M) return { x: sx, y: sy };
+  return { x: rx, y: ry };
 }
 
 /** still need lift/stairs before the bay */
@@ -568,6 +700,7 @@ function enterConnectorLeg() {
       state.inFloorTransition = true;
       state.floorTransitionAt = performance.now();
       state.motion.cumulativeMotion = 0;
+      state.cabinHits = 0;
       entered = true;
       break;
     }
@@ -852,7 +985,7 @@ function startXrHealthWatch() {
       return;
     }
     if (xrInTrackGrace()) return;
-    if (xrTrackLostAt && performance.now() - xrTrackLostAt > XR_TRACK_LOST_MS) {
+    if (xrTrackLostAt && performance.now() - xrTrackLostAt > XR_TRACK_DEAD_MS) {
       stopXrHealthWatch();
       void handXrToCamera("dead");
     }
@@ -1032,12 +1165,14 @@ async function handXrToCamera(reason = "lift") {
     if (camOk) restartLiveVprCapture();
 
     if (reason === "dead") {
-      // don't fight XR again on this floor
-      state.xrResumeBlocked = true;
-      state.pendingXrResume = false;
+      // camera + PnP for now; next real lock offers "Tap to start AR" again
+      state.xrResumeBlocked = false;
+      state.landingPose = null;
+      state.pendingXrResume = true;
+      state.xrResumeReadyAt = performance.now() + RESUME_XR_SETTLE_MS;
       setStatusChip("Camera · XR lost", "warn");
-      setStatusMsg("AR lost tracking — camera + PnP until the bay");
-      setHint("Follow the turn banner until AR is available", true);
+      setStatusMsg("AR lost tracking — relocalizing with camera");
+      setHint("Point the camera at pillars or bay numbers to restart AR", true);
     } else {
       // approaching / in lift — wait for PnP on destination floor
       state.awaitingLandingLock = true;
@@ -2366,6 +2501,106 @@ async function encodeXrCameraFrame(maxDimension, jpegQuality) {
   }
 }
 
+/**
+ * While AR runs: PnP on the XR camera's own frames, paired with ARCore's pose of that frame,
+ * re-fits map→AR so heading error at start and ARCore drift don't push the bay off.
+ */
+async function runXrAlignLoop(nav) {
+  let attempts = 0;
+  let lastTryAt = 0;
+  let lastFixAt = 0;
+  let lastFixXr = null;
+  let accepted = 0;
+  while (state.webXrActive && webXrNav === nav) {
+    await new Promise((r) => setTimeout(r, 400));
+    if (!(state.webXrActive && webXrNav === nav)) return;
+    if (!nav.calibrated || state.inFloorTransition || liftHandoffBusy || nav.arrived) continue;
+    const now = performance.now();
+    const here = nav.xrPosition();
+    const walked = here && lastFixXr ? Math.hypot(here.x - lastFixXr.x, here.z - lastFixXr.z) : 0;
+    const due = accepted < 2
+      ? now - lastTryAt >= XR_ALIGN_WARMUP_MS
+      : (walked >= XR_ALIGN_WALK_M || now - lastFixAt >= XR_ALIGN_MAX_GAP_MS)
+        && now - lastTryAt >= XR_ALIGN_WARMUP_MS;
+    if (!due) continue;
+    lastTryAt = now;
+    attempts += 1;
+
+    let blob = null;
+    try {
+      blob = await nav.grabFrameBlob({ maxDim: 1280, quality: 0.8 });
+    } catch (_) {
+      continue; // busy (lift/floor-detect grab) or no camera-access yet
+    }
+    const xr = blob?.xrPose;
+    if (!xr || webXrNav !== nav) continue;
+
+    const legFloor = activeRouteLeg()?.floor ?? state.position.floor;
+    const form = new FormData();
+    form.append("image", blob, "xr-align.jpg");
+    if (legFloor != null && legFloor !== "") form.append("prior_floor", String(legFloor));
+    form.append("capture_trigger", "xr_align");
+    form.append("frame_source", "webxr-camera");
+    form.append("nav_mode", "webxr");
+    let pos = null;
+    try {
+      const res = await fetch(`/localize?device_id=${encodeURIComponent(state.deviceId)}`, {
+        method: "POST",
+        body: form,
+      });
+      if (res.ok) pos = await res.json();
+    } catch (_) { /* offline blip — next round */ }
+    if (!pos?.tracking || webXrNav !== nav) continue;
+
+    const inl = Number(pos.num_inliers) || 0;
+    const conf = Number(pos.confidence) || 0;
+    const isPnp = String(pos.method || "").toLowerCase() === "pnp";
+    let reason = "";
+    if (!isPnp) reason = "not_pnp";
+    else if (conf < XR_ALIGN_MIN_CONF) reason = `lowconf_${conf.toFixed(2)}_${inl}inl`;
+    else if (legFloor != null && !sameFloor(pos.floor, legFloor)) reason = `floor_${pos.floor}`;
+
+    let out = null;
+    if (!reason) {
+      out = nav.addAlignFix({
+        fx: Number(pos.raw_x ?? pos.x),
+        fy: Number(pos.raw_y ?? pos.y),
+        heading: Number(pos.raw_heading ?? pos.heading),
+        xr,
+      });
+      if (!out.accepted) reason = `${out.why}${out.residual != null ? `_${out.residual.toFixed(1)}m` : ""}`;
+    }
+
+    if (out?.accepted) {
+      accepted += 1;
+      lastFixAt = performance.now();
+      lastFixXr = { x: xr.x, z: xr.z };
+      state.position = {
+        ...state.position,
+        floor: pos.floor,
+        x: pos.x,
+        y: pos.y,
+        rawX: pos.raw_x ?? null,
+        rawY: pos.raw_y ?? null,
+        heading: pos.heading,
+        confidence: pos.confidence,
+        tracking: true,
+      };
+      if (ui.metricCoords) ui.metricCoords.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`;
+      if (ui.metricHeading) ui.metricHeading.textContent = `${Math.round(pos.heading)}°`;
+    }
+    void logClientDiagnostic({
+      event: "xr_align",
+      nav_mode: "webxr",
+      reason: out?.accepted
+        ? `ok #${attempts} inl=${inl} res=${out.residual.toFixed(2)}m dest_shift=${out.destShift.toFixed(2)}m `
+          + `rot=${out.rotDeg.toFixed(1)}deg fixes=${out.fixes} span=${out.span.toFixed(1)}m`
+          + (out.snapped ? " snap" : "")
+        : `skip #${attempts} ${reason}`,
+    });
+  }
+}
+
 async function captureVprPosition({ trigger = "manual", applyBlurGuard = false } = {}) {
   const maxDimension = Number(ui.captureMaxDimension.value) || 1280;
   const jpegQuality = Number(ui.captureJpegQuality.value) || 0.8;
@@ -2425,6 +2660,7 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
     form.append("prior_floor", String(priorFloor));
   }
   form.append("capture_trigger", String(trigger));
+  if (state.inFloorTransition || state.awaitingLandingLock) form.append("cabin_check", "1");
   form.append("nav_mode", clientNavMode());
   for (const [key, value] of Object.entries(diagnostics)) form.append(key, String(value));
 
@@ -2480,6 +2716,8 @@ function applyVprFix(pos) {
     floor: pos.floor,
     x: pos.x,
     y: pos.y,
+    rawX: Number.isFinite(pos.raw_x) ? pos.raw_x : null,
+    rawY: Number.isFinite(pos.raw_y) ? pos.raw_y : null,
     heading: pos.heading,
     confidence: pos.confidence,
     tracking: true,
@@ -2553,9 +2791,10 @@ function applyVprFix(pos) {
       || state.pendingXrResume || afterConnector)
   ) {
     const firstLock = !state.landingPose;
+    const anchor = arAnchorXY(pos.x, pos.y, pos.raw_x, pos.raw_y);
     state.landingPose = {
-      x: Number(pos.x),
-      y: Number(pos.y),
+      x: anchor.x,
+      y: anchor.y,
       heading: Number(pos.heading),
       floor: normFloor(pos.floor),
       method: pos.method || null,
@@ -2805,8 +3044,7 @@ async function startWebXrNav(opts = {}) {
     showFloorArrows(false);
   }
   const facilityPose = opts.facilityPose || {
-    x: Number(state.position.x),
-    y: Number(state.position.y),
+    ...arAnchorXY(state.position.x, state.position.y, state.position.rawX, state.position.rawY),
     heading: Number(state.position.heading),
   };
   const remWps = api.remainingWaypoints
@@ -2832,6 +3070,7 @@ async function startWebXrNav(opts = {}) {
     facilityPose,
     // pin bay when this floor's path ends at the slot (not a lift door)
     destXY: (!hasFloorChangeAhead() && onDestFloor()) ? routeDestPoint() : null,
+    destLabel: ui.slotInput?.value?.trim() || "",
     handlers: {
       onStep: (idx) => {
         const along = legs.slice(0, idx).reduce((s, l) => s + l.dist, 0);
@@ -2856,15 +3095,35 @@ async function startWebXrNav(opts = {}) {
       },
       onTracking: (ok) => {
         if (ok) {
+          if (xrLostHinted) {
+            xrLostHinted = false;
+            void logClientDiagnostic({
+              event: "xr_track_back",
+              nav_mode: "webxr",
+              reason: `lost_${Math.round(performance.now() - xrTrackLostAt)}ms`,
+            });
+            setStatusChip("AR nav", "live");
+            setHint("", false);
+          }
           xrTrackLostAt = 0;
           return;
         }
         if (xrInTrackGrace()) return;
         if (!xrTrackLostAt) xrTrackLostAt = performance.now();
         const lost = performance.now() - xrTrackLostAt;
-        if (lost > XR_TRACK_LOST_MS) {
+        if (lost > XR_TRACK_LOST_MS && !xrLostHinted) {
+          // brief loss (dark patch, plain floor, fast turn) — keep the session, wait for ARCore
+          xrLostHinted = true;
+          void logClientDiagnostic({ event: "xr_track_lost", nav_mode: "webxr" });
+          setStatusChip("AR paused", "warn");
+          setHint("AR lost tracking — slowly point the phone at the floor", true);
+        }
+        if (lost > XR_TRACK_DEAD_MS) {
           void handXrToCamera(state.inFloorTransition ? "lift" : "dead");
         }
+      },
+      onReset: () => {
+        void logClientDiagnostic({ event: "xr_space_reset", nav_mode: "webxr" });
       },
       onArrived: () => {
         // end of this floor's AR path — often the elevator, not the bay
@@ -2964,6 +3223,7 @@ async function startWebXrNav(opts = {}) {
   state.camOwner = "xr";
   xrSessionStartedAt = performance.now();
   xrTrackLostAt = 0;
+  xrLostHinted = false;
   ui.arStage.classList.add("webxr-on");
   if (ui.arCanvas) ui.arCanvas.style.display = "block";
   void logClientDiagnostic({
@@ -2971,6 +3231,7 @@ async function startWebXrNav(opts = {}) {
     nav_mode: "webxr",
     reason: opts.fresh ? "fresh_floor" : "start_nav",
   });
+  void runXrAlignLoop(webXrNav);
   setRouteBtnMode("stop");
   setStatusChip(opts.fresh ? "AR · new floor" : "AR nav", "live");
   if (hasFloorChangeAhead()) {
@@ -3066,11 +3327,19 @@ async function runLiveVprCaptureLoop() {
         const fix = capture.position;
           if (state.liveVpr.running) {
         if (!fix.tracking || fix.confidence <= 0) {
-              setStatusMsg(
-                state.inFloorTransition
-                  ? "Looking for Floor lock (PnP)…"
-                  : "VPR miss — continuing with VIO/PDR until next fix",
-              );
+              if (maybeSeedLandingFromCabin(fix)) {
+                // promptStartArAfterLand released the camera — wait for the Start AR tap
+                state.liveVpr.requestInFlight = false;
+                state.liveVpr.running = false;
+                return;
+              }
+              if (!fix.cabin_floor) {
+                setStatusMsg(
+                  state.inFloorTransition
+                    ? "Looking for Floor lock (PnP)…"
+                    : "VPR miss — continuing with VIO/PDR until next fix",
+                );
+              }
         } else {
               const via = localizeMethodLabel(fix.method);
           applyVprFix(fix);

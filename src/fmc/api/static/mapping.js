@@ -477,11 +477,11 @@ function initSensors() {
         }
         currentRot.headingDeg = smoothHeading;
         const q = eulerToQuaternion(smoothHeading, e.beta, e.gamma);
-        currentRot.qw = q.qw;
-        currentRot.qx = q.qx;
-        currentRot.qy = q.qy;
-        currentRot.qz = q.qz;
-        updateHUD();
+            currentRot.qw = q.qw;
+            currentRot.qx = q.qx;
+            currentRot.qy = q.qy;
+            currentRot.qz = q.qz;
+            updateHUD();
     };
 
     window.addEventListener("deviceorientation", onOrientation, true);
@@ -559,7 +559,7 @@ async function loadFloorplanAndTransform() {
         console.error("Network error fetching transform", e);
         logDebug("Transform fetch error: " + e.message, "warn");
     }
-
+    
     try {
         const spRes = await fetch(getApiUrl('/map/survey-spots' + floorQ));
         if (spRes.ok) {
@@ -660,60 +660,371 @@ async function initCamera() {
 
 let keyframeCount = 0;
 
+// ── Lift lobby colour ──────────────────────────────────────────────────────
+// Each floor's lift lobby is painted a different colour but has no texture for PnP.
+// One colour reference per floor lets the parking app confirm the landing floor.
+// Scan mode: live meter of how much painted wall is in view (same HSV mask as the
+// server), shutter enabled once it's enough, 5 samples from different angles.
+const LOBBY_TARGET_SAMPLES = 5;
+const LOBBY_SAT_MIN = 70 / 255; // keep in sync with fmc/vpr/cabin_colour.py SAT_MIN
+const LOBBY_VAL_MIN = 40 / 255;
+const LOBBY_GOOD_FRAC = 0.2; // recommended coverage; server hard minimum comes from /map/cabin-colours
+
+const lobby = {
+    floors: {}, // floor → server summary
+    minFrac: 0.06,
+    scanning: false,
+    busy: false,
+    liveFrac: 0,
+    liveHue: null,
+    meterTimer: null,
+    sampleCanvas: document.createElement('canvas'),
+};
+const lobbyEls = {
+    list: document.getElementById('lobby-floors'),
+    scanBtn: document.getElementById('lobby-scan-btn'),
+    overlay: document.getElementById('lobby-overlay'),
+    floorLabel: document.getElementById('lobby-floor-label'),
+    doneBtn: document.getElementById('lobby-done-btn'),
+    resetBtn: document.getElementById('lobby-reset-btn'),
+    reticle: document.getElementById('lobby-reticle'),
+    guide: document.getElementById('lobby-guide'),
+    liveSwatch: document.getElementById('lobby-live-swatch'),
+    fill: document.getElementById('lobby-meter-fill'),
+    mark: document.getElementById('lobby-meter-mark'),
+    pct: document.getElementById('lobby-meter-pct'),
+    shutter: document.getElementById('lobby-shutter'),
+    dots: document.getElementById('lobby-dots'),
+    flash: document.getElementById('lobby-flash'),
+};
+
+function lobbyHueCss(deg) {
+    return `hsl(${Math.round(deg)}, 72%, 52%)`;
+}
+
+function lobbyBuzz(pattern) {
+    try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (_) { /* no haptics */ }
+}
+
+function lobbyFloorIds() {
+    const ids = mapFloorSelect ? [...mapFloorSelect.options].map((o) => o.value).filter(Boolean) : [];
+    for (const f of Object.keys(lobby.floors)) if (!ids.includes(f)) ids.push(f);
+    return ids;
+}
+
+function lobbyStatus(info) {
+    const n = info?.samples || 0;
+    if (!n) return { cls: 'none', text: 'Not set' };
+    if (info.too_similar) return { cls: 'bad', text: `Like ${info.closest_floor}` };
+    if (n < 3) return { cls: 'some', text: `${n}/${LOBBY_TARGET_SAMPLES}` };
+    return { cls: 'ok', text: n >= LOBBY_TARGET_SAMPLES ? 'Ready' : `Ready · ${n}` };
+}
+
+function renderLobbyFloors() {
+    if (!lobbyEls.list) return;
+    const active = selectedMapFloor();
+    lobbyEls.list.innerHTML = '';
+    for (const f of lobbyFloorIds()) {
+        const info = lobby.floors[f];
+        const st = lobbyStatus(info);
+        const row = document.createElement('div');
+        row.className = 'lobby-floor' + (f === active ? ' is-active' : '');
+        const sw = document.createElement('span');
+        sw.className = 'lobby-swatch';
+        if (info?.samples) sw.style.background = lobbyHueCss(info.dominant_hue_deg);
+        const name = document.createElement('span');
+        name.className = 'lobby-floor__name';
+        name.textContent = f;
+        const meta = document.createElement('span');
+        meta.className = 'lobby-floor__meta';
+        meta.textContent = !info?.samples
+            ? (f === active ? 'Scan this floor’s lobby walls' : '—')
+            : info.too_similar
+                ? `Too close to ${info.closest_floor} — rescan both`
+                : `${info.samples} sample${info.samples === 1 ? '' : 's'} · ${Math.round(info.colour_frac * 100)}% coloured`;
+        const pill = document.createElement('span');
+        pill.className = `lobby-pill lobby-pill--${st.cls}`;
+        pill.textContent = st.text;
+        row.append(sw, name, meta, pill);
+        lobbyEls.list.appendChild(row);
+    }
+    const cur = lobby.floors[active];
+    const summary = document.getElementById('lobby-summary');
+    if (summary) {
+        const ids = lobbyFloorIds();
+        const ready = ids.filter((f) => (lobby.floors[f]?.samples || 0) >= 3 && !lobby.floors[f]?.too_similar).length;
+        summary.textContent = ids.length ? `${ready}/${ids.length} floors ready` : 'tap to expand';
+    }
+    if (lobbyEls.scanBtn) {
+        lobbyEls.scanBtn.textContent = active
+            ? (cur?.samples ? `Add samples · Floor ${active}` : `Scan lobby colour · Floor ${active}`)
+            : 'Pick a floor first';
+        lobbyEls.scanBtn.disabled = !active;
+    }
+}
+
+async function loadLobbyColours() {
+    try {
+        const res = await fetch(getApiUrl('/map/cabin-colours'));
+        if (!res.ok) return;
+        const data = await res.json();
+        lobby.floors = data.floors || {};
+        if (Number.isFinite(data.min_colour_frac)) lobby.minFrac = data.min_colour_frac;
+    } catch (_) { /* offline — keep last */ }
+    renderLobbyFloors();
+    renderLobbyDots();
+}
+
+function renderLobbyDots() {
+    if (!lobbyEls.dots) return;
+    const n = lobby.floors[selectedMapFloor()]?.samples || 0;
+    lobbyEls.dots.innerHTML = '';
+    for (let i = 0; i < LOBBY_TARGET_SAMPLES; i++) {
+        const d = document.createElement('span');
+        d.className = 'lobby-dot' + (i < n ? ' is-on' : '');
+        lobbyEls.dots.appendChild(d);
+    }
+}
+
+/** whichever preview is on screen: ARCore jpeg <img> or getUserMedia <video> */
+function lobbyPreviewSource() {
+    if (arPreview && arPreview.style.display !== 'none' && arPreview.naturalWidth > 0) {
+        return { el: arPreview, w: arPreview.naturalWidth, h: arPreview.naturalHeight };
+    }
+    if (video && video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+        return { el: video, w: video.videoWidth, h: video.videoHeight };
+    }
+    return null;
+}
+
+/** share of saturated, lit pixels + their dominant hue — mirrors the server signature */
+function sampleLobbyColour() {
+    const src = lobbyPreviewSource();
+    if (!src) return null;
+    const c = lobby.sampleCanvas;
+    const scale = 96 / Math.max(src.w, src.h);
+    c.width = Math.max(8, Math.round(src.w * scale));
+    c.height = Math.max(8, Math.round(src.h * scale));
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    try {
+        ctx.drawImage(src.el, 0, 0, c.width, c.height);
+    } catch (_) {
+        return null;
+    }
+    const px = ctx.getImageData(0, 0, c.width, c.height).data;
+    const bins = new Float64Array(36);
+    let coloured = 0;
+    const total = px.length / 4;
+    for (let i = 0; i < px.length; i += 4) {
+        const r = px[i] / 255, g = px[i + 1] / 255, b = px[i + 2] / 255;
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        const s = max === 0 ? 0 : (max - min) / max;
+        if (s < LOBBY_SAT_MIN || max < LOBBY_VAL_MIN) continue;
+        coloured++;
+        const d = max - min;
+        let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+        h = (h * 60 + 360) % 360;
+        bins[Math.min(35, Math.floor(h / 10))] += s;
+    }
+    let best = 0;
+    for (let i = 1; i < 36; i++) if (bins[i] > bins[best]) best = i;
+    return { frac: coloured / total, hue: coloured ? best * 10 + 5 : null };
+}
+
+function updateLobbyMeter() {
+    const s = sampleLobbyColour();
+    const frac = s ? s.frac : 0;
+    lobby.liveFrac = frac;
+    lobby.liveHue = s?.hue ?? null;
+    const minFrac = lobby.minFrac;
+    const pct = Math.round(frac * 100);
+    // meter is scaled to 50% coverage = full bar
+    const barPct = Math.min(100, (frac / 0.5) * 100);
+    lobbyEls.fill.style.width = `${barPct}%`;
+    lobbyEls.mark.style.left = `${Math.min(100, (LOBBY_GOOD_FRAC / 0.5) * 100)}%`;
+    lobbyEls.pct.textContent = `${pct}%`;
+    lobbyEls.liveSwatch.style.background = lobby.liveHue != null
+        ? lobbyHueCss(lobby.liveHue)
+        : '';
+
+    const good = frac >= LOBBY_GOOD_FRAC;
+    const usable = frac >= minFrac;
+    lobbyEls.fill.style.background = good ? 'var(--ok)' : usable ? 'var(--warn)' : 'var(--danger)';
+    lobbyEls.reticle.classList.toggle('is-good', good);
+    if (!lobby.busy) {
+        lobbyEls.shutter.disabled = !usable;
+        lobbyEls.guide.textContent = !s
+            ? 'Waiting for camera…'
+            : !usable
+                ? 'Too grey — point at the painted walls'
+                : !good
+                    ? 'OK — fill more of the frame with the wall colour'
+                    : 'Great — tap to capture';
+    }
+}
+
+function openLobbyScan() {
+    const floor = selectedMapFloor();
+    if (!floor) {
+        statusEl.innerText = 'Pick the map floor first.';
+        return;
+    }
+    if (!lobbyPreviewSource()) {
+        statusEl.innerText = 'Camera not ready yet — wait for the preview, then try again.';
+        return;
+    }
+    lobby.scanning = true;
+    lobbyEls.floorLabel.textContent = floor;
+    lobbyEls.overlay.classList.remove('hidden');
+    lobbyEls.overlay.parentElement?.classList.add('is-lobby-scan');
+    renderLobbyDots();
+    updateLobbyMeter();
+    lobby.meterTimer = setInterval(updateLobbyMeter, 250);
+}
+
+function closeLobbyScan() {
+    lobby.scanning = false;
+    lobbyEls.overlay.classList.add('hidden');
+    lobbyEls.overlay.parentElement?.classList.remove('is-lobby-scan');
+    if (lobby.meterTimer) clearInterval(lobby.meterTimer);
+    lobby.meterTimer = null;
+    renderLobbyFloors();
+}
+
+async function captureLobbySample() {
+    if (lobby.busy) return;
+    const floor = selectedMapFloor();
+    let blob = null;
+    lobby.busy = true;
+    lobbyEls.shutter.disabled = true;
+    lobbyEls.shutter.classList.add('is-busy');
+    lobbyEls.guide.textContent = 'Saving…';
+    try {
+        blob = arVioActive ? await grabArJpegBlob() : await blobFromVideoFrame();
+        if (!blob) throw new Error('no camera frame');
+        lobbyEls.flash.classList.remove('is-on');
+        void lobbyEls.flash.offsetWidth; // restart the flash animation
+        lobbyEls.flash.classList.add('is-on');
+
+        const form = new FormData();
+        form.append('floor', floor);
+        form.append('image', blob, 'cabin.jpg');
+        const res = await fetch(getApiUrl('/map/cabin-colour'), { method: 'POST', body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+
+        lobbyBuzz(30);
+        await loadLobbyColours();
+        const info = lobby.floors[floor] || {};
+        const n = info.samples || data.samples;
+        if (info.too_similar) {
+            lobbyEls.guide.textContent = `Saved ${n} — but it looks like Floor ${info.closest_floor}. Try other walls`;
+            lobbyBuzz([40, 60, 40]);
+        } else if (n >= LOBBY_TARGET_SAMPLES) {
+            lobbyEls.guide.textContent = `Floor ${floor} done ✓ — tap Done`;
+        } else {
+            lobbyEls.guide.textContent = `Saved ${n}/${LOBBY_TARGET_SAMPLES} — move a few steps, new angle`;
+        }
+        logDebug(
+            `Lobby colour floor ${data.floor} #${data.samples} hue ${data.dominant_hue_deg}° `
+            + `coloured ${Math.round(data.colour_frac * 100)}%`,
+            info.too_similar ? 'warn' : 'success',
+        );
+    } catch (err) {
+        lobbyBuzz([60, 50, 60]);
+        lobbyEls.guide.textContent = `Not saved: ${err.message}`;
+        logDebug(`Lobby colour capture failed (floor ${floor}): ${err.message}`, 'warn');
+    } finally {
+        lobbyEls.shutter.classList.remove('is-busy');
+        // keep the result message readable before the live guide takes over again
+        setTimeout(() => { lobby.busy = false; }, 1400);
+    }
+}
+
+async function resetLobbyFloor() {
+    const floor = selectedMapFloor();
+    if (!floor || !lobby.floors[floor]?.samples) return;
+    if (!confirm(`Delete the lobby colour for Floor ${floor}?`)) return;
+    try {
+        await fetch(getApiUrl(`/map/cabin-colour/${encodeURIComponent(floor)}`), { method: 'DELETE' });
+        logDebug(`Lobby colour reset for floor ${floor}`, 'warn');
+    } catch (err) {
+        logDebug(`Lobby colour reset failed: ${err.message}`, 'error');
+    }
+    await loadLobbyColours();
+}
+
+if (lobbyEls.scanBtn) {
+    lobbyEls.scanBtn.addEventListener('click', openLobbyScan);
+    lobbyEls.doneBtn.addEventListener('click', closeLobbyScan);
+    lobbyEls.shutter.addEventListener('click', captureLobbySample);
+    lobbyEls.resetBtn.addEventListener('click', resetLobbyFloor);
+    if (mapFloorSelect) {
+        mapFloorSelect.addEventListener('change', () => {
+            if (lobby.scanning) closeLobbyScan();
+            renderLobbyFloors();
+            renderLobbyDots();
+        });
+        // floor list is filled async by loadMapFloors()
+        new MutationObserver(renderLobbyFloors).observe(mapFloorSelect, { childList: true });
+    }
+    loadLobbyColours();
+}
+
 async function blobFromVideoFrame() {
     if (!(video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0)) return null;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
 }
 
 async function uploadKeyframeBlob(blob) {
     if (!blob) return;
 
-    keyframeCount++;
+            keyframeCount++;
     advancePdr();
 
-    const formData = new FormData();
-    formData.append("device_id", deviceId);
-    formData.append("timestamp", Date.now() / 1000.0);
-    formData.append("vio_x", currentPos.x);
-    formData.append("vio_y", currentPos.y);
-    formData.append("vio_z", currentPos.z);
-    formData.append("vio_qw", currentRot.qw);
-    formData.append("vio_qx", currentRot.qx);
-    formData.append("vio_qy", currentRot.qy);
-    formData.append("vio_qz", currentRot.qz);
+            const formData = new FormData();
+            formData.append("device_id", deviceId);
+            formData.append("timestamp", Date.now() / 1000.0);
+            formData.append("vio_x", currentPos.x);
+            formData.append("vio_y", currentPos.y);
+            formData.append("vio_z", currentPos.z);
+            formData.append("vio_qw", currentRot.qw);
+            formData.append("vio_qx", currentRot.qx);
+            formData.append("vio_qy", currentRot.qy);
+            formData.append("vio_qz", currentRot.qz);
     formData.append("heading_deg", currentRot.headingDeg || 0);
-    formData.append("image", blob, "frame.jpg");
+            formData.append("image", blob, "frame.jpg");
 
-    try {
+            try {
         logDebug(`[Upload] Sending Keyframe #${keyframeCount} (${(blob.size/1024).toFixed(0)} KB) at (${currentPos.x.toFixed(1)}, ${currentPos.z.toFixed(1)}m) via ${poseSource}...`);
-        const res = await fetch(getApiUrl("/map/keyframe"), { method: "POST", body: formData });
-        const data = await res.json();
+                const res = await fetch(getApiUrl("/map/keyframe"), { method: "POST", body: formData });
+                const data = await res.json();
+                
+                if (data.detected_features || data.tracked_features) {
+                    activeFeatures = {
+                        detected: data.detected_features || [],
+                        tracked: data.tracked_features || [],
+                        timestamp: performance.now(),
+                        imageWidth: data.image_width || 1280,
+                        imageHeight: data.image_height || 720
+                    };
+                    if (featuresBadge && showFeaturesOverlay) {
+                        featuresBadge.innerText = `${activeFeatures.tracked.length} tracked | ${activeFeatures.detected.length} detected`;
+                        featuresBadge.style.display = 'inline-block';
+                    }
+                }
 
-        if (data.detected_features || data.tracked_features) {
-            activeFeatures = {
-                detected: data.detected_features || [],
-                tracked: data.tracked_features || [],
-                timestamp: performance.now(),
-                imageWidth: data.image_width || 1280,
-                imageHeight: data.image_height || 720
-            };
-            if (featuresBadge && showFeaturesOverlay) {
-                featuresBadge.innerText = `${activeFeatures.tracked.length} tracked | ${activeFeatures.detected.length} detected`;
-                featuresBadge.style.display = 'inline-block';
-            }
-        }
-
-        const level = data.new_landmarks > 0 ? "success" : "info";
-        logDebug(`[Server] Frame #${keyframeCount} (ID: ${data.frame_id}): +${data.new_landmarks} 3D points (${data.tracked_features ? data.tracked_features.length : 0} inliers) | Map Total: ${data.total_landmarks} points across ${data.total_keyframes} frames`, level);
-        statusEl.innerText = `Keyframe #${keyframeCount} | +${data.new_landmarks} 3D pts | Total Map: ${data.total_landmarks} landmarks`;
+                const level = data.new_landmarks > 0 ? "success" : "info";
+                logDebug(`[Server] Frame #${keyframeCount} (ID: ${data.frame_id}): +${data.new_landmarks} 3D points (${data.tracked_features ? data.tracked_features.length : 0} inliers) | Map Total: ${data.total_landmarks} points across ${data.total_keyframes} frames`, level);
+                statusEl.innerText = `Keyframe #${keyframeCount} | +${data.new_landmarks} 3D pts | Total Map: ${data.total_landmarks} landmarks`;
         refreshSessionStrip();
-    } catch (err) {
-        console.error(err);
-        statusEl.innerText = "Upload failed: " + err.message;
-        logDebug(`[Error] Frame #${keyframeCount} upload failed: ${err.message}`, "error");
+            } catch (err) {
+                console.error(err);
+                statusEl.innerText = "Upload failed: " + err.message;
+                logDebug(`[Error] Frame #${keyframeCount} upload failed: ${err.message}`, "error");
     }
 }
 
@@ -725,7 +1036,7 @@ async function captureAndSendFrame() {
     try {
         if (arVioActive && window.ArVio) {
             blob = await grabArJpegBlob();
-        } else {
+    } else {
             blob = await blobFromVideoFrame();
         }
     } catch (err) {
@@ -772,7 +1083,7 @@ async function beginWalk(mode) {
             logDebug("Clear map failed: " + err.message, "warn");
         }
         currentPos = { x: 0.0, y: 0.0, z: 0.0 };
-        keyframeCount = 0;
+    keyframeCount = 0;
         placedTags = [];
         smoothHeading = null;
         sessionActive = true;
@@ -1307,8 +1618,8 @@ async function loadAndRender3DLandmarks(center, scale, floorY) {
             // Local PLY:   (mx, h, mz) → rotateX → (mx, mz, -h)
             let rotatedX, rotatedZ, labelXY;
             if (aligned || lm.type === 'facility_landmark') {
-                const rawX = lm.facility_x !== undefined ? lm.facility_x : lm.x;
-                const rawY = lm.facility_y !== undefined ? lm.facility_y : lm.y;
+            const rawX = lm.facility_x !== undefined ? lm.facility_x : lm.x;
+            const rawY = lm.facility_y !== undefined ? lm.facility_y : lm.y;
                 rotatedX = rawX;
                 rotatedZ = -rawY;
                 labelXY = `${fl} (${rawX.toFixed(1)}, ${rawY.toFixed(1)})`;
@@ -2103,7 +2414,7 @@ function loadPLYLegacy() {
     loader.load(getApiUrl('/map/pointcloud?v=' + Date.now()), function (geometry) {
         try {
             clearCloudScene();
-
+            
             const count = geometry.attributes.position.count;
             if (count === 0) {
                 if (viewerStats) viewerStats.innerText = "Point cloud is empty (0 points).";

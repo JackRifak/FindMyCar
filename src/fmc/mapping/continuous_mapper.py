@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from fmc.vio.tracker import SixDofPose
+from fmc.vpr.camera_intrinsics import Intrinsics, camera_matrix
 
 logger = logging.getLogger("fmc.mapping")
 
@@ -52,6 +53,8 @@ class Keyframe:
     R_wc: Optional[np.ndarray] = None
     session_id: int = 0
     floor: str = "1"
+    # 3x3 pinhole K for this image (real intrinsics when the client sent them)
+    K: Optional[np.ndarray] = None
     # local keypoint index -> global landmark id
     landmark_ids: Dict[int, int] = field(default_factory=dict) 
 
@@ -249,6 +252,7 @@ class ContinuousMapper:
         timestamp: float,
         vio_pose: SixDofPose,
         heading_deg: Optional[float] = None,
+        intrinsics: Optional[Intrinsics] = None,
     ) -> int:
         """Process a new incoming frame from the client."""
         # 1. Extract Features
@@ -283,6 +287,7 @@ class ContinuousMapper:
             R_wc=R_wc,
             session_id=self._session_id,
             floor=str(getattr(self, "_map_floor", "1")),
+            K=camera_matrix(image.shape[1], image.shape[0], intrinsics),
             landmark_ids={}
         )
         
@@ -291,7 +296,8 @@ class ContinuousMapper:
             f"extracted {len(kpts_cv)} ORB features | "
             f"VIO: ({vio_pose.x:.2f}, {vio_pose.y:.2f}, {vio_pose.z:.2f}) "
             f"Q: [{vio_pose.qw:.2f}, {vio_pose.qx:.2f}, {vio_pose.qy:.2f}, {vio_pose.qz:.2f}] "
-            f"6dof={self._pose_has_6dof(vio_pose)}"
+            f"6dof={self._pose_has_6dof(vio_pose)} "
+            f"K={'real' if intrinsics else 'guess'}(f={frame.K[0, 0]:.0f})"
         )
         
         # 2. Match only within the same session (separated walks must not link)
@@ -398,9 +404,8 @@ class ContinuousMapper:
             return 0
 
         h, w = (curr_image.shape[:2]) if curr_image is not None else (480, 640)
-        f = max(w, h) * 0.85
-        cx, cy = w / 2.0, h / 2.0
-        K = np.array([[f, 0.0, cx], [0.0, f, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+        K = curr_frame.K if curr_frame.K is not None else camera_matrix(w, h)
+        K_prev = prev_frame.K if prev_frame.K is not None else K
 
         pts_prev = []
         pts_curr = []
@@ -412,6 +417,11 @@ class ContinuousMapper:
             
         pts_prev_np = np.array(pts_prev, dtype=np.float64)
         pts_curr_np = np.array(pts_curr, dtype=np.float64)
+        if not np.allclose(K_prev, K):
+            # different camera config/size between frames — re-project prev pixels into curr K
+            ones = np.ones((len(pts_prev_np), 1))
+            rays = (np.linalg.inv(K_prev) @ np.hstack((pts_prev_np, ones)).T).T
+            pts_prev_np = (K @ rays.T).T[:, :2]
 
         # 1. Recover relative camera pose (R, t) via Essential Matrix with RANSAC
         E, inlier_mask = cv2.findEssentialMat(
