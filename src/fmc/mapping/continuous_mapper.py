@@ -140,7 +140,8 @@ class ContinuousMapper:
         npz_path = index_dir / "map_landmarks.npz"
         if positions is None and npz_path.exists():
             try:
-                data = np.load(npz_path, allow_pickle=False)
+                # own export; floor labels are an object array → needs allow_pickle
+                data = np.load(npz_path, allow_pickle=True)
                 positions = data["positions"]
                 descriptors = data["descriptors"]
                 ids = data["ids"]
@@ -150,7 +151,7 @@ class ContinuousMapper:
                     aligned_disk = bool(np.asarray(data["aligned"]).reshape(-1)[0])
                 else:
                     aligned_disk = True
-            except OSError as e:
+            except (OSError, ValueError, KeyError) as e:
                 logger.warning("[Mapper] NPZ hydrate failed: %s", e)
 
         if positions is not None and len(positions) > 0:
@@ -741,6 +742,37 @@ class ContinuousMapper:
         )
         return True
 
+    def _reattach_orphan_tags(self, max_gap_s: float = 300.0) -> None:
+        """A tag whose session has no keyframes can't anchor anything (e.g. dropped right
+        after a restart, before the first keyframe opened the walk's session). Move it to
+        the unaligned session of the keyframe nearest in time."""
+        kf_sessions = {kf.session_id for kf in self.keyframes}
+        for tag in self.user_tags:
+            if tag.session_id in kf_sessions or tag.session_id in self._aligned_sessions:
+                continue
+            cands = [
+                kf for kf in self.keyframes
+                if kf.session_id not in self._aligned_sessions and kf.session_id != COMMITTED_SESSION
+            ]
+            if not cands:
+                continue
+            near = min(cands, key=lambda kf: abs(kf.timestamp - tag.timestamp))
+            if abs(near.timestamp - tag.timestamp) <= max_gap_s:
+                logger.info(
+                    "[Mapper] Tag at (%.1f, %.1f) moved from empty session %s to session %s "
+                    "(nearest keyframe %.0fs away)",
+                    tag.facility_x, tag.facility_y, tag.session_id, near.session_id,
+                    abs(near.timestamp - tag.timestamp),
+                )
+                tag.session_id = near.session_id
+
+    def _unaligned_landmark_ids(self) -> set:
+        """Landmarks of walks that were never aligned: still raw ARCore coordinates."""
+        if not self._aligned_sessions:
+            return set()  # nothing aligned at all → whole map is local VIO frame (legacy)
+        ok = set(self._aligned_sessions) | {COMMITTED_SESSION}
+        return {lid for lid, lm in self.landmarks.items() if lm.session_id not in ok}
+
     def finalize_map(self, output_ply_path: Optional[str] = None, site=None) -> Tuple[int, int]:
         """Align each unaligned session (2+ tags) into facility coordinates."""
         if site is not None:
@@ -757,6 +789,7 @@ class ContinuousMapper:
             logger.warning("[Mapper] No keyframes or landmarks — cannot finalize.")
             return 0, 0
 
+        self._reattach_orphan_tags()
         pending = sorted(
             {t.session_id for t in self.user_tags} - self._aligned_sessions - {COMMITTED_SESSION}
         )
@@ -897,9 +930,11 @@ class ContinuousMapper:
 
     def _export_to_ply(self, filepath: str) -> None:
         """Export the 3D landmarks to a standard Polygon File Format (.ply) point cloud with RGB color."""
+        skip_ids = self._unaligned_landmark_ids()  # raw-ARCore walks don't belong in the map
         valid_landmarks = [
             lm for lm in self.landmarks.values()
-            if not np.any(np.isnan(lm.position)) and not np.any(np.isinf(lm.position))
+            if lm.landmark_id not in skip_ids
+            and not np.any(np.isnan(lm.position)) and not np.any(np.isinf(lm.position))
         ]
         
         if not valid_landmarks:
@@ -934,9 +969,17 @@ class ContinuousMapper:
         if site is not None:
             self.hydrate_from_disk(site)
 
+        # unaligned walks are raw ARCore coords — never export them as map points
+        # (kept in memory: a later finalize with 2+ tags can still align them)
+        skip_ids = self._unaligned_landmark_ids()
+        if skip_ids:
+            logger.warning(
+                "[Mapper] Not exporting %s landmarks from unaligned session(s) — drop 2+ tags "
+                "in that walk and Finalize again", len(skip_ids),
+            )
         by_id: Dict[int, Landmark3D] = {}
         for lm in self.landmarks.values():
-            if lm.descriptor is None:
+            if lm.descriptor is None or lm.landmark_id in skip_ids:
                 continue
             if np.any(np.isnan(lm.position)) or np.any(np.isinf(lm.position)):
                 continue
@@ -955,7 +998,7 @@ class ContinuousMapper:
                 pos, desc, lids, fls = loaded
                 for i in range(len(lids)):
                     lid = int(lids[i])
-                    if lid in by_id:
+                    if lid in by_id or lid in skip_ids:
                         continue
                     by_id[lid] = Landmark3D(
                         landmark_id=lid,
@@ -983,7 +1026,7 @@ class ContinuousMapper:
                 fl_labels = coerce_floor_array(fls, n=len(lids)) if fls is not None else ["1"] * len(lids)
                 for i in range(len(lids)):
                     lid = int(lids[i])
-                    if lid in by_id:
+                    if lid in by_id or lid in skip_ids:
                         continue
                     col = tuple(int(c) for c in cols[i][:3]) if cols is not None else (52, 199, 89)
                     lm = Landmark3D(

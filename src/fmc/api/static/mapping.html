@@ -374,15 +374,33 @@
         }
         #viewer-modal { z-index: 200; background: #0a0c10; }
         #map-modal { background: rgba(0,0,0,0.94); }
-        #map-container { flex: 1; overflow: auto; position: relative; }
-        #floorplan-canvas { cursor: crosshair; display: block; }
+        /* fit-to-screen map with pinch/drag; stage holds the plan at native pixels and is
+           CSS-transformed (translate + scale) by mapping.js */
+        #map-container { flex: 1; overflow: hidden; position: relative; touch-action: none; cursor: crosshair; }
+        #map-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+        #floorplan-canvas { display: block; }
+        .map-zoom {
+            position: absolute; top: 12px; right: 12px; z-index: 2;
+            display: flex; flex-direction: column; gap: 6px;
+        }
+        .map-zoom button {
+            width: 44px; height: 44px; border-radius: 10px; border: 1px solid var(--line);
+            background: rgba(22, 27, 34, 0.92); color: var(--text); font: 600 20px "IBM Plex Sans", sans-serif;
+        }
+        .map-zoom button#map-zoom-fit { font-size: 13px; }
+        #map-hint {
+            position: absolute; left: 12px; right: 68px; bottom: 10px; z-index: 2;
+            font-size: 12px; color: var(--muted); background: rgba(14, 17, 22, 0.8);
+            padding: 6px 10px; border-radius: 8px; pointer-events: none;
+        }
         #map-marker {
+            /* inside #map-stage: left/top in plan pixels; --inv keeps it a fixed screen size */
             position: absolute;
-            width: 14px;
-            height: 14px;
+            width: 18px;
+            height: 18px;
             background: var(--danger);
             border-radius: 50%;
-            transform: translate(-50%, -50%);
+            transform: translate(-50%, -50%) scale(var(--inv, 1));
             display: none;
             pointer-events: none;
             border: 2px solid #fff;
@@ -760,8 +778,16 @@
     <!-- Map picker -->
     <div id="map-modal">
         <div id="map-container">
-            <canvas id="floorplan-canvas"></canvas>
-            <div id="map-marker"></div>
+            <div id="map-stage">
+                <canvas id="floorplan-canvas"></canvas>
+                <div id="map-marker"></div>
+            </div>
+            <div class="map-zoom">
+                <button type="button" id="map-zoom-in" aria-label="Zoom in">+</button>
+                <button type="button" id="map-zoom-out" aria-label="Zoom out">−</button>
+                <button type="button" id="map-zoom-fit" aria-label="Fit floor plan">Fit</button>
+            </div>
+            <div id="map-hint">Pinch to zoom · drag to move · tap to place the tag. Tap near P5–P8 to snap onto it.</div>
         </div>
         <div class="modal-controls">
             <button id="btn-cancel-tag" class="btn-danger">Cancel</button>

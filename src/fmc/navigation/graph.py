@@ -110,9 +110,76 @@ class LayeredGraph:
         return self._registry.resolve(floor, x, y)
 
 
+def split_at_junctions(segments: list[dict], tolerance: float = NODE_SNAP_TOLERANCE_M) -> list[dict]:
+    """Split segments wherever another segment meets them mid-span.
+
+    The graph only joins segments at shared endpoints, so a corridor drawn to end
+    against the middle of another (T-junction) or crossing it (X-junction) would be
+    an island. Cut the through-segment there so both share a node.
+    """
+    segs = [
+        (float(s["x1"]), float(s["y1"]), float(s["x2"]), float(s["y2"]))
+        for s in (segments or [])
+    ]
+    cuts: list[list[float]] = [[] for _ in segs]
+
+    def _interior_t(seg, px, py):
+        x1, y1, x2, y2 = seg
+        dx, dy = x2 - x1, y2 - y1
+        length2 = dx * dx + dy * dy
+        if length2 < 1e-12:
+            return None
+        t = ((px - x1) * dx + (py - y1) * dy) / length2
+        length = math.sqrt(length2)
+        # strictly inside (not within tolerance of either end) and close to the line
+        if t * length <= tolerance or (1 - t) * length <= tolerance:
+            return None
+        if math.hypot(px - (x1 + t * dx), py - (y1 + t * dy)) > tolerance:
+            return None
+        return t
+
+    for i, si in enumerate(segs):
+        for j, sj in enumerate(segs):
+            if i == j:
+                continue
+            # T-junction: an endpoint of j lies on the interior of i
+            for px, py in ((sj[0], sj[1]), (sj[2], sj[3])):
+                t = _interior_t(si, px, py)
+                if t is not None:
+                    cuts[i].append(t)
+            # X-junction: proper crossing of the two interiors
+            if j > i:
+                x1, y1, x2, y2 = si
+                x3, y3, x4, y4 = sj
+                den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+                if abs(den) < 1e-12:
+                    continue
+                ti = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+                tj = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den
+                if 0.0 < ti < 1.0 and 0.0 < tj < 1.0:
+                    px, py = x1 + ti * (x2 - x1), y1 + ti * (y2 - y1)
+                    for k, seg in ((i, si), (j, sj)):
+                        t = _interior_t(seg, px, py)
+                        if t is not None:
+                            cuts[k].append(t)
+
+    out: list[dict] = []
+    for src, (x1, y1, x2, y2), ts in zip(segments or [], segs, cuts):
+        # carry per-segment attributes (e.g. corridor width) onto the pieces
+        extra = {k: v for k, v in src.items() if k not in ("x1", "y1", "x2", "y2")}
+        pts = [0.0] + sorted(set(round(t, 6) for t in ts)) + [1.0]
+        for a, b in zip(pts[:-1], pts[1:]):
+            out.append({
+                **extra,
+                "x1": x1 + a * (x2 - x1), "y1": y1 + a * (y2 - y1),
+                "x2": x1 + b * (x2 - x1), "y2": y1 + b * (y2 - y1),
+            })
+    return out
+
+
 def build_graph(segments: list[dict]) -> Graph:
     graph = Graph()
-    for seg in segments:
+    for seg in split_at_junctions(segments):
         a = graph.resolve_node(seg["x1"], seg["y1"])
         b = graph.resolve_node(seg["x2"], seg["y2"])
         weight = math.hypot(a[0] - b[0], a[1] - b[1])
@@ -134,7 +201,7 @@ def _splice_landing(
         return graph.resolve_node(floor, x, y)
 
     best = None
-    for seg_dict in segments:
+    for seg_dict in split_at_junctions(segments):
         seg = Segment(**seg_dict)
         nx, ny, dist = _nearest_point_on_segment(x, y, seg)
         if best is None or dist < best[1]:
@@ -163,7 +230,7 @@ def build_layered_graph(
     }
 
     for fid, segments in segs_by_floor.items():
-        for seg in segments:
+        for seg in split_at_junctions(segments):
             a = graph.resolve_node(fid, seg["x1"], seg["y1"])
             b = graph.resolve_node(fid, seg["x2"], seg["y2"])
             weight = math.hypot(a[1] - b[1], a[2] - b[2])
@@ -219,7 +286,8 @@ def attach_point(graph: Graph, x: float, y: float, segments: list[dict]) -> tupl
         raise ValueError("No walkable segments to attach to")
 
     best = None
-    for i, seg_dict in enumerate(segments):
+    # split first so a point near a T-junction attaches to the junction, not the far ends
+    for i, seg_dict in enumerate(split_at_junctions(segments)):
         seg = Segment(**seg_dict)
         nx, ny, dist = _nearest_point_on_segment(x, y, seg)
         if best is None or dist < best[1]:
@@ -251,7 +319,8 @@ def attach_layered_point(
         raise ValueError(f"No walkable segments on floor {floor}")
 
     best = None
-    for i, seg_dict in enumerate(segments):
+    # split first so a point near a T-junction attaches to the junction, not the far ends
+    for i, seg_dict in enumerate(split_at_junctions(segments)):
         seg = Segment(**seg_dict)
         nx, ny, dist = _nearest_point_on_segment(x, y, seg)
         if best is None or dist < best[1]:

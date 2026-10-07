@@ -579,6 +579,7 @@ async function loadFloorplanAndTransform() {
     floorplanImg.onload = () => {
         fpCanvas.width = floorplanImg.width;
         fpCanvas.height = floorplanImg.height;
+        if (tagPanel.style.display === 'flex') fitMapView();
         drawFloorplanTags();
         logDebug(`Floorplan loaded floor=${selectedMapFloor()} (${floorplanImg.width}x${floorplanImg.height})`, "info");
     };
@@ -587,22 +588,188 @@ async function loadFloorplanAndTransform() {
     };
 }
 
+// ── tag picker map view ─────────────────────────────────────────────────────
+// The plan image is thousands of px wide; shown 1:1 on a phone it was a zoomed-in corner.
+// Now: fit to screen on open, pinch/drag/buttons to zoom & pan, tap to place.
+const mapStage = document.getElementById('map-stage');
+const mapView = { s: 1, x: 0, y: 0, min: 0.05, max: 4 };
+const MAP_SNAP_PX = 30; // tap this close (on screen) to a survey spot → snap onto it
+let mapRedrawPending = false;
+let selectedSpotId = null;
+
+function applyMapView() {
+    if (!mapStage) return;
+    mapStage.style.transform = `translate(${mapView.x}px, ${mapView.y}px) scale(${mapView.s})`;
+    mapMarker.style.setProperty('--inv', String(1 / mapView.s));
+    // overlays are drawn at a constant on-screen size → redraw for the new scale
+    if (!mapRedrawPending) {
+        mapRedrawPending = true;
+        requestAnimationFrame(() => { mapRedrawPending = false; drawFloorplanTags(); });
+    }
+}
+
+function fitMapView() {
+    const cw = mapContainer.clientWidth, ch = mapContainer.clientHeight;
+    const w = fpCanvas.width, h = fpCanvas.height;
+    if (!w || !h || !cw || !ch) return;
+    mapView.s = Math.min(cw / w, ch / h) * 0.96;
+    mapView.min = mapView.s * 0.8;
+    mapView.max = Math.max(mapView.s * 16, 3);
+    mapView.x = (cw - w * mapView.s) / 2;
+    mapView.y = (ch - h * mapView.s) / 2;
+    applyMapView();
+}
+
+/** zoom by factor keeping screen point (cx, cy) fixed */
+function zoomMapAt(cx, cy, factor) {
+    const ns = Math.max(mapView.min, Math.min(mapView.max, mapView.s * factor));
+    const k = ns / mapView.s;
+    mapView.x = cx - (cx - mapView.x) * k;
+    mapView.y = cy - (cy - mapView.y) * k;
+    mapView.s = ns;
+    applyMapView();
+}
+
+function mapScreenToPlan(clientX, clientY) {
+    const r = mapContainer.getBoundingClientRect();
+    return {
+        sx: clientX - r.left,
+        sy: clientY - r.top,
+        px: (clientX - r.left - mapView.x) / mapView.s,
+        py: (clientY - r.top - mapView.y) / mapView.s,
+    };
+}
+
+/** tap on the plan → place the tag (snapping onto a nearby survey spot) */
+function placeTagAt(clientX, clientY) {
+    if (!transform || !fpCanvas.width) return;
+    let { px, py } = mapScreenToPlan(clientX, clientY);
+    selectedSpotId = null;
+    let best = null;
+    surveySpots.forEach((s) => {
+        const d = Math.hypot(s.px - px, s.py - py) * mapView.s; // screen px
+        if (d <= MAP_SNAP_PX && (!best || d < best.d)) best = { s, d };
+    });
+    if (best) {
+        px = best.s.px;
+        py = best.s.py;
+        selectedSpotId = best.s.id;
+    }
+    if (px < 0 || py < 0 || px > fpCanvas.width || py > fpCanvas.height) return;
+
+    mapMarker.style.display = 'block';
+    mapMarker.style.left = px + 'px';
+    mapMarker.style.top = py + 'px';
+
+    selectedPx = px;
+    selectedPy = py;
+    selectedWorldX = transform.a * px + transform.b * py + transform.tx;
+    selectedWorldY = transform.c * px + transform.d * py + transform.ty;
+
+    btnSubmitTag.disabled = false;
+    btnSubmitTag.innerText = selectedSpotId
+        ? `Confirm on ${selectedSpotId} (${selectedWorldX.toFixed(1)}, ${selectedWorldY.toFixed(1)})`
+        : `Confirm Location (${selectedWorldX.toFixed(1)}, ${selectedWorldY.toFixed(1)})`;
+    try { if (navigator.vibrate) navigator.vibrate(selectedSpotId ? [20, 40, 20] : 15); } catch (_) {}
+}
+
+// gestures: 1 finger drags, 2 fingers pinch, a tap (no movement) places the tag
+(() => {
+    if (!mapContainer) return;
+    const pts = new Map();
+    let tap = null;
+    let pinch = null;
+    let lastTapAt = 0;
+
+    mapContainer.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('.map-zoom')) return;
+        mapContainer.setPointerCapture?.(e.pointerId);
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pts.size === 1) {
+            tap = { x: e.clientX, y: e.clientY, t: performance.now() };
+        } else {
+            tap = null;
+            const [a, b] = [...pts.values()];
+            pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+        }
+    });
+
+    mapContainer.addEventListener('pointermove', (e) => {
+        const prev = pts.get(e.pointerId);
+        if (!prev) return;
+        const cur = { x: e.clientX, y: e.clientY };
+        pts.set(e.pointerId, cur);
+        if (tap && Math.hypot(cur.x - tap.x, cur.y - tap.y) > 8) tap = null; // it's a drag
+        if (pts.size === 1 && !tap) {
+            mapView.x += cur.x - prev.x;
+            mapView.y += cur.y - prev.y;
+            applyMapView();
+        } else if (pts.size === 2 && pinch) {
+            const [a, b] = [...pts.values()];
+            const d = Math.hypot(a.x - b.x, a.y - b.y);
+            const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+            const r = mapContainer.getBoundingClientRect();
+            mapView.x += mx - pinch.mx;
+            mapView.y += my - pinch.my;
+            if (pinch.d > 0) zoomMapAt(mx - r.left, my - r.top, d / pinch.d);
+            else applyMapView();
+            pinch = { d, mx, my };
+        }
+    });
+
+    const end = (e) => {
+        if (!pts.has(e.pointerId)) return;
+        pts.delete(e.pointerId);
+        if (pts.size < 2) pinch = null;
+        if (tap && pts.size === 0 && e.type === 'pointerup' && performance.now() - tap.t < 600) {
+            const now = performance.now();
+            if (now - lastTapAt < 300) {
+                // double-tap: zoom in there (the first tap already placed the tag)
+                const r = mapContainer.getBoundingClientRect();
+                zoomMapAt(e.clientX - r.left, e.clientY - r.top, 2);
+                lastTapAt = 0;
+            } else {
+                placeTagAt(e.clientX, e.clientY);
+                lastTapAt = now;
+            }
+        }
+        if (pts.size === 0) tap = null;
+    };
+    mapContainer.addEventListener('pointerup', end);
+    mapContainer.addEventListener('pointercancel', end);
+
+    mapContainer.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const r = mapContainer.getBoundingClientRect();
+        zoomMapAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+    }, { passive: false });
+
+    const zoomCenter = (f) => zoomMapAt(mapContainer.clientWidth / 2, mapContainer.clientHeight / 2, f);
+    document.getElementById('map-zoom-in')?.addEventListener('click', () => zoomCenter(1.5));
+    document.getElementById('map-zoom-out')?.addEventListener('click', () => zoomCenter(1 / 1.5));
+    document.getElementById('map-zoom-fit')?.addEventListener('click', fitMapView);
+    window.addEventListener('resize', () => { if (tagPanel.style.display === 'flex') fitMapView(); });
+})();
+
 function drawFloorplanTags() {
     if (!fpCanvas.width || !floorplanImg.complete) return;
     fpCtx.clearRect(0, 0, fpCanvas.width, fpCanvas.height);
     fpCtx.drawImage(floorplanImg, 0, 0);
+    // overlays keep a constant on-screen size whatever the zoom
+    const k = 1 / (mapView.s || 1);
 
-    // survey GCPs (P5–P8) — guides for where to drop tags
+    // survey GCPs (P5–P8) — guides for where to drop tags (tap near one to snap onto it)
     surveySpots.forEach((s) => {
+        const picked = selectedSpotId === s.id;
         fpCtx.beginPath();
-        fpCtx.arc(s.px, s.py, 22, 0, Math.PI * 2);
-        fpCtx.fillStyle = 'rgba(255, 149, 0, 0.85)';
+        fpCtx.arc(s.px, s.py, 15 * k, 0, Math.PI * 2);
+        fpCtx.fillStyle = picked ? 'rgba(62, 207, 142, 0.95)' : 'rgba(255, 149, 0, 0.85)';
         fpCtx.fill();
-        fpCtx.lineWidth = 4;
+        fpCtx.lineWidth = 3 * k;
         fpCtx.strokeStyle = '#fff';
         fpCtx.stroke();
         fpCtx.fillStyle = '#000';
-        fpCtx.font = 'bold 20px sans-serif';
+        fpCtx.font = `bold ${13 * k}px sans-serif`;
         fpCtx.textAlign = 'center';
         fpCtx.textBaseline = 'middle';
         fpCtx.fillText(s.id, s.px, s.py);
@@ -610,14 +777,14 @@ function drawFloorplanTags() {
 
     placedTags.forEach((t, i) => {
         fpCtx.beginPath();
-        fpCtx.arc(t.px, t.py, 18, 0, Math.PI * 2);
+        fpCtx.arc(t.px, t.py, 12 * k, 0, Math.PI * 2);
         fpCtx.fillStyle = '#ff3b30';
         fpCtx.fill();
-        fpCtx.lineWidth = 4;
+        fpCtx.lineWidth = 3 * k;
         fpCtx.strokeStyle = '#fff';
         fpCtx.stroke();
         fpCtx.fillStyle = '#fff';
-        fpCtx.font = 'bold 22px sans-serif';
+        fpCtx.font = `bold ${13 * k}px sans-serif`;
         fpCtx.textAlign = 'center';
         fpCtx.textBaseline = 'middle';
         fpCtx.fillText(String(i + 1), t.px, t.py);
@@ -698,8 +865,10 @@ const lobbyEls = {
     flash: document.getElementById('lobby-flash'),
 };
 
+const LOBBY_TINT_S = 0.72;
+const LOBBY_TINT_L = 0.52;
 function lobbyHueCss(deg) {
-    return `hsl(${Math.round(deg)}, 72%, 52%)`;
+    return `hsl(${Math.round(deg)}, ${LOBBY_TINT_S * 100}%, ${LOBBY_TINT_L * 100}%)`;
 }
 
 function lobbyBuzz(pattern) {
@@ -768,8 +937,15 @@ async function loadLobbyColours() {
         const res = await fetch(getApiUrl('/map/cabin-colours'));
         if (!res.ok) return;
         const data = await res.json();
+        const before = JSON.stringify(Object.entries(lobby.floors).map(([f, v]) => [f, v?.dominant_hue_deg]));
         lobby.floors = data.floors || {};
         if (Number.isFinite(data.min_colour_frac)) lobby.minFrac = data.min_colour_frac;
+        const after = JSON.stringify(Object.entries(lobby.floors).map(([f, v]) => [f, v?.dominant_hue_deg]));
+        lobby.loaded = true;
+        // runs after the fetch await, so the module (and lastCloudData) is initialised
+        if (before !== after && lastCloudData) {
+            renderStackedCloud({ ...lastCloudData, stack_m: viewerStackM });
+        }
     } catch (_) { /* offline — keep last */ }
     renderLobbyFloors();
     renderLobbyDots();
@@ -1224,35 +1400,18 @@ btnShowTag.onclick = () => {
     // freeze pose while picking so the tag stamps the current spot
     lastPdrTs = 0;
     setWalkButtons(false);
-    drawFloorplanTags();
+    selectedSpotId = null;
+    mapMarker.style.display = 'none';
     tagPanel.style.display = 'flex';
+    // container has a size only once shown → fit on the next frame (whole floor visible)
+    requestAnimationFrame(fitMapView);
 };
 
 btnCancelTag.onclick = () => {
     tagPanel.style.display = 'none';
 };
 
-// Handle canvas click to place marker
-fpCanvas.onclick = (e) => {
-    const rect = fpCanvas.getBoundingClientRect();
-    const scaleX = fpCanvas.width / rect.width;
-    const scaleY = fpCanvas.height / rect.height;
-    
-    const px = (e.clientX - rect.left) * scaleX;
-    const py = (e.clientY - rect.top) * scaleY;
-    
-    mapMarker.style.display = 'block';
-    mapMarker.style.left = (e.clientX - rect.left + mapContainer.scrollLeft) + 'px';
-    mapMarker.style.top = (e.clientY - rect.top + mapContainer.scrollTop) + 'px';
-    
-    selectedPx = px;
-    selectedPy = py;
-    selectedWorldX = transform.a * px + transform.b * py + transform.tx;
-    selectedWorldY = transform.c * px + transform.d * py + transform.ty;
-    
-    btnSubmitTag.disabled = false;
-    btnSubmitTag.innerText = `Confirm Location (${selectedWorldX.toFixed(1)}, ${selectedWorldY.toFixed(1)})`;
-};
+// placing the tag: see placeTagAt() — taps on #map-container (pinch/drag aware)
 
 btnSubmitTag.onclick = async () => {
     if (selectedWorldX === null) return;
@@ -2110,7 +2269,26 @@ function rotCloudPt(x, y, z) {
     return { x: x, y: z, z: -y };
 }
 
-function tintForFloor(i) {
+/**
+ * floor colour in the 3D view: the floor's lift-lobby paint colour when it has been
+ * scanned (same hue as the lobby panel swatch), else the default palette by level
+ */
+function tintForFloor(i, floorId) {
+    const ref = floorId != null ? lobby.floors[floorId] : null;
+    if (ref?.samples && Number.isFinite(ref.dominant_hue_deg)) {
+        // plain HSL→RGB (same maths as CSS hsl()) so it matches the panel swatch exactly
+        const h = ref.dominant_hue_deg / 360, s = LOBBY_TINT_S, l = LOBBY_TINT_L;
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        const ch = (t) => {
+            t = (t + 1) % 1;
+            if (t < 1 / 6) return p + (q - p) * 6 * t;
+            if (t < 1 / 2) return q;
+            if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+            return p;
+        };
+        return { r: ch(h + 1 / 3), g: ch(h), b: ch(h - 1 / 3) };
+    }
     return FLOOR_TINTS[i % FLOOR_TINTS.length];
 }
 
@@ -2261,7 +2439,7 @@ function renderStackedCloud(data) {
 
     stackFloors.forEach((fid, level) => {
         const yOff = level * gap;
-        const tint = tintForFloor(level);
+        const tint = tintForFloor(level, fid);
         const layerData = byFloor[fid] || { pts: [], fac: new Float32Array(0), ids: null };
         const pts = layerData.pts;
         const n = pts.length;
@@ -2393,6 +2571,7 @@ async function loadPLY() {
             viewerStackM = syncStackMUi(saved);
         }
     } catch (_) {}
+    if (!lobby.loaded) await loadLobbyColours(); // floor tints come from lobby colours
     try {
         const res = await fetch(getApiUrl('/map/cloud-layers?v=' + Date.now()));
         if (res.ok) {

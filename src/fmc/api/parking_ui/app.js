@@ -7,7 +7,13 @@ const RESUME_XR_CLEAR_M = 1.5;
 /** after settle, start XR even if still near the lift (DeviceMotion/dist often stall) */
 const RESUME_XR_FORCE_MS = 3500;
 const RESUME_XR_SETTLE_MS = 1200;
-const XR_TRACK_LOST_MS = 1200; // pose gone this long → hide arrows + "point at the floor" hint
+const XR_TRACK_LOST_MS = 1200; // pose gone this long → hide arrows + "raise the phone" hint
+/**
+ * camera tilt (DeviceOrientation beta, portrait): 90 = looking ahead, 0 = straight down.
+ * Below this the view is just the plain epoxy floor — nothing for PnP or ARCore to lock on.
+ */
+const LOOKING_DOWN_BETA = 35;
+const HOLD_PHONE_HINT = "Hold the phone at chest height, tilted ~45° — floor arrows and pillars both in view";
 /** pose gone this long → give up on XR, hand back to camera + PnP */
 const XR_TRACK_DEAD_MS = 4500;
 const XR_TRACK_GRACE_MS = 12000;
@@ -16,6 +22,13 @@ const CABIN_HITS_NEEDED = 2;
 /** AR re-alignment: PnP on XR frames — only strong fixes move the path */
 /** AR alignment only trusts PnP fixes at or above this confidence */
 const XR_ALIGN_MIN_CONF = 0.5;
+/** weaker PnP fixes still vote on heading (rotation only) — 3 agreeing ones rotate the path */
+const XR_HEADING_VOTE_MIN_CONF = 0.4;
+const XR_HEADING_VOTE_MIN_INLIERS = 20;
+/** after a tracking dropout: try PnP this often, and accept a slightly weaker fix */
+const XR_RECOVER_TRY_MS = 1200;
+const XR_RECOVER_MIN_CONF = 0.4;
+const XR_RECOVER_MIN_INLIERS = 20;
 const XR_ALIGN_WARMUP_MS = 2500; // min gap between attempts
 const XR_ALIGN_WALK_M = 4; // after warm-up: re-fix every ~4 m walked…
 const XR_ALIGN_MAX_GAP_MS = 8000; // …or at least this often
@@ -83,6 +96,7 @@ const state = {
   walkSinceLand: 0, // motion since landOnFloor (not cleared by PnP fixes)
   landingPose: null, // PnP/VPR lock on Floor B — origin for fresh XR
   cabinHits: 0, // consecutive lift-lobby colour matches for the landing floor
+  devicePitch: null, // DeviceOrientation beta — see LOOKING_DOWN_BETA
   awaitingLandingLock: false, // true from lift handoff until PnP on dest floor
   floorOrder: [], // site floor labels, bottom→top when available
   lastCompassSample: null,
@@ -1654,8 +1668,9 @@ function updateFloorArrowTilt(next) {
 
   const want = bearingTo(state.position.x, state.position.y, target[0], target[1]);
   const rel = normHeadingDelta(want, state.position.heading);
-  // screen lean: negative = left, positive = right (matches needed turn)
-  const z = Math.max(-55, Math.min(55, rel));
+  // screen lean: negative = left, positive = right (matches needed turn);
+  // route behind you → let the chevrons point back instead of a capped 55° lean
+  const z = Math.abs(rel) > FACE_UTURN_CLEAR_DEG ? rel : Math.max(-55, Math.min(55, rel));
   ui.floorPath.style.transform = `translateX(-50%) rotateX(62deg) rotateZ(${z}deg)`;
 }
 
@@ -1668,8 +1683,66 @@ function showFloorArrows(on) {
   }
 }
 
+/** facing more than this from the route direction → "Turn around" (clears below the 2nd) */
+const FACE_UTURN_DEG = 120;
+const FACE_UTURN_CLEAR_DEG = 100;
+/** …and more than this → "Turn left/right" to face the route */
+const FACE_TURN_DEG = 60;
+let facingUturn = false;
+
+/**
+ * where you face vs where the route goes next (deg, + = route is to your right).
+ * AR: camera yaw vs path ahead. Camera nav: PnP heading vs route look-ahead.
+ */
+function facingRelDeg() {
+  if (state.webXrActive) {
+    if (webXrNav?.alignStale) return null;
+    const r = webXrNav?.facingRelDeg;
+    return Number.isFinite(r) ? r : null;
+  }
+  if (!state.hasLocalizedPosition || !Number.isFinite(state.position.heading)) return null;
+  const { x, y } = state.position;
+  // route DIRECTION here (two points along it), not the bearing from you to a point on the
+  // centre line — in an 8 m corridor you can be 4 m off it and that bearing is ~50° off
+  const wps = guideWaypoints();
+  const p1 = lookAheadOnRoute(wps, x, y, 0.5);
+  const p2 = lookAheadOnRoute(wps, x, y, 3.5);
+  if (!p1 || !p2 || Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) < 0.5) return null;
+  return normHeadingDelta(bearingTo(p1[0], p1[1], p2[0], p2[1]), state.position.heading);
+}
+
+/**
+ * The route's own turns only cover corners between segments — never "you're facing the
+ * wrong way" (start of route, or after walking the wrong way). Check that separately.
+ */
+function facingOverride(next) {
+  if (!next || next.isArrival || next.isFloorChange || state.inFloorTransition) return null;
+  const rel = facingRelDeg();
+  if (rel == null) return null;
+  const abs = Math.abs(rel);
+  const was = facingUturn;
+  if (abs >= FACE_UTURN_DEG) facingUturn = true;
+  else if (abs < FACE_UTURN_CLEAR_DEG) facingUturn = false;
+  if (facingUturn && !was) {
+    void logClientDiagnostic({
+      event: "facing_uturn",
+      nav_mode: clientNavMode(),
+      reason: `rel=${Math.round(rel)}deg heading=${Math.round(state.position.heading)}`,
+    });
+  }
+  if (facingUturn) return { label: "Turn around", kind: "uturn", distanceM: 0 };
+  if (abs >= FACE_TURN_DEG) {
+    return rel > 0
+      ? { label: "Turn right", kind: "right", distanceM: 0 }
+      : { label: "Turn left", kind: "left", distanceM: 0 };
+  }
+  return null;
+}
+
 function paintTurnBanner(next) {
   if (!ui.turnBanner || !next) return;
+  const face = facingOverride(next);
+  if (face) next = { ...next, ...face, isArrival: false };
   ui.turnBanner.hidden = false;
   if (ui.turnLabel) ui.turnLabel.textContent = next.label;
   if (ui.turnDistance) {
@@ -2027,6 +2100,18 @@ function computeEulerHeading(event) {
 
   return heading;
 }
+
+/** true when the camera is pointing at the floor at your feet (portrait) */
+function phoneLookingDown() {
+  const b = state.devicePitch;
+  if (b == null || !Number.isFinite(b)) return false;
+  return Math.abs(b) < LOOKING_DOWN_BETA;
+}
+
+// tilt only — always on (the compass listener below starts with calibration, which is skipped)
+window.addEventListener("deviceorientation", (event) => {
+  if (typeof event.beta === "number" && Number.isFinite(event.beta)) state.devicePitch = event.beta;
+}, true);
 
 function onDeviceOrientation(event) {
   const heading = computeEulerHeading(event);
@@ -2518,7 +2603,9 @@ async function runXrAlignLoop(nav) {
     const now = performance.now();
     const here = nav.xrPosition();
     const walked = here && lastFixXr ? Math.hypot(here.x - lastFixXr.x, here.z - lastFixXr.z) : 0;
-    const due = accepted < 2
+    const due = nav.alignUrgent
+      ? now - lastTryAt >= XR_RECOVER_TRY_MS
+      : accepted < 2
       ? now - lastTryAt >= XR_ALIGN_WARMUP_MS
       : (walked >= XR_ALIGN_WALK_M || now - lastFixAt >= XR_ALIGN_MAX_GAP_MS)
         && now - lastTryAt >= XR_ALIGN_WARMUP_MS;
@@ -2540,6 +2627,15 @@ async function runXrAlignLoop(nav) {
     form.append("image", blob, "xr-align.jpg");
     if (legFloor != null && legFloor !== "") form.append("prior_floor", String(legFloor));
     form.append("capture_trigger", "xr_align");
+    const K = blob.xrIntrinsics;
+    if (K) {
+      form.append("cam_fx", String(K.fx));
+      form.append("cam_fy", String(K.fy));
+      form.append("cam_cx", String(K.cx));
+      form.append("cam_cy", String(K.cy));
+      form.append("cam_width", String(K.width));
+      form.append("cam_height", String(K.height));
+    }
     form.append("frame_source", "webxr-camera");
     form.append("nav_mode", "webxr");
     let pos = null;
@@ -2556,9 +2652,18 @@ async function runXrAlignLoop(nav) {
     const conf = Number(pos.confidence) || 0;
     const isPnp = String(pos.method || "").toLowerCase() === "pnp";
     let reason = "";
+    let vote = null;
     if (!isPnp) reason = "not_pnp";
-    else if (conf < XR_ALIGN_MIN_CONF) reason = `lowconf_${conf.toFixed(2)}_${inl}inl`;
     else if (legFloor != null && !sameFloor(pos.floor, legFloor)) reason = `floor_${pos.floor}`;
+    else if (conf < XR_ALIGN_MIN_CONF
+      && !(nav.alignStale && conf >= XR_RECOVER_MIN_CONF && inl >= XR_RECOVER_MIN_INLIERS)) {
+      reason = `lowconf_${conf.toFixed(2)}_${inl}inl`;
+      // too weak to move the path, good enough to vote on which way the map faces
+      if (conf >= XR_HEADING_VOTE_MIN_CONF && inl >= XR_HEADING_VOTE_MIN_INLIERS) {
+        vote = nav.addHeadingVote({ heading: Number(pos.raw_heading ?? pos.heading), xr });
+        reason += vote.used ? ` heading_vote_used rot=${vote.rotDeg.toFixed(1)}deg` : ` vote:${vote.why}`;
+      }
+    }
 
     let out = null;
     if (!reason) {
@@ -2573,6 +2678,7 @@ async function runXrAlignLoop(nav) {
 
     if (out?.accepted) {
       accepted += 1;
+      nav.alignUrgent = false;
       lastFixAt = performance.now();
       lastFixXr = { x: xr.x, z: xr.z };
       state.position = {
@@ -2630,6 +2736,11 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
     frame_source: frame.frameSource,
     screen_orientation: screen.orientation?.type || "unknown",
   };
+
+  // floor-only view: PnP can't match plain epoxy — don't spend a /localize on it
+  if (trigger !== "manual" && !state.inFloorTransition && phoneLookingDown()) {
+    return { skipped: true, reason: "looking_down", diagnostics };
+  }
 
   // elevator: don't drop frames — PnP needs a shot at the landing floor
   const blurFloor = state.inFloorTransition ? 40 : 80;
@@ -3087,6 +3198,11 @@ async function startWebXrNav(opts = {}) {
         if (state.inFloorTransition) {
           void handXrToCamera("lift");
         }
+        // alignment invalid after a dropout — don't announce turns from a wrong path
+        if (webXrNav?.alignStale) {
+          paintTurnBanner({ label: "Re-aligning AR…", kind: "straight", distanceM: 0, isFloorChange: true });
+          return;
+        }
         const next = nextTurnFromLegs(legs, progress);
         paintTurnBanner({
           ...next,
@@ -3102,8 +3218,11 @@ async function startWebXrNav(opts = {}) {
               nav_mode: "webxr",
               reason: `lost_${Math.round(performance.now() - xrTrackLostAt)}ms`,
             });
-            setStatusChip("AR nav", "live");
-            setHint("", false);
+            // a frame jump on recovery already put up the "re-aligning" hint — keep it
+            if (!webXrNav?.alignStale) {
+              setStatusChip("AR nav", "live");
+              setHint("", false);
+            }
           }
           xrTrackLostAt = 0;
           return;
@@ -3116,11 +3235,56 @@ async function startWebXrNav(opts = {}) {
           xrLostHinted = true;
           void logClientDiagnostic({ event: "xr_track_lost", nav_mode: "webxr" });
           setStatusChip("AR paused", "warn");
-          setHint("AR lost tracking — slowly point the phone at the floor", true);
+          // plain glossy floor has no features — looking further down makes it worse
+          setHint(
+            phoneLookingDown()
+              ? "AR lost tracking — raise the phone so pillars and walls are in view"
+              : "AR lost tracking — hold still and aim at pillars, signs or bay numbers",
+            true,
+          );
         }
         if (lost > XR_TRACK_DEAD_MS) {
           void handXrToCamera(state.inFloorTransition ? "lift" : "dead");
         }
+      },
+      onAlignStale: (info) => {
+        setStatusChip("AR re-aligning", "warn");
+        setHint("AR lost its place — point at pillars, signs or bay numbers to re-align", true);
+        void logClientDiagnostic({
+          event: "xr_align_stale",
+          nav_mode: "webxr",
+          reason: `${info.reason}${info.lostMs != null ? ` lost=${Math.round(info.lostMs)}ms` : ""}`
+            + `${info.jump != null ? ` jump=${info.jump.toFixed(1)}m` : ""}`,
+        });
+      },
+      onAlignVerify: (info) => {
+        void logClientDiagnostic({
+          event: "xr_align_verify",
+          nav_mode: "webxr",
+          reason: `lost=${Math.round(info.lostMs)}ms jump=${info.jump.toFixed(1)}m`,
+        });
+      },
+      onAlignRecovered: (info) => {
+        setStatusChip("AR nav", "live");
+        setHint(
+          info.source === "pnp" ? "" : "Arrows restored from your last position — they'll firm up as you walk",
+          info.source !== "pnp",
+        );
+        void logClientDiagnostic({
+          event: "xr_align_recovered",
+          nav_mode: "webxr",
+          reason: info.source === "pnp" ? `pnp dest_shift=${info.destShift.toFixed(2)}m` : info.source,
+        });
+      },
+      onHeadingFix: (h) => {
+        void logClientDiagnostic({
+          event: "xr_heading_fix",
+          nav_mode: "webxr",
+          reason: h.source === "walk"
+            ? `walk err=${h.errDeg.toFixed(1)}deg rot=${h.rotDeg.toFixed(1)}deg seg=${h.seg} `
+              + `dist=${h.distM.toFixed(1)}m straight=${h.straightM.toFixed(1)}m`
+            : `pnp_consensus rot=${h.rotDeg.toFixed(1)}deg spread=${h.spreadDeg.toFixed(1)}deg votes=${h.votes}`,
+        });
       },
       onReset: () => {
         void logClientDiagnostic({ event: "xr_space_reset", nav_mode: "webxr" });
@@ -3237,16 +3401,16 @@ async function startWebXrNav(opts = {}) {
   if (hasFloorChangeAhead()) {
     startXrLiftWatch();
     startXrHealthWatch();
-    setStatusMsg("AR on — point at the floor to place arrows (keep AR near the lift)");
-    setHint("Point the camera at the floor ahead", true);
+    setStatusMsg("AR on — aim at the floor a few metres ahead to place arrows (keep AR near the lift)");
+    setHint(HOLD_PHONE_HINT, true);
   } else if (opts.fresh) {
     startXrHealthWatch();
     setStatusMsg("Fresh AR on this floor — origin from landing PnP");
-    setHint("Point at the floor to calibrate the new session", true);
+    setHint(HOLD_PHONE_HINT, true);
   } else {
     startXrHealthWatch();
-    setStatusMsg("Point at the floor ahead — lime chevrons guide the route");
-    setHint("Point the camera at the floor to place AR arrows", true);
+    setStatusMsg("Aim at the floor a few metres ahead — lime chevrons guide the route");
+    setHint(HOLD_PHONE_HINT, true);
   }
   return true;
 }
@@ -3320,7 +3484,12 @@ async function runLiveVprCaptureLoop() {
         });
         if (capture.skipped) {
           state.liveVpr.nextCaptureAllowedAt = performance.now() + 400;
-          setStatusMsg(`Skipped blurry frame (sharpness ${capture.diagnostics.client_laplacian_variance.toFixed(1)})`);
+          if (capture.reason === "looking_down") {
+            setStatusMsg("Raise the phone — localizing needs pillars, walls or signs in view");
+            setHint("Raise the phone — the floor alone can't be localized", true);
+          } else {
+            setStatusMsg(`Skipped blurry frame (sharpness ${capture.diagnostics.client_laplacian_variance.toFixed(1)})`);
+          }
         } else {
         state.motion.cumulativeMotion = 0;
         state.liveVpr.lastCaptureTime = performance.now();

@@ -47,6 +47,40 @@ def floors_equal(a, b) -> bool:
     return normalize_floor_id(a) == normalize_floor_id(b)
 
 
+_BASEMENT = re.compile(r"^(?:B|P|LB|SB|BASEMENT)\s*-?(\d+)$", re.I)
+_GROUND = {"G", "GF", "GR", "GROUND", "L", "LOBBY", "0", "L0"}
+_UPPER = re.compile(r"^(?:L|F|LEVEL|FLOOR)?\s*(\d+)$", re.I)
+
+
+def floor_level(floor) -> Optional[int]:
+    """Physical level from a floor label: B2 → -2, G → 0, 1/L1/F1 → 1. None if unknown."""
+    f = normalize_floor_id(floor).strip()
+    m = _BASEMENT.match(f)
+    if m:
+        return -int(m.group(1))
+    if f.upper() in _GROUND:
+        return 0
+    m = _UPPER.match(f)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def floors_bottom_up(floors: Iterable) -> list[str]:
+    """Floors ordered physically, lowest first (B2, B1, G, 1, 2…). Labels with no known
+    level keep their given order and go above the known ones."""
+    ids = [normalize_floor_id(f) for f in floors]
+    seen: list[str] = []
+    for f in ids:
+        if f not in seen:
+            seen.append(f)
+    def key(item):
+        i, f = item
+        lvl = floor_level(f)
+        return (0, lvl, i) if lvl is not None else (1, 0, i)
+    return [f for _, f in sorted(enumerate(seen), key=key)]
+
+
 def adjacent_floors(ordered: Iterable, current) -> list[str]:
     """Neighbors of `current` in the site's declared floor order (not ±1 arithmetic)."""
     ids = [normalize_floor_id(f) for f in ordered]

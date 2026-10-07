@@ -759,3 +759,6 @@ button:disabled {
   .control-point-row { grid-template-columns: 1fr 24px; }
   .coordinate-fields { grid-column: 1 / -1; grid-row: 2; }
 }
+
+.seg-width { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; font-size: 11px; color: var(--muted, #667); }
+.seg-width input { width: 52px; padding: 2px 4px; font-size: 11px; }

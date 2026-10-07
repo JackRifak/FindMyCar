@@ -35,7 +35,110 @@ const state = {
 const canvas = document.getElementById("mapCanvas");
 const ctx = canvas.getContext("2d");
 
+// keep in sync with fmc/fusion/map_matching.py DEFAULT_CORRIDOR_WIDTH_M
+const DEFAULT_CORRIDOR_WIDTH_M = 3;
+
+/** floor-plan pixels per metre: from the fitted transform, else from saved segments */
+function pxPerMeter() {
+  const t = state.transform;
+  if (t && [t.a, t.b, t.c, t.d].every(Number.isFinite)) {
+    const mPerPx = Math.sqrt(Math.abs(t.a * t.d - t.b * t.c));
+    if (mPerPx > 0) return 1 / mPerPx;
+  }
+  return state.pxPerMeter || null;
+}
+
+function segWidthM(seg) {
+  return Number.isFinite(seg.width) && seg.width > 0 ? seg.width : DEFAULT_CORRIDOR_WIDTH_M;
+}
+
+/**
+ * Bands can be asymmetric: width_left / width_right = metres left / right of the line
+ * looking from (x1,y1) to (x2,y2) in MAP coords (y up) — same as the server.
+ * Image y points down, so which screen side is map-"left" depends on the georeference.
+ */
+function sideKey(screenSide) {
+  const t = state.transform;
+  const det = t ? t.a * t.d - t.b * t.c : -1; // usual plan: y flipped → det < 0
+  return screenSide * Math.sign(det || -1) > 0 ? "width_left" : "width_right";
+}
+
+/** metres from the line to the band edge on screen side +1 / -1 */
+function sideWidthM(seg, screenSide) {
+  const v = seg[sideKey(screenSide)];
+  return Number.isFinite(v) && v >= 0 ? v : segWidthM(seg) / 2;
+}
+
+function totalWidthM(seg) {
+  return sideWidthM(seg, 1) + sideWidthM(seg, -1);
+}
+
+/**
+ * band geometry on screen for a segment: line a→b, unit normal n, edge offsets in px
+ * (hp on side +1, hm on side -1). null when the scale isn't known yet.
+ */
+function bandScreen(seg) {
+  const ppm = pxPerMeter();
+  if (!ppm || seg.px1 === undefined) return null;
+  const a = imageToScreen(seg.px1, seg.py1);
+  const b = imageToScreen(seg.px2, seg.py2);
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (len < 1) return null;
+  const n = { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
+  const k = ppm * state.zoom;
+  return { a, b, n, hp: sideWidthM(seg, 1) * k, hm: sideWidthM(seg, -1) * k };
+}
+
+function edgeOffset(g, side) {
+  return side > 0 ? g.hp : g.hm;
+}
+
+/** which band edge (if any) is under screen point (mx, my) — for width dragging */
+function bandEdgeAt(mx, my) {
+  if (state.mode !== "segments" || !state.overlays.segments) return null;
+  let best = null;
+  state.segments.forEach((seg, i) => {
+    const g = bandScreen(seg);
+    if (!g) return;
+    for (const side of [1, -1]) {
+      const ox = g.n.x * edgeOffset(g, side) * side;
+      const oy = g.n.y * edgeOffset(g, side) * side;
+      const p = { x: g.a.x + ox, y: g.a.y + oy };
+      const q = { x: g.b.x + ox, y: g.b.y + oy };
+      const dx = q.x - p.x;
+      const dy = q.y - p.y;
+      const t = Math.max(0, Math.min(1, ((mx - p.x) * dx + (my - p.y) * dy) / (dx * dx + dy * dy || 1)));
+      const d = Math.hypot(mx - (p.x + t * dx), my - (p.y + t * dy));
+      // the midpoint handle is a bigger target than the rest of the edge
+      const hd = Math.hypot(mx - (p.x + q.x) / 2, my - (p.y + q.y) / 2);
+      const score = Math.min(d, hd - 4);
+      if (score <= 7 && (!best || score < best.score)) best = { i, side, score };
+    }
+  });
+  return best;
+}
+
+/** floor-plan pixels per metre, from saved segments that have both world + pixel ends */
+function pxPerMeterFrom(segs) {
+  const r = (segs || [])
+    .filter((s) => s.px1 != null && s.x1 != null)
+    .map((s) => {
+      const m = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+      return m > 0.5 ? Math.hypot(s.px2 - s.px1, s.py2 - s.py1) / m : null;
+    })
+    .filter((v) => v != null)
+    .sort((p, q) => p - q);
+  return r.length ? r[Math.floor(r.length / 2)] : null;
+}
+
 // ---------------------------------------------------------------- API helpers
+
+// The editor runs standalone (served at "/") or mounted inside the main API server at
+// "/floor-plan/". API paths are written as "/api/…"; prefix them with wherever this page lives.
+const ROOT = location.pathname.replace(/\/[^/]*$/, "");
+function url(path) {
+  return typeof path === "string" && path.startsWith("/api/") ? ROOT + path : path;
+}
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -43,7 +146,7 @@ async function api(method, path, body) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(path, opts);
+  const res = await fetch(url(path), opts);
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch (e) {}
@@ -122,7 +225,7 @@ function zoomBy(factor) {
 
 function floorBase() {
   if (!state.siteId || state.floor == null || state.floor === "") return null;
-  return `/api/sites/${state.siteId}/floors/${encodeURIComponent(state.floor)}`;
+  return url(`/api/sites/${state.siteId}/floors/${encodeURIComponent(state.floor)}`);
 }
 
 // ---------------------------------------------------------------- coordinate math
@@ -224,6 +327,53 @@ function draw() {
       if (seg.px1 === undefined) continue;
       const a = imageToScreen(seg.px1, seg.py1);
       const b = imageToScreen(seg.px2, seg.py2);
+      // corridor band (segment = centre line): what localization treats as "inside"
+      const g = bandScreen(seg);
+      if (g) {
+        const i = state.segments.indexOf(seg);
+        const active = state.widthDrag?.i === i || state.bandHover?.i === i;
+        // band polygon — the two sides can differ, so not a thick centred line
+        ctx.save();
+        ctx.globalAlpha = active ? 0.26 : 0.16;
+        ctx.fillStyle = segColor;
+        ctx.beginPath();
+        ctx.moveTo(a.x + g.n.x * g.hp, a.y + g.n.y * g.hp);
+        ctx.lineTo(b.x + g.n.x * g.hp, b.y + g.n.y * g.hp);
+        ctx.lineTo(b.x - g.n.x * g.hm, b.y - g.n.y * g.hm);
+        ctx.lineTo(a.x - g.n.x * g.hm, a.y - g.n.y * g.hm);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        if (state.mode === "segments") {
+          // draggable edges + midpoint handles — each side independently
+          for (const side of [1, -1]) {
+            const ox = g.n.x * edgeOffset(g, side) * side;
+            const oy = g.n.y * edgeOffset(g, side) * side;
+            const hot = (state.widthDrag?.i === i && state.widthDrag.side === side)
+              || (!state.widthDrag && state.bandHover?.i === i && state.bandHover.side === side);
+            ctx.save();
+            ctx.setLineDash([6, 4]);
+            ctx.strokeStyle = hot ? "#ffd166" : segColor;
+            ctx.lineWidth = hot ? 2.5 : 1.5;
+            ctx.beginPath();
+            ctx.moveTo(a.x + ox, a.y + oy);
+            ctx.lineTo(b.x + ox, b.y + oy);
+            ctx.stroke();
+            ctx.restore();
+            drawDot((a.x + b.x) / 2 + ox, (a.y + b.y) / 2 + oy, hot ? "#ffd166" : segColor, hot ? 6 : 4.5);
+          }
+          if (state.widthDrag?.i === i) {
+            const s = state.widthDrag.side;
+            const off = edgeOffset(g, s) + 16;
+            drawLabel(
+              (a.x + b.x) / 2 + g.n.x * off * s,
+              (a.y + b.y) / 2 + g.n.y * off * s,
+              `${sideWidthM(seg, s).toFixed(1)} m · total ${totalWidthM(seg).toFixed(1)} m`,
+              "#ffd166",
+            );
+          }
+        }
+      }
       drawLine(a, b, segColor, 3);
       if (state.mode === "segments") {
         drawDot(a.x, a.y, segColor, 5);
@@ -392,6 +542,17 @@ canvas.addEventListener("mousedown", (e) => {
   if (e.button === 2) { // right-drag pans
     state.dragging = true;
     state.dragStart = { x: e.clientX, y: e.clientY, panX: state.panX, panY: state.panY };
+    return;
+  }
+  if (e.button === 0) { // left-press on a corridor band edge: drag to resize it
+    const rect = canvas.getBoundingClientRect();
+    const hit = bandEdgeAt(e.clientX - rect.left, e.clientY - rect.top);
+    if (hit) {
+      e.preventDefault();
+      state.widthDrag = { i: hit.i, side: hit.side, moved: false };
+      canvas.style.cursor = "grabbing";
+      draw();
+    }
   }
 });
 window.addEventListener("mousemove", (e) => {
@@ -399,11 +560,70 @@ window.addEventListener("mousemove", (e) => {
     state.panX = state.dragStart.panX + (e.clientX - state.dragStart.x);
     state.panY = state.dragStart.panY + (e.clientY - state.dragStart.y);
     draw();
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  if (state.widthDrag) {
+    const seg = state.segments[state.widthDrag.i];
+    const ppm = pxPerMeter();
+    if (!seg || !ppm) return;
+    // only the grabbed edge moves: its offset = mouse distance from the line on that side
+    // (crossing over to the other side just collapses this edge to the minimum)
+    const p = screenToImage(mx, my);
+    const dx = seg.px2 - seg.px1;
+    const dy = seg.py2 - seg.py1;
+    const len = Math.hypot(dx, dy) || 1;
+    const signed = ((p.x - seg.px1) * -dy + (p.y - seg.py1) * dx) / len; // + = screen side +1
+    const side = state.widthDrag.side;
+    const step = e.shiftKey ? 0.1 : 0.5; // hold Shift for fine steps
+    const m = +Math.max(0, Math.min(20, Math.round((signed * side) / ppm / step) * step)).toFixed(1);
+    const key = sideKey(side);
+    if (m !== sideWidthM(seg, side)) {
+      // pin the other side to its current value before the first asymmetric edit
+      const otherKey = sideKey(-side);
+      if (!Number.isFinite(seg[otherKey])) seg[otherKey] = +sideWidthM(seg, -side).toFixed(2);
+      seg[key] = m;
+      seg.width = +totalWidthM(seg).toFixed(2);
+      state.widthDrag.moved = true;
+      const inp = document.querySelector(`#segmentsList input[data-w="${state.widthDrag.i}"]`);
+      if (inp) inp.value = seg.width;
+      draw();
+    }
+    return;
+  }
+  // hover feedback on band edges
+  if (e.target === canvas) {
+    const hit = bandEdgeAt(mx, my);
+    const changed = (hit?.i ?? -1) !== (state.bandHover?.i ?? -1)
+      || (hit?.side ?? 0) !== (state.bandHover?.side ?? 0);
+    state.bandHover = hit;
+    canvas.style.cursor = hit ? "grab" : "";
+    if (changed) draw();
   }
 });
-window.addEventListener("mouseup", () => { state.dragging = false; });
+window.addEventListener("mouseup", () => {
+  state.dragging = false;
+  if (state.widthDrag) {
+    // the click that ends a resize must not also drop a segment point
+    state.suppressClick = true;
+    const { moved } = state.widthDrag;
+    state.widthDrag = null;
+    canvas.style.cursor = state.bandHover ? "grab" : "";
+    if (moved) {
+      renderSegmentsPanel();
+      setStatus("Corridor width changed — click Save segments to keep it");
+    }
+    draw();
+  }
+});
 
 canvas.addEventListener("click", (e) => {
+  if (state.suppressClick) {
+    state.suppressClick = false;
+    return;
+  }
   if (!state.img) return;
   const rect = canvas.getBoundingClientRect();
   const p = screenToImage(e.clientX - rect.left, e.clientY - rect.top);
@@ -506,8 +726,22 @@ function renderSegmentsPanel() {
     const row = document.createElement("div");
     row.className = "list-item";
     row.innerHTML = `#${i} (${seg.px1.toFixed(0)},${seg.py1.toFixed(0)}) → (${seg.px2.toFixed(0)},${seg.py2.toFixed(0)})
+      <label class="seg-width" title="Total corridor width in metres. Typing a value centres the band on the line; drag either edge on the plan to set each side separately. Blank = default ${DEFAULT_CORRIDOR_WIDTH_M} m">
+        <input type="number" min="0.5" max="30" step="0.5" placeholder="${DEFAULT_CORRIDOR_WIDTH_M}" value="${Number.isFinite(seg.width) ? seg.width : ""}" data-w="${i}"> m
+      </label>
       <button class="del-btn" data-i="${i}">×</button>`;
     el.appendChild(row);
+  });
+  el.querySelectorAll("input[data-w]").forEach((inp) => {
+    inp.addEventListener("change", (e) => {
+      const v = parseFloat(e.target.value);
+      const seg = state.segments[+e.target.dataset.w];
+      seg.width = Number.isFinite(v) && v > 0 ? v : null;
+      // a typed total re-centres the band (drag an edge for an off-centre corridor)
+      seg.width_left = null;
+      seg.width_right = null;
+      draw();
+    });
   });
   el.querySelectorAll(".del-btn").forEach((btn) => {
     btn.addEventListener("click", (e) => {
@@ -785,7 +1019,11 @@ async function loadGeometry() {
     // editable lists include everything already on disk (PUT replaces whole floor list)
     state.segments = state.savedSegments
       .filter((s) => s.px1 != null && s.py1 != null && s.px2 != null && s.py2 != null)
-      .map((s) => ({ px1: s.px1, py1: s.py1, px2: s.px2, py2: s.py2 }));
+      .map((s) => ({
+        px1: s.px1, py1: s.py1, px2: s.px2, py2: s.py2,
+        width: s.width ?? null, width_left: s.width_left ?? null, width_right: s.width_right ?? null,
+      }));
+    state.pxPerMeter = pxPerMeterFrom(state.savedSegments);
     state.slots = state.savedSlots
       .filter((s) => s.px != null && s.py != null)
       .map((s) => ({
@@ -808,6 +1046,9 @@ document.getElementById("saveSegmentsBtn").addEventListener("click", async () =>
   try {
     const payload = state.segments.map((s) => ({
       px1: s.px1, py1: s.py1, px2: s.px2, py2: s.py2,
+      width: Number.isFinite(s.width) && s.width > 0 ? s.width : null,
+      width_left: Number.isFinite(s.width_left) && s.width_left >= 0 ? s.width_left : null,
+      width_right: Number.isFinite(s.width_right) && s.width_right >= 0 ? s.width_right : null,
     }));
     await api("PUT", `/api/sites/${state.siteId}/floors/${encodeURIComponent(state.floor)}/segments`, payload);
     setStatus(`Segments saved (${payload.length})`);
@@ -961,7 +1202,7 @@ function renderPhotoGrid() {
     const card = document.createElement("div");
     card.className = "photo-card";
     card.innerHTML = `
-      <img src="${photo.photo_url}" alt="${photo.image_id}" loading="lazy">
+      <img src="${url(photo.photo_url)}" alt="${photo.image_id}" loading="lazy">
       <div class="photo-card-controls">
         <label>Heading °
           <input type="number" min="0" max="360" step="1" value="${photo.heading_degrees}" data-image-id="${photo.image_id}" class="heading-input">
@@ -1021,7 +1262,7 @@ document.getElementById("addPhotoInput").addEventListener("change", async (e) =>
     form.append("file", file);
     form.append("heading_degrees", "0");
     try {
-      const res = await fetch(`/api/sites/${state.siteId}/capture-locations/${state.selectedLocationId}/photos`, { method: "POST", body: form });
+      const res = await fetch(url(`/api/sites/${state.siteId}/capture-locations/${state.selectedLocationId}/photos`), { method: "POST", body: form });
       if (!res.ok) throw new Error((await res.json()).detail);
       uploaded++;
     } catch (err) {
@@ -1055,24 +1296,46 @@ document.getElementById("runQueryBtn").addEventListener("click", async () => {
   if (!fileInput.files.length) { setStatus("Pick a photo first", true); return; }
   const form = new FormData();
   form.append("file", fileInput.files[0]);
+  // try the floor being viewed first (other mapped floors are still tried)
+  if (state.floor != null && state.floor !== "") form.append("floor", String(state.floor));
+  const btn = document.getElementById("runQueryBtn");
+  const el = document.getElementById("queryResult");
+  btn.disabled = true;
+  btn.textContent = "Localizing…";
+  el.textContent = "Loading the VPR pipeline and 3D map — this can take a while…";
   setStatus("Localizing...");
   try {
-    const res = await fetch(`/api/sites/${state.siteId}/query`, { method: "POST", body: form });
-    if (!res.ok) throw new Error((await res.json()).detail);
+    const res = await fetch(url(`/api/sites/${state.siteId}/query`), { method: "POST", body: form });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `HTTP ${res.status}`);
     const result = await res.json();
     state.queryResult = result;
-    const el = document.getElementById("queryResult");
+    const size = result.query_size
+      ? `\nimage ${result.source_size.join("x")}`
+        + (result.source_size[0] !== result.query_size[0] ? ` → ${result.query_size.join("x")}` : "")
+      : "";
     if (result.matched) {
-      el.textContent = `Matched ${result.image_id}\nfloor=${result.floor} zone=${result.zone}\nx=${result.x.toFixed(2)} y=${result.y.toFixed(2)}\nsimilarity=${result.similarity.toFixed(3)} inlier_ratio=${result.inlier_ratio.toFixed(3)}`;
+      const inl = result.num_inliers != null ? `\ninliers=${result.num_inliers}/${result.num_matches}` : "";
+      el.textContent = `Matched via ${(result.method || "vpr").toUpperCase()}\nfloor=${result.floor}`
+        + `\nx=${result.x.toFixed(2)} y=${result.y.toFixed(2)} heading=${Math.round(result.heading ?? 0)}°`
+        + `\nconf=${result.similarity.toFixed(2)} inlier_ratio=${result.inlier_ratio.toFixed(3)}${inl}${size}`
+        + (result.px === undefined ? `\n(no floorplan transform for floor ${result.floor} — can't draw it)` : "")
+        + (state.floor != null && String(result.floor) !== String(state.floor)
+          ? `\n⚠ matched floor ${result.floor} — you're viewing floor ${state.floor}` : "");
       await refreshRouteSlotOptions();
       document.getElementById("runRouteBtn").disabled = state.savedSlots.length === 0;
     } else {
-      el.textContent = "NO MATCH";
+      el.textContent = `NO MATCH${size}\n${result.reason || ""}`;
       document.getElementById("runRouteBtn").disabled = true;
     }
     setStatus("");
     draw();
-  } catch (e) { setStatus(e.message, true); }
+  } catch (e) {
+    el.textContent = `Error: ${e.message}`;
+    setStatus(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Localize";
+  }
 });
 
 async function refreshRouteSlotOptions() {

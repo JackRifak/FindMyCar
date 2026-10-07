@@ -126,6 +126,11 @@ class SegmentIn(BaseModel):
     py1: float
     px2: float
     py2: float
+    # corridor width in metres (segment = centre line); None = default
+    width: float | None = None
+    # asymmetric band: metres left / right of the line (x1,y1 → x2,y2, map coords)
+    width_left: float | None = None
+    width_right: float | None = None
 
 
 class SlotIn(BaseModel):
@@ -644,7 +649,14 @@ def put_segments(site_id: str, floor: str, segments: list[SegmentIn]):
     for seg in segments:
         x1, y1 = transform.pixel_to_world(seg.px1, seg.py1)
         x2, y2 = transform.pixel_to_world(seg.px2, seg.py2)
-        world_segments.append({"x1": round(x1, 3), "y1": round(y1, 3), "x2": round(x2, 3), "y2": round(y2, 3)})
+        entry = {"x1": round(x1, 3), "y1": round(y1, 3), "x2": round(x2, 3), "y2": round(y2, 3)}
+        if seg.width is not None and seg.width > 0:
+            entry["width"] = round(float(seg.width), 2)
+        for side in ("width_left", "width_right"):
+            v = getattr(seg, side)
+            if v is not None and v >= 0:
+                entry[side] = round(float(v), 2)
+        world_segments.append(entry)
 
     floor_entry = get_or_create_floor(site, fid)
     floor_entry["walkable_segments"] = world_segments
@@ -673,8 +685,13 @@ def put_slots(site_id: str, floor: str, slots: list[SlotIn]):
 
 # ---------------------------------------------------------------- live testing
 
+# 3D map keyframes come from ~1280x720 ARCore frames; full-res gallery photos (4032x3024)
+# put ORB features at ~3x the map's scale and PnP match far fewer of them
+QUERY_MAX_DIM = 1280
+
+
 @app.post("/api/sites/{site_id}/query")
-async def query_position(site_id: str, file: UploadFile = File(...)):
+async def query_position(site_id: str, file: UploadFile = File(...), floor: str | None = Form(None)):
     """Upload a real photo and see where VPR thinks it is, overlaid on the
     map -- the same fmc.vpr.pipeline used by the position API and
     scripts/query_position.py, just visualized here."""
@@ -688,22 +705,48 @@ async def query_position(site_id: str, file: UploadFile = File(...)):
     if frame is None:
         raise HTTPException(400, "Could not decode uploaded image")
 
-    pipeline = VPRPipeline(site)  # not cached -- see module docstring
-    result = pipeline.localize(frame)
+    src_h, src_w = frame.shape[:2]
+    scale = QUERY_MAX_DIM / max(src_w, src_h)
+    if scale < 1.0:
+        frame = cv2.resize(frame, (round(src_w * scale), round(src_h * scale)), interpolation=cv2.INTER_AREA)
+    h, w = frame.shape[:2]
 
+    pipeline = VPRPipeline(site)  # not cached -- see module docstring
+    if pipeline.map_index is None and not any(
+        pipeline._index_for_floor(f) is not None for f in site.floor_ids()
+    ):
+        raise HTTPException(400, "No 3D map yet -- map the floor in the mapping app and Finalize first")
+    # editor floor first (prior only -- other mapped floors are still tried)
+    result = pipeline.localize(frame, prior_floor=normalize_floor_id(floor) if floor else None)
+
+    image_info = {"source_size": [src_w, src_h], "query_size": [w, h]}
     if not result.matched:
-        return {"matched": False}
+        return {
+            "matched": False,
+            "reason": (
+                "PnP found no pose (too few 2D-3D matches against the 3D map). "
+                "Image VPR fallback is disabled, so there is no coarse match either. "
+                "Try a photo of a mapped area with pillars, signs or bay numbers in view."
+            ),
+            **image_info,
+        }
 
     r = result.record
+    pose = result.pose_6dof
     response = {
         "matched": True,
+        "method": result.method,
         "image_id": r.image_id,
         "floor": r.floor,
         "zone": r.zone,
         "x": r.x,
         "y": r.y,
+        "heading": float(pose.heading) if pose else float(r.orientation),
+        "num_inliers": int(pose.num_inliers) if pose and pose.num_inliers is not None else None,
+        "num_matches": int(pose.num_matches) if pose and pose.num_matches is not None else None,
         "similarity": result.similarity,
         "inlier_ratio": result.inlier_ratio,
+        **image_info,
     }
     transform = _load_transform_or_none(site, r.floor)
     if transform is not None:

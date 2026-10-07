@@ -15,7 +15,9 @@ const ARRIVAL_M = 1.0;
 /** how far past the corner turn glyphs stay visible */
 const TURN_MARK_AFTER_M = 1.2;
 /** corner fillet radius (meters) for smooth path bends */
-const CORNER_RADIUS_M = 1.55;
+// small: a fillet cuts r·(√2−1) inside a 90° corner — 1.55 m cut 0.64 m, straight
+// through corner pillars; 0.75 m cuts ~0.3 m and still reads as a smooth bend
+const CORNER_RADIUS_M = 0.75;
 const CORNER_SEGS = 16;
 /** destination pin shows once the corridor stop is this close (m) */
 const DEST_MARKER_SHOW_M = 15;
@@ -29,6 +31,46 @@ const ALIGN_OUTLIER_M = 3.5;
 /** destination moves more than this → snap instead of easing */
 const ALIGN_SNAP_M = 2.0;
 const ALIGN_EASE_MS = 900;
+
+/* --- walking-direction heading fix: car-park corridors are straight, so the direction you
+ * walk (ARCore trail) vs the corridor you're on gives the map→AR rotation without vision.
+ * Axis-only (mod 180°): walking back after a U-turn, or a route that doubles back on a
+ * parallel aisle, never reads as a heading error. --- */
+const WALK_SAMPLE_M = 0.25; // trail point spacing
+const WALK_WINDOW_M = 6; // straight stretch needed before judging
+const WALK_STRAIGHT_RATIO = 0.92; // chord / walked length (lower = curved / turning)
+const WALK_MAX_DEV_M = 0.35; // max sideways wobble from the chord
+const WALK_SEG_MIN_M = 2; // ignore stubby route segments
+const WALK_SEG_NEAR_M = 4; // corridor must be this close to where we think you are…
+const WALK_SEG_NEAR_MAX_M = 10; // …plus heading-error drift, up to this
+// route lines are corridor CENTRE lines and corridors are up to ~8 m wide: only pull you
+// back when you'd be outside even the widest corridor, never toward the centre
+const WALK_LANE_M = 4.0;
+const WALK_MAX_ERR_DEG = 60; // bigger = probably a different corridor, not a heading error
+/** after the heading has settled, bigger = walking at an angle across a wide aisle / round cars */
+const WALK_SETTLED_MAX_ERR_DEG = 15;
+const WALK_SETTLED_AFTER = 2; // corrections before "settled"
+const WALK_AGREE_DEG = 6; // two consecutive stretches must agree this closely to act
+const WALK_MIN_ERR_DEG = 2;
+const WALK_GAIN = 0.5; // close half the agreed error per correction
+const WALK_GAIN_PNP_SPAN = 0.3; // gentler once well-spread strong PnP fixes pin rotation
+const WALK_COOLDOWN_M = 3; // walk this far between judgements
+const WALK_SNAP_DEG = 12; // ease below, snap above
+
+/* --- PnP heading consensus: several weaker fixes that agree are trusted for rotation only --- */
+const HEAD_CONSENSUS_N = 3;
+/* --- tracking dropout recovery. ARCore may come back in a shifted/rotated frame (reset
+ * event, or just a relocalisation jump) — the old map→AR alignment then draws the route
+ * through pillars. Hide arrows and re-align instead of showing a wrong path. --- */
+const RECOVER_VERIFY_MS = 800; // dropouts longer than this: re-check alignment
+const RECOVER_JUMP_M = 1.0; // position jump beyond walking distance → frame moved
+const RECOVER_WALK_MPS = 1.6; // fastest plausible walk while hidden
+const STALE_FALLBACK_MS = 8000; // no PnP by then → re-anchor from where you were (approx.)
+
+/** AR start: PnP heading within this of the first corridor's axis snaps onto it */
+const START_AXIS_SNAP = (25 * Math.PI) / 180;
+const HEAD_CONSENSUS_SPREAD_DEG = 10;
+const HEAD_CONSENSUS_MAX_AGE_MS = 25000;
 
 function limeMat(emissive = 0.85, color = LIME) {
   return new THREE.MeshStandardMaterial({
@@ -146,6 +188,21 @@ function makeFloorTurn(kind = "left", scale = 1) {
   const g = makeFloorChevron(scale);
   g.userData.kind = kind === "left" ? "left" : "right";
   return g;
+}
+
+/**
+ * pinhole intrinsics of the camera-access image from the view's GL projection matrix
+ * (column-major). The image is the view's (screen-cropped) camera feed, flipped to top-down
+ * rows before upload, so: fx = P0·w/2, fy = P5·h/2, cx = (1−P8)·w/2, cy = (1+P9)·h/2.
+ */
+function intrinsicsFromProjection(P, w, h) {
+  if (!P || P.length < 16 || !(w > 0) || !(h > 0)) return null;
+  const fx = (P[0] * w) / 2;
+  const fy = (P[5] * h) / 2;
+  const cx = ((1 - P[8]) * w) / 2;
+  const cy = ((1 + P[9]) * h) / 2;
+  if (![fx, fy, cx, cy].every(Number.isFinite) || fx <= 0 || fy <= 0) return null;
+  return { fx, fy, cx, cy, width: w, height: h };
 }
 
 /** slot label that always faces the camera */
@@ -412,18 +469,22 @@ export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = 
   else fwd.normalize();
   const xrAngle = Math.atan2(fwd.x, -fwd.z);
 
-  // align route-ahead to phone forward (arrows go down the aisle you're facing).
-  // fall back to PnP heading only if the next segment is tiny.
+  // which way the phone faces on the map. Use the PnP heading — assuming you face along the
+  // route would erase a needed U-turn and draw the route straight ahead (wrong way).
+  // Close to the first corridor's axis (either direction) → lock onto that axis exactly.
   const dx0 = wps[1][0] - wps[0][0];
   const dy0 = wps[1][1] - wps[0][1];
   const segLen = Math.hypot(dx0, dy0);
+  const segAngle = segLen >= 1e-6 ? Math.atan2(dx0, dy0) : 0;
   let facAngle;
-  if (segLen >= 0.35) {
-    facAngle = Math.atan2(dx0, dy0);
-  } else if (Number.isFinite(pose.heading)) {
-    facAngle = (Number(pose.heading) * Math.PI) / 180;
+  if (Number.isFinite(pose.heading)) {
+    const h = (Number(pose.heading) * Math.PI) / 180;
+    const off = Math.abs(angDiff(h, segAngle));
+    if (segLen >= 0.35 && off <= START_AXIS_SNAP) facAngle = segAngle; // facing along the route
+    else if (segLen >= 0.35 && off >= Math.PI - START_AXIS_SNAP) facAngle = segAngle + Math.PI; // facing back down it
+    else facAngle = h;
   } else {
-    facAngle = segLen < 1e-6 ? 0 : Math.atan2(dx0, dy0);
+    facAngle = segAngle; // no heading: best guess is you face along the route
   }
 
   // facility forward → XR forward: rot = fac - xr
@@ -440,10 +501,35 @@ export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = 
     tx: origin.x - (ox * cos - oy * sin),
     ty: -origin.z - (ox * sin + oy * cos),
   };
+  // the route runs down the corridor's centre line; corridors are up to ~8 m wide, so you
+  // may be well off it. Start the arrows at your feet and merge into the route ahead,
+  // instead of starting them on the centre line beside you.
+  const corridorWps = wps;
+  if (hasPose) wps = mergeFromPosition(wps, pose.x, pose.y);
+
   const out = wps.map(([fx, fy]) => xfApply(xf, fx, fy, origin.y));
   out.xf = xf;
-  out.facWps = wps; // trimmed + clamped facility polyline — rebuilt on PnP re-alignment
+  out.facWps = wps; // drawn polyline (incl. merge) — rebuilt on PnP re-alignment
+  out.corridorWps = corridorWps; // pure corridor centre lines — for the walking-direction check
   return out;
+}
+
+const MERGE_MIN_OFF_M = 0.75; // closer than this to the centre line: just use the route
+const MERGE_MIN_M = 3;
+const MERGE_MAX_M = 8;
+
+/** [you] → point on the route ~2× your sideways offset ahead (3–8 m, never past the first corner) */
+function mergeFromPosition(wps, x, y) {
+  if (wps.length < 2) return wps;
+  const off = Math.hypot(x - wps[0][0], y - wps[0][1]);
+  if (off < MERGE_MIN_OFF_M) return wps;
+  const want = Math.max(MERGE_MIN_M, Math.min(MERGE_MAX_M, 2 * off));
+  const [ax, ay] = wps[0];
+  const [bx, by] = wps[1];
+  const len = Math.hypot(bx - ax, by - ay);
+  if (len <= want) return [[x, y], ...wps.slice(1)]; // merge at the first corner
+  const k = want / len;
+  return [[x, y], [ax + (bx - ax) * k, ay + (by - ay) * k], ...wps.slice(1)];
 }
 
 /** facility point → XR world (floor height y) */
@@ -461,6 +547,30 @@ function angDiff(a, b) {
   while (d > Math.PI) d -= 2 * Math.PI;
   while (d < -Math.PI) d += 2 * Math.PI;
   return d;
+}
+
+/** axis difference (direction ignored): wrap into [-90°, 90°] */
+function axisDiff(a, b) {
+  let d = angDiff(a, b);
+  if (d > Math.PI / 2) d -= Math.PI;
+  if (d < -Math.PI / 2) d += Math.PI;
+  return d;
+}
+
+/** XR world (x, z) → facility (fx, fy): inverse of xfApply */
+function xfInverse(xf, x, z) {
+  const c = Math.cos(xf.rot);
+  const s = Math.sin(xf.rot);
+  const px = x - xf.tx;
+  const py = -z - xf.ty;
+  return { fx: px * c + py * s, fy: -px * s + py * c };
+}
+
+/** transform with rotation `rot` that keeps facility point f on XR point (x, z) */
+function xfPivot(rot, f, x, z) {
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  return { rot, tx: x - (f.fx * c - f.fy * s), ty: -z - (f.fx * s + f.fy * c) };
 }
 
 /**
@@ -828,7 +938,12 @@ export class WebXrNav {
 
     session.addEventListener("end", () => this.onSessionEnd());
     // ARCore may re-origin the space after a long tracking loss
-    this.refSpace.addEventListener?.("reset", () => this.opts.handlers?.onReset?.());
+    this.refSpace.addEventListener?.("reset", () => {
+      this.spaceReset = true;
+      // tracking may already be back — handle now rather than at the next dropout
+      if (this.calibrated && this.lostAt == null) this.markAlignStale("reset");
+      this.opts.handlers?.onReset?.();
+    });
     this.renderer.setAnimationLoop((t, frame) => this.onFrame(t, frame));
     this.opts.handlers?.onStep?.(0);
     return true;
@@ -943,6 +1058,7 @@ export class WebXrNav {
     this._capBusy = false;
     // ARCore pose of the exact frame in this jpeg — pairs with its PnP fix for alignment
     if (blob) blob.xrPose = pending.xrPose || null;
+    if (blob) blob.xrIntrinsics = pending.intrinsics || null;
     if (blob) pending.resolve(blob);
     else pending.reject(new Error("xr camera frame empty"));
   }
@@ -962,6 +1078,7 @@ export class WebXrNav {
 
     let cam = null;
     let tex = null;
+    let camView = null;
     for (const view of pose.views) {
       if (!view.camera) continue;
       try {
@@ -971,6 +1088,7 @@ export class WebXrNav {
       }
       if (tex) {
         cam = view.camera;
+        camView = view;
         break;
       }
     }
@@ -1019,6 +1137,7 @@ export class WebXrNav {
     const scale = Math.min(1, maxDim / Math.max(w, h));
     const dw = Math.max(1, Math.round(w * scale));
     const dh = Math.max(1, Math.round(h * scale));
+    pending.intrinsics = intrinsicsFromProjection(camView?.projectionMatrix, dw, dh);
     if (!this._capCanvas) this._capCanvas = document.createElement("canvas");
     if (!this._capSrcCanvas) this._capSrcCanvas = document.createElement("canvas");
     const canvas = this._capCanvas;
@@ -1050,6 +1169,87 @@ export class WebXrNav {
       z: p.z,
       yaw: flat > 0.35 ? Math.atan2(view.x, -view.z) : null,
     };
+  }
+
+  /** tracked again after a dropout — was the AR frame kept, or did it move? */
+  onTrackingRecovered(pose) {
+    const lostMs = performance.now() - this.lostAt;
+    this.lostAt = null;
+    if (!this.calibrated || !this.xf) {
+      this.spaceReset = false;
+      return;
+    }
+    const p = pose.transform.position;
+    const jump = this.lastGood ? Math.hypot(p.x - this.lastGood.x, p.z - this.lastGood.z) : 0;
+    const plausible = RECOVER_JUMP_M + (lostMs / 1000) * RECOVER_WALK_MPS;
+    if (this.spaceReset || jump > plausible) {
+      this.markAlignStale(this.spaceReset ? "reset" : `jump_${jump.toFixed(1)}m`, { lostMs, jump });
+    } else if (lostMs > RECOVER_VERIFY_MS) {
+      // frame probably intact — keep arrows, but re-check with fresh PnP; pre-dropout fixes
+      // may belong to a slightly different frame, so don't mix them in
+      this.alignFixes = [];
+      this.headVotes = [];
+      this.alignUrgent = true;
+      this.walkSinceFix = WALK_COOLDOWN_M;
+      this.opts.handlers?.onAlignVerify?.({ lostMs, jump });
+    }
+    this.spaceReset = false;
+  }
+
+  /** AR frame moved under us: alignment is invalid until a fresh fix (arrows hidden) */
+  markAlignStale(reason, info = {}) {
+    if (this.alignStale) return;
+    this.alignStale = true;
+    this.staleSince = performance.now();
+    this.alignFixes = [];
+    this.headVotes = [];
+    this.walkTrail = [];
+    this.walkObs = [];
+    this.walkCorrections = 0; // frame moved: heading is unsettled again
+    this.xfEase = null;
+    this.alignUrgent = true;
+    this.opts.handlers?.onAlignStale?.({ reason, ...info });
+  }
+
+  /** last trustworthy pose: XR position + camera facing on the map (compass, rad) */
+  rememberGood(pose) {
+    const a = this.alignPoseOf(pose);
+    const f = xfInverse(this.xf, a.x, a.z);
+    this.lastGood = {
+      x: a.x,
+      z: a.z,
+      f,
+      facHeading: a.yaw != null ? this.xf.rot + a.yaw : this.lastGood?.facHeading ?? null,
+    };
+  }
+
+  /**
+   * no PnP after a frame jump: assume you're still roughly where tracking was lost, facing
+   * the same way on the map. Approximate — walking + PnP corrections refine it from here.
+   */
+  reanchorFromLastGood(pose) {
+    const g = this.lastGood;
+    const yaw = this.alignPoseOf(pose).yaw;
+    if (!g || g.facHeading == null || yaw == null) return; // wait for a usable view
+    const p = pose.transform.position;
+    this.xf = xfPivot(g.facHeading - yaw, g.f, p.x, p.z);
+    this.rebuildPath();
+    this.alignStale = false;
+    this.walkSinceFix = WALK_COOLDOWN_M;
+    this.opts.handlers?.onAlignRecovered?.({ source: "last_position" });
+  }
+
+  /**
+   * where you face vs where the route goes next (deg, + = route is to your right).
+   * null while the camera looks straight down (no usable yaw).
+   */
+  updateFacing(pose) {
+    const yaw = this.alignPoseOf(pose).yaw;
+    if (yaw == null || !this.path?.length) return;
+    const ahead = pointAt(this.path, Math.min(this.pathLen, this.progressM + 1.5)).dir;
+    if (ahead.lengthSq() < 1e-8) return;
+    const routeYaw = Math.atan2(ahead.x, -ahead.z);
+    this.facingRelDeg = (angDiff(routeYaw, yaw) * 180) / Math.PI;
   }
 
   /** current XR camera position on the floor plane */
@@ -1093,6 +1293,18 @@ export class WebXrNav {
     this.alignFixes = [];
     this.alignRejects = 0;
     this.xfEase = null;
+    this.lastFitSpan = 0;
+    this.alignStale = false;
+    this.alignUrgent = false;
+    this.lostAt = null;
+    this.spaceReset = false;
+    this.lastGood = null;
+    this.walkTrail = [];
+    this.walkSinceFix = 0;
+    this.walkObs = [];
+    this.walkCorrections = 0;
+    this.xfPivotXr = { x: origin.x, z: origin.z }; // path is anchored where you started
+    this.headVotes = [];
     this.groundY = origin.y;
     if (wps?.length >= 2) {
       const raw = pathFromWaypoints(
@@ -1104,6 +1316,7 @@ export class WebXrNav {
       );
       this.xf = raw.xf || null;
       this.facWps = raw.facWps || null;
+      this.corridorWps = raw.corridorWps || raw.facWps || null;
       this.path = raw;
     } else {
       this.path = pathFromLegs(this.legs, origin, this.fwd);
@@ -1144,14 +1357,21 @@ export class WebXrNav {
     this.pulseT = t * 0.001;
 
     const pose = frame.getViewerPose(this.refSpace);
+    // only a missing pose is "lost". Chrome flags emulatedPosition briefly and often while
+    // ARCore tracking is merely limited (fast motion, plain view) — the position is still
+    // usable for drawing, just not trusted for corrections (see `degraded` below).
     if (!pose) {
+      if (this.lostAt == null) this.lostAt = performance.now();
       // stale arrows would float off the floor — hide until ARCore relocalizes
       this.scene.visible = false;
+      // ARCore may jump on recovery — don't read that as a walked stretch
+      if (this.walkTrail?.length) this.walkTrail = [];
       this.opts.handlers?.onTracking?.(false);
       this.renderer.render(this.scene, this.camera);
       return;
     }
-    this.scene.visible = true;
+    if (this.lostAt != null) this.onTrackingRecovered(pose);
+    this.scene.visible = !this.alignStale;
     this.opts.handlers?.onTracking?.(true);
 
     // snag passthrough frame for PnP while elevator / floor detect is active
@@ -1192,11 +1412,23 @@ export class WebXrNav {
     }
 
     this.stepAlignEase();
+    const degraded = Boolean(pose.emulatedPosition);
+    if (this.alignStale) {
+      // keep tracking progress quietly; fall back to an approximate re-anchor if PnP can't help
+      if (!degraded && performance.now() - this.staleSince > STALE_FALLBACK_MS) this.reanchorFromLastGood(pose);
+    } else if (degraded) {
+      // limited tracking: keep drawing, but don't learn heading/position from these frames
+      if (this.walkTrail?.length) this.walkTrail = [];
+    } else {
+      this.rememberGood(pose);
+      if (this.walkTrail) this.trackWalk(this.tmp);
+    }
     const closest = closestOnPath(this.path, this.tmp.x, this.tmp.z);
     this.progressM = closest.progressM;
     if (this.progressM > this.maxProgressM) this.maxProgressM = this.progressM;
 
     const remain = Math.max(0, this.pathLen - this.progressM);
+    this.updateFacing(pose);
     this.opts.handlers?.onWalk?.(this.progressM, remain);
     this.bumpSteps(this.maxProgressM);
     this.placeArrows(remain);
@@ -1233,6 +1465,8 @@ export class WebXrNav {
     if (this.alignFixes.length > ALIGN_KEEP) this.alignFixes.shift();
 
     const target = fitXf(this.alignFixes, this.xf.rot);
+    this.lastFitSpan = target.span || 0;
+    this.headVotes = []; // a strong fix supersedes pending weak votes
     const end = this.facWps[this.facWps.length - 1];
     const a = xfApply(this.xf, end[0], end[1]);
     const b = xfApply(target, end[0], end[1]);
@@ -1240,6 +1474,12 @@ export class WebXrNav {
     const rotDeg = (angDiff(target.rot, this.xf.rot) * 180) / Math.PI;
 
     const first = this.alignFixes.length === 1;
+    const recovered = this.alignStale;
+    if (recovered) {
+      this.alignStale = false;
+      this.alignUrgent = false;
+      this.opts.handlers?.onAlignRecovered?.({ source: "pnp", destShift });
+    }
     if (first || destShift > ALIGN_SNAP_M) {
       this.xfEase = null;
       this.xf = { rot: target.rot, tx: target.tx, ty: target.ty };
@@ -1270,6 +1510,186 @@ export class WebXrNav {
     };
     this.rebuildPath();
     if (k >= 1) this.xfEase = null;
+  }
+
+  /**
+   * change only the map→AR rotation, pivoting on where you stand — the arrows at your
+   * feet stay put and the far end of the route swings into place.
+   */
+  rotateAbout(newRot, { ease = true, pivotFac = null } = {}) {
+    if (!this.xf) return 0;
+    const delta = angDiff(newRot, this.xf.rot);
+    const pivot = this.tmp;
+    // pivotFac: where you should be on the map (else: where the current transform puts you)
+    const f = pivotFac || xfInverse(this.xf, pivot.x, pivot.z);
+    const target = xfPivot(newRot, f, pivot.x, pivot.z);
+    this.xfPivotXr = { x: pivot.x, z: pivot.z };
+    if (ease && Math.abs(delta) < (WALK_SNAP_DEG * Math.PI) / 180) {
+      this.xfEase = { from: { ...this.xf }, to: target, t0: performance.now() };
+    } else {
+      this.xfEase = null;
+      this.xf = target;
+      this.rebuildPath();
+    }
+    return (delta * 180) / Math.PI;
+  }
+
+  /** ARCore trail for the walking-direction check (XR xz, spaced WALK_SAMPLE_M) */
+  trackWalk(pos) {
+    const tr = this.walkTrail;
+    const last = tr[tr.length - 1];
+    if (last && Math.hypot(pos.x - last.x, pos.z - last.z) < WALK_SAMPLE_M) return;
+    const step = last ? Math.hypot(pos.x - last.x, pos.z - last.z) : 0;
+    tr.push({ x: pos.x, z: pos.z });
+    this.walkSinceFix += step;
+    // keep a little more than one window
+    let len = 0;
+    for (let i = tr.length - 1; i > 0; i--) {
+      len += Math.hypot(tr[i].x - tr[i - 1].x, tr[i].z - tr[i - 1].z);
+      if (len > WALK_WINDOW_M * 1.6) {
+        tr.splice(0, i - 1);
+        break;
+      }
+    }
+    this.checkWalkHeading();
+  }
+
+  /**
+   * last WALK_WINDOW_M of walking is straight → its axis should match the route corridor
+   * you're on. Mismatch = heading error → rotate. Direction is ignored (U-turn safe).
+   */
+  checkWalkHeading() {
+    if (!this.xf || !this.facWps?.length || this.xfEase || this.arrived) return;
+    if (this.walkSinceFix < WALK_COOLDOWN_M) return;
+    const tr = this.walkTrail;
+    if (tr.length < 3) return;
+
+    // newest stretch of ≥ WALK_WINDOW_M
+    let len = 0;
+    let i0 = tr.length - 1;
+    while (i0 > 0 && len < WALK_WINDOW_M) {
+      len += Math.hypot(tr[i0].x - tr[i0 - 1].x, tr[i0].z - tr[i0 - 1].z);
+      i0 -= 1;
+    }
+    if (len < WALK_WINDOW_M) return;
+    const a = tr[i0];
+    const b = tr[tr.length - 1];
+    const cx = b.x - a.x;
+    const cz = b.z - a.z;
+    const chord = Math.hypot(cx, cz);
+    // turning (incl. a U-turn in progress) → not a straight walk, judge nothing
+    if (chord / len < WALK_STRAIGHT_RATIO) return;
+    for (let i = i0 + 1; i < tr.length - 1; i++) {
+      const dev = Math.abs((tr[i].x - a.x) * cz - (tr[i].z - a.z) * cx) / chord;
+      if (dev > WALK_MAX_DEV_M) return;
+    }
+
+    // walking axis in facility frame under the current transform (math angles)
+    const aXr = Math.atan2(-cz, cx); // XR plane p = (x, -z)
+    const aFac = aXr - this.xf.rot;
+    const mx = (a.x + b.x) / 2;
+    const mz = (a.z + b.z) / 2;
+    const mid = xfInverse(this.xf, mx, mz);
+    // a heading error displaces where we think you are by ~distance-from-pivot × sin(err):
+    // widen the "near a corridor" gate by that, or big errors could never be corrected
+    const fromPivot = this.xfPivotXr ? Math.hypot(mx - this.xfPivotXr.x, mz - this.xfPivotXr.z) : 0;
+
+    // nearest route corridor whose axis is plausibly this one
+    let best = null;
+    // corridor centre lines only — the merge leg from your start position is diagonal
+    const wps = this.corridorWps || this.facWps;
+    for (let i = 0; i < wps.length - 1; i++) {
+      const [x1, y1] = wps[i];
+      const [x2, y2] = wps[i + 1];
+      const sx = x2 - x1;
+      const sy = y2 - y1;
+      const segLen = Math.hypot(sx, sy);
+      if (segLen < WALK_SEG_MIN_M) continue;
+      const t = Math.max(0, Math.min(1, ((mid.fx - x1) * sx + (mid.fy - y1) * sy) / (segLen * segLen)));
+      const dist = Math.hypot(mid.fx - (x1 + t * sx), mid.fy - (y1 + t * sy));
+      const err = axisDiff(aFac, Math.atan2(sy, sx));
+      if (Math.abs(err) > (WALK_MAX_ERR_DEG * Math.PI) / 180) continue;
+      if (dist > Math.min(WALK_SEG_NEAR_MAX_M, WALK_SEG_NEAR_M + fromPivot * Math.abs(Math.sin(err)))) continue;
+      if (!best || dist < best.dist) best = { i, dist, err, x1, y1, sx, sy, segLen };
+    }
+    if (!best) return;
+
+    const errDeg = (best.err * 180) / Math.PI;
+    this.walkSinceFix = 0;
+    // once settled, a big one-off "error" is someone weaving across the aisle — ignore it
+    const settled = (this.walkCorrections || 0) >= WALK_SETTLED_AFTER;
+    if (settled && Math.abs(errDeg) > WALK_SETTLED_MAX_ERR_DEG) {
+      this.walkObs = [];
+      return;
+    }
+    // act only when two consecutive straight stretches agree (one stretch can be diagonal)
+    const obs = (this.walkObs = [...(this.walkObs || []), best.err].slice(-2));
+    if (obs.length < 2 || Math.abs(angDiff(obs[0], obs[1])) > (WALK_AGREE_DEG * Math.PI) / 180) return;
+    const agreed = (obs[0] + obs[1]) / 2;
+    this.walkObs = [];
+    if (Math.abs(agreed) < (WALK_MIN_ERR_DEG * Math.PI) / 180) {
+      this.walkCorrections = (this.walkCorrections || 0) + 1; // confirmed already aligned
+      return;
+    }
+    const gain = (this.lastFitSpan || 0) >= 6 ? WALK_GAIN_PNP_SPAN : WALK_GAIN;
+    // the heading error also pushed where we think you are off to the side; you've just
+    // walked straight down this corridor, so pull that back to within WALK_LANE_M of its line
+    const here = xfInverse(this.xf, this.tmp.x, this.tmp.z);
+    const t = Math.max(0, Math.min(1,
+      ((here.fx - best.x1) * best.sx + (here.fy - best.y1) * best.sy) / (best.segLen * best.segLen)));
+    const ox = best.x1 + t * best.sx - here.fx;
+    const oy = best.y1 + t * best.sy - here.fy;
+    const off = Math.hypot(ox, oy);
+    const pull = off > WALK_LANE_M ? (off - WALK_LANE_M) / off : 0;
+    const pivotFac = { fx: here.fx + ox * pull, fy: here.fy + oy * pull };
+    // aFac = aXr - rot → raising rot by err lines the walk up with the corridor
+    const rotDeg = this.rotateAbout(this.xf.rot + gain * agreed, { pivotFac });
+    this.walkCorrections = (this.walkCorrections || 0) + 1;
+    this.opts.handlers?.onHeadingFix?.({
+      source: "walk",
+      errDeg: (agreed * 180) / Math.PI,
+      rotDeg,
+      seg: best.i,
+      distM: best.dist,
+      straightM: len,
+    });
+  }
+
+  /**
+   * weaker PnP fix (rotation only): each gives rot = heading − camera yaw. Once
+   * HEAD_CONSENSUS_N recent ones agree within HEAD_CONSENSUS_SPREAD_DEG, rotate to their median.
+   */
+  addHeadingVote(fix) {
+    if (!this.xf || fix?.xr?.yaw == null || !Number.isFinite(fix.heading)) {
+      return { used: false, why: "no_yaw" };
+    }
+    // well-spread strong fixes already pin rotation better than weak votes
+    if (this.alignFixes.length >= 2 && (this.lastFitSpan || 0) >= ALIGN_SPAN_MIN_M) {
+      return { used: false, why: "strong_fit" };
+    }
+    const now = performance.now();
+    const th = (fix.heading * Math.PI) / 180 - fix.xr.yaw;
+    this.headVotes = this.headVotes.filter((v) => now - v.t < HEAD_CONSENSUS_MAX_AGE_MS);
+    this.headVotes.push({ th, t: now });
+    if (this.headVotes.length > HEAD_CONSENSUS_N) this.headVotes.shift();
+    const n = this.headVotes.length;
+    if (n < HEAD_CONSENSUS_N) return { used: false, why: `votes_${n}/${HEAD_CONSENSUS_N}` };
+
+    const mean = Math.atan2(
+      this.headVotes.reduce((s, v) => s + Math.sin(v.th), 0),
+      this.headVotes.reduce((s, v) => s + Math.cos(v.th), 0),
+    );
+    const devs = this.headVotes.map((v) => angDiff(v.th, mean));
+    const spreadDeg = (Math.max(...devs.map(Math.abs)) * 180) / Math.PI;
+    if (spreadDeg > HEAD_CONSENSUS_SPREAD_DEG) {
+      return { used: false, why: `spread_${spreadDeg.toFixed(0)}deg` };
+    }
+    const med = mean + [...devs].sort((p, q) => p - q)[Math.floor(n / 2)];
+    this.headVotes = [];
+    const rotDeg = this.rotateAbout(med);
+    this.walkSinceFix = 0; // let the walk check re-measure from the new heading
+    this.opts.handlers?.onHeadingFix?.({ source: "pnp_consensus", rotDeg, spreadDeg, votes: n });
+    return { used: true, rotDeg, spreadDeg };
   }
 
   /** pin at the corridor stop + chevron turning toward the bay */

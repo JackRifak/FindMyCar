@@ -8,22 +8,84 @@ floors:
     y1: -25.172
     x2: 11.695
     y2: -25.212
+    width: 2.0
+    width_left: 1.5
+    width_right: 0.5
   - x1: 11.667
     y1: -25.127
     x2: 11.752
     y2: -20.483
+    width: 1.0
+    width_left: 0.5
+    width_right: 0.5
   - x1: 11.724
     y1: -20.427
     x2: 14.997
     y2: -20.518
-  - x1: 5.736
-    y1: -25.135
-    x2: 5.388
-    y2: -4.16
+    width: 4.5
+    width_left: 2.0
+    width_right: 2.5
   - x1: 5.346
     y1: -4.16
     x2: -17.672
     y2: -4.055
+    width: 6.0
+    width_left: 3.0
+    width_right: 3.0
+  - x1: 5.641
+    y1: -22.203
+    x2: -16.934
+    y2: -22.157
+    width: 6.5
+    width_left: 3.0
+    width_right: 3.5
+  - x1: 11.673
+    y1: -25.12
+    x2: 22.269
+    y2: -25.335
+  - x1: 22.269
+    y1: -30.892
+    x2: 22.179
+    y2: -5.588
+    width: 6.0
+    width_left: 3.0
+    width_right: 3.0
+  - x1: 5.293
+    y1: -4.094
+    x2: 25.352
+    y2: -4.101
+    width: 6.0
+    width_left: 3.0
+    width_right: 3.0
+  - x1: 22.177
+    y1: -5.587
+    x2: 22.177
+    y2: -4.111
+    width: 6.5
+    width_left: 3.5
+    width_right: 3.0
+  - x1: 4.439
+    y1: -4.134
+    x2: 4.399
+    y2: -30.759
+    width: 7.0
+    width_left: 3.5
+    width_right: 3.5
+  - x1: 5.752
+    y1: -25.163
+    x2: 4.396
+    y2: -25.144
+    width: 2.0
+    width_left: 0.5
+    width_right: 1.5
+  - x1: 11.737
+    y1: -20.402
+    x2: 14.999
+    y2: -19.51
+  - x1: 11.753
+    y1: -20.451
+    x2: 14.939
+    y2: -21.982
   landmarks: []
   vehicle_slots:
   - slot_id: 87-04C
@@ -74,6 +136,42 @@ floors:
     zone: zone_00
     x: -1.732
     y: 1.919
+  - slot_id: 88-04A
+    zone: zone_00
+    x: -1.764
+    y: -16.501
+  - slot_id: 88-04B
+    zone: zone_00
+    x: -4.447
+    y: -16.495
+  - slot_id: 88-04C
+    zone: zone_00
+    x: -7.09
+    y: -16.43
+  - slot_id: NB1-031
+    zone: zone_00
+    x: -10.567
+    y: -16.413
+  - slot_id: NB1-032
+    zone: zone_00
+    x: -13.309
+    y: -16.388
+  - slot_id: NB1-033
+    zone: zone_00
+    x: -15.992
+    y: -16.442
+  - slot_id: 87-07B
+    zone: zone_00
+    x: 15.976
+    y: -12.965
+  - slot_id: 88-08C
+    zone: zone_00
+    x: 28.228
+    y: -19.277
+  - slot_id: 89-08C
+    zone: zone_00
+    x: 28.211
+    y: -28.107
 - floor: G
   zones: []
   walkable_segments:
@@ -85,12 +183,101 @@ floors:
     y1: -19.453
     x2: 15.212
     y2: -22.044
-  - x1: 15.397
-    y1: -19.08
-    x2: 15.212
-    y2: -22.044
   landmarks: []
   vehicle_slots: []
+- floor: B2
+  zones: []
+  walkable_segments:
+  - x1: 4.374
+    y1: -0.693
+    x2: 4.308
+    y2: -30.799
+    width: 7.5
+    width_left: 4.0
+    width_right: 3.5
+  - x1: 4.306
+    y1: -25.247
+    x2: 25.28
+    y2: -25.272
+    width: 1.0
+    width_left: 0.5
+    width_right: 0.5
+  - x1: 11.688
+    y1: -25.236
+    x2: 11.679
+    y2: -20.431
+    width: 1.0
+    width_left: 0.5
+    width_right: 0.5
+  - x1: 11.667
+    y1: -20.435
+    x2: 14.945
+    y2: -20.41
+    width: 4.5
+    width_left: 2.0
+    width_right: 2.5
+  - x1: -26.027
+    y1: -21.822
+    x2: 4.249
+    y2: -21.957
+    width: 6.5
+    width_left: 3.5
+    width_right: 3.0
+  - x1: 4.334
+    y1: -4.044
+    x2: -26.061
+    y2: -3.969
+    width: 6.0
+    width_left: 3.0
+    width_right: 3.0
+  - x1: 4.306
+    y1: -4.017
+    x2: 25.516
+    y2: -4.122
+    width: 6.5
+    width_left: 3.0
+    width_right: 3.5
+  - x1: 22.177
+    y1: -0.854
+    x2: 22.22
+    y2: -30.921
+    width: 6.0
+    width_left: 3.0
+    width_right: 3.0
+  landmarks: []
+  vehicle_slots:
+  - slot_id: 109-06A
+    zone: zone_01
+    x: -1.796
+    y: 2.114
+  - slot_id: 109-06B
+    zone: zone_01
+    x: -4.38
+    y: 2.164
+  - slot_id: 109-06C
+    zone: zone_01
+    x: -6.99
+    y: 2.135
+  - slot_id: 109-05A
+    zone: zone_01
+    x: -10.615
+    y: 2.162
+  - slot_id: 109-05B
+    zone: zone_01
+    x: -13.219
+    y: 2.171
+  - slot_id: 109-05C
+    zone: zone_01
+    x: -15.803
+    y: 2.18
+  - slot_id: 109-08A
+    zone: zone_01
+    x: 22.232
+    y: 2.026
+  - slot_id: 109-10B
+    zone: zone_01
+    x: 28.215
+    y: -5.379
 vertical_connectors:
 - connector_id: PL3-N03
   type: elevator
@@ -102,6 +289,9 @@ vertical_connectors:
     B1:
       x: 15.397
       y: -19.08
+    B2:
+      x: 15.397
+      y: -19.08
 - connector_id: PL4-N03
   type: elevator
   penalty_cost: 12.0
@@ -110,5 +300,8 @@ vertical_connectors:
       x: 15.212
       y: -22.044
     B1:
+      x: 15.212
+      y: -22.044
+    B2:
       x: 15.212
       y: -22.044

@@ -40,11 +40,12 @@ from fmc.api.live_diagnostics import append_client_event, image_quality_metrics,
 from fmc.dataset.schema import load_records
 from fmc.dataset.locations import load_locations_csv
 from fmc.floors import normalize_floor_id
-from fmc.fusion.map_matching import snap_to_walkable
+from fmc.fusion.map_matching import match_to_walkable
 from fmc.fusion.sensor_fusion import PositionFuser
 from fmc.navigation.routing import calculate_multifloor_route, calculate_route
 from fmc.vio.tracker import SixDofPose, TrueVIOTracker
 from fmc.vpr import cabin_colour
+from fmc.vpr.camera_intrinsics import parse_intrinsics
 from fmc.vpr.pipeline import VPRPipeline
 from fmc.mapping.continuous_mapper import ContinuousMapper
 
@@ -169,6 +170,28 @@ def diagnostics_client_event(event: dict):
     return {"logged": True}
 
 
+XR_ALIGN_FRAME_KEEP = 20
+
+
+def _keep_xr_align_frame(frame, result, has_intrinsics: bool) -> None:
+    """Rolling sample of AR-camera alignment frames (separate from the capped miss archive)
+    so PnP failures on WebXR frames can be inspected."""
+    try:
+        out = _site.data_dir / "diagnostics" / "xr_align_frames"
+        out.mkdir(parents=True, exist_ok=True)
+        pose = getattr(result, "pose_6dof", None)
+        tag = (
+            f"ok_{pose.num_inliers}inl" if result.matched and pose is not None
+            else "miss"
+        ) + ("_K" if has_intrinsics else "_guessK")
+        cv2.imwrite(str(out / f"{time.strftime('%H%M%S')}_{int(time.time() * 1000) % 1000:03d}_{tag}.jpg"), frame)
+        old = sorted(out.glob("*.jpg"))
+        for p in old[:-XR_ALIGN_FRAME_KEEP]:
+            p.unlink(missing_ok=True)
+    except OSError as e:
+        logger.debug("xr align frame not saved: %s", e)
+
+
 @app.post("/localize", response_model=PositionResponse)
 async def localize(
     device_id: str,
@@ -199,6 +222,14 @@ async def localize(
     trigger: str | None = Form(None),
     # "1" right after a lift: classify lobby colour, restrict PnP to that floor
     cabin_check: str | None = Form(None),
+    # real intrinsics of the uploaded image (WebXR camera-access frames are a screen crop —
+    # the default focal guess is ~15% off for them and PnP RANSAC rejects every match)
+    cam_fx: float | None = Form(None),
+    cam_fy: float | None = Form(None),
+    cam_cx: float | None = Form(None),
+    cam_cy: float | None = Form(None),
+    cam_width: float | None = Form(None),
+    cam_height: float | None = Form(None),
 ):
     """First fix / relocalisation: submit a camera frame, get a VPR-based position."""
     t0 = time.perf_counter()
@@ -239,9 +270,19 @@ async def localize(
         if cabin.floor is not None:
             floor_prior = normalize_floor_id(cabin.floor)
             restrict_floor = True
+    intr = parse_intrinsics(cam_fx, cam_fy, cam_cx, cam_cy, cam_width, cam_height)
+    if intr is not None:
+        logger.info(
+            f"[{device_id}] intrinsics fx={intr.fx:.0f} fy={intr.fy:.0f} cx={intr.cx:.0f} cy={intr.cy:.0f} "
+            f"for {intr.width}x{intr.height} (guess would be f={max(w, h) * 0.85:.0f})"
+        )
     t_vpr0 = time.perf_counter()
-    result = pipeline.localize(frame, prior_floor=floor_prior, restrict_floor=restrict_floor)
+    result = pipeline.localize(
+        frame, prior_floor=floor_prior, restrict_floor=restrict_floor, intrinsics=intr,
+    )
     t_vpr_ms = (time.perf_counter() - t_vpr0) * 1000
+    if cap_trigger == "xr_align":
+        _keep_xr_align_frame(frame, result, intr is not None)
     # seed VIO pose before reset so facility lock is relative to current ARCore frame
     if vio_x is not None and vio_z is not None:
         tracker = fuser.vio_tracker
@@ -334,7 +375,21 @@ async def localize(
             cabin_score=round(cabin.score, 3) if cabin else None,
         )
 
-    snapped_x, snapped_y = snap_to_walkable(fused.x, fused.y, _site.walkable_segments(fused.floor))
+    # sticky + direction-aware: don't jump to a neighbouring corridor on a noisy fix
+    # (the route would then start there and guide you across pillars/cars to reach it)
+    prev_seg = getattr(fuser, "_match_seg", None)
+    if getattr(fuser, "_match_floor", None) != fused.floor:
+        prev_seg = None
+    center: list = []
+    snapped_x, snapped_y, fuser._match_seg = match_to_walkable(
+        fused.x, fused.y, _site.walkable_segments(fused.floor),
+        heading_deg=float(fused.heading), prev_key=prev_seg, center_out=center,
+    )
+    fuser._match_floor = fused.floor
+    # route from the matched corridor's centre line (valid while the position is unchanged)
+    fuser._route_start = (
+        normalize_floor_id(fused.floor), snapped_x, snapped_y, *center[0],
+    ) if center else None
     snap_drift = float(np.hypot(snapped_x - fused.x, snapped_y - fused.y))
     total_ms = (time.perf_counter() - t0) * 1000
 
@@ -349,8 +404,10 @@ async def localize(
     logger.info(
         f"[{device_id}] LOCALIZE MATCH loc={loc_kind} method={loc_method} photo={rec_id} (floor={fused.floor}) | "
         f"frame_source={frame_src} nav_mode={nav} | "
-        f"raw=({fused.x:.2f}, {fused.y:.2f}) -> snapped=({snapped_x:.2f}, {snapped_y:.2f}) "
-        f"[snap_dist={snap_drift:.2f}m] | heading={fused.heading:.1f}° | conf={fused.confidence:.2f} | "
+        f"raw=({fused.x:.2f}, {fused.y:.2f}) -> in_corridor=({snapped_x:.2f}, {snapped_y:.2f}) "
+        f"[pulled={snap_drift:.2f}m"
+        + (f" off_centre={math.hypot(fused.x - center[0][0], fused.y - center[0][1]):.2f}m" if center else "")
+        + f"] | heading={fused.heading:.1f}° | conf={fused.confidence:.2f} | "
         f"vpr={t_vpr_ms:.1f}ms | total_server={total_ms:.1f}ms"
     )
 
@@ -393,6 +450,8 @@ def seed_position(device_id: str, body: SeedPoseBody):
     fuser._last_x, fuser._last_y = float(body.x), float(body.y)
     fuser._last_heading = float(body.heading)
     fuser._last_method = f"seed_{body.reason}"
+    fuser._match_seg = None  # new place — no corridor to stick to
+    fuser._route_start = None
     fuser._last_confidence = 0.2
     fuser.mark_live()
     logger.info(
@@ -634,6 +693,11 @@ def get_route(device_id: str, slot_id: str):
         raise HTTPException(status_code=404, detail="No known position for this device — call /localize first")
     floor, x, y = last
     floor = normalize_floor_id(floor)
+    # start on the corridor the last fix was matched to, not whichever centre line is
+    # nearest (near a junction that can be the crossing corridor)
+    rs = getattr(fuser, "_route_start", None)
+    if rs and rs[0] == floor and math.hypot(rs[1] - x, rs[2] - y) < 0.05:
+        x, y = rs[3], rs[4]
 
     slot = _site.vehicle_slot(slot_id)
     if slot is None:
@@ -790,7 +854,7 @@ def map_set_floor(floor: str = Form(...)):
 @app.get("/map/floors")
 def map_list_floors():
     """Floors declared in site config only (user-assigned names / count)."""
-    cfg = list(_site.floor_ids())
+    cfg = list(_site.floor_ids_bottom_up())  # bottom → top (lift up/down + 3D stack)
     map_only: list[str] = []
     try:
         from fmc.vpr.pnp_localizer import available_map_floors
@@ -1137,33 +1201,7 @@ async def map_keyframe(
         f"Q=[{vio_qw:.2f}, {vio_qx:.2f}, {vio_qy:.2f}, {vio_qz:.2f}]"
     )
 
-    # first frame after reload: pull prior finalized map so it isn't lost on next finalize
-    if not getattr(_global_mapper, "_disk_hydrated", False):
-        try:
-            _global_mapper.hydrate_from_disk(_site)
-            if _global_mapper.landmarks or _global_mapper.user_tags:
-                # don't append new walk onto an already-aligned session id
-                from fmc.mapping.continuous_mapper import COMMITTED_SESSION
-                aligned = getattr(_global_mapper, "_aligned_sessions", set())
-                if _global_mapper._session_id in aligned or COMMITTED_SESSION in aligned:
-                    _global_mapper._session_id = _global_mapper._next_free_session_id()
-                    logger.info(
-                        "[API /map/keyframe] Auto session=%s after hydrating %s landmarks",
-                        _global_mapper._session_id, len(_global_mapper.landmarks),
-                    )
-        except Exception as e:
-            logger.warning("[API /map/keyframe] Disk hydrate failed: %s", e)
-
-    # a walk recorded into an already-aligned session is never aligned (finalize skips it)
-    # and gets exported in raw ARCore coords — start a fresh session instead
-    if _global_mapper._session_id in getattr(_global_mapper, "_aligned_sessions", set()):
-        old_sid = _global_mapper._session_id
-        _global_mapper._session_id = _global_mapper._next_free_session_id()
-        logger.warning(
-            "[API /map/keyframe] Session %s is already aligned — new keyframes go to session %s "
-            "(drop 2+ tags in this walk, then Finalize)",
-            old_sid, _global_mapper._session_id,
-        )
+    _prepare_walk_session("keyframe")
 
     frame_id = _global_mapper.add_keyframe(frame, timestamp, pose, heading_deg=heading_deg)
     new_landmarks = getattr(_global_mapper, 'last_new_landmarks', 0)
@@ -1187,10 +1225,48 @@ async def map_keyframe(
         "tracked_features": getattr(_global_mapper, 'last_tracked_keypoints', [])
     }
 
+def _prepare_walk_session(source: str) -> None:
+    """Make sure the current walk records into a fresh, unaligned session.
+
+    Shared by keyframes AND tags: after a restart a tag dropped before the first keyframe
+    used to stay in the old session while the walk's keyframes moved to a new one — each
+    session then had 1 tag, neither could be aligned, and the walk was exported in raw
+    ARCore coordinates.
+    """
+    # first request after reload: pull prior finalized map so it isn't lost on next finalize
+    if not getattr(_global_mapper, "_disk_hydrated", False):
+        try:
+            _global_mapper.hydrate_from_disk(_site)
+            if _global_mapper.landmarks or _global_mapper.user_tags:
+                # don't append new walk onto an already-aligned session id
+                from fmc.mapping.continuous_mapper import COMMITTED_SESSION
+                aligned = getattr(_global_mapper, "_aligned_sessions", set())
+                if _global_mapper._session_id in aligned or COMMITTED_SESSION in aligned:
+                    _global_mapper._session_id = _global_mapper._next_free_session_id()
+                    logger.info(
+                        "[API /map/%s] Auto session=%s after hydrating %s landmarks",
+                        source, _global_mapper._session_id, len(_global_mapper.landmarks),
+                    )
+        except Exception as e:
+            logger.warning("[API /map/%s] Disk hydrate failed: %s", source, e)
+
+    # a walk recorded into an already-aligned session is never aligned (finalize skips it)
+    # and would be exported in raw ARCore coords — start a fresh session instead
+    if _global_mapper._session_id in getattr(_global_mapper, "_aligned_sessions", set()):
+        old_sid = _global_mapper._session_id
+        _global_mapper._session_id = _global_mapper._next_free_session_id()
+        logger.warning(
+            "[API /map/%s] Session %s is already aligned — this walk goes to session %s "
+            "(drop 2+ tags in this walk, then Finalize)",
+            source, old_sid, _global_mapper._session_id,
+        )
+
+
 @app.post("/map/tag")
 def map_tag(tag: MappingTag):
     """Add a ground truth physical anchor to the map."""
     logger.info(f"[API /map/tag] Tag received: pos=({tag.x:.2f}, {tag.y:.2f}), floor={tag.floor}, time={tag.timestamp}")
+    _prepare_walk_session("tag")
     _global_mapper.add_tag(tag.timestamp, tag.x, tag.y, tag.floor)
     total_tags = len(_global_mapper.user_tags)
     _persist_live_tags()
@@ -1280,7 +1356,8 @@ def map_finalize():
         )
         aligned = bool(getattr(_global_mapper, "_is_aligned", False))
         npz_db = _site.index_dir / "map_landmarks.npz"
-        h2_stem = _site.index_dir / "map_h2gis"
+        from fmc.storage.h2gis_store import db_file_for_site
+        h2_stem = db_file_for_site(_site)
         h2_ready = Path(str(h2_stem) + ".mv.db").exists() or Path(str(h2_stem) + ".db").exists()
         # hot-reload PnP index so /localize can use the new 3D map immediately
         try:
@@ -1397,17 +1474,18 @@ def get_cloud_layers(max_per_floor: int = 8000):
     """Point cloud split by floor for stacked 3D visualization."""
     from fmc.storage.h2gis_store import load_landmarks
 
-    floor_order = list(_site.floor_ids())
+    floor_order = list(_site.floor_ids_bottom_up())  # stack: index 0 = lowest floor
     loaded = None
     try:
-        loaded = load_landmarks(_site)
+        # the viewer shows H2GIS (the map DB); NPZ only if the DB is missing/empty
+        loaded = load_landmarks(_site, ignore_stale=True)
     except Exception as e:
         logger.warning("[API /map/cloud-layers] H2GIS load failed: %s", e)
     if loaded is None:
         npz = _site.index_dir / "map_landmarks.npz"
         if npz.exists():
             try:
-                data = np.load(npz)
+                data = np.load(npz, allow_pickle=True)  # floor labels: object array
                 pos = data["positions"]
                 fls = data["floors"] if "floors" in data.files else np.array(["1"] * len(pos))
                 lids = data["ids"] if "ids" in data.files else None
@@ -1501,4 +1579,16 @@ def mapping_redirect():
 # not shadowed by the general static site at "/".
 app.mount("/parking-ui", StaticFiles(directory=str(PARKING_UI_DIR), html=True), name="parking_ui")
 app.mount("/parking", StaticFiles(directory=str(PARKING_UI_DIR), html=True), name="parking_ui_alt")
+
+
+@app.get("/floor-plan", include_in_schema=False)
+def floor_plan_redirect():
+    """Editor page uses relative asset/API paths — needs the trailing slash."""
+    return RedirectResponse(url="/floor-plan/", status_code=307)
+
+
+# floor-plan editor (fmc.webtools) served by this same server on the same port
+from fmc.webtools.server import app as floor_plan_app  # noqa: E402
+
+app.mount("/floor-plan", floor_plan_app, name="floor_plan")
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

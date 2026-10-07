@@ -88,7 +88,7 @@ class VPRPipeline:
         from fmc.floors import adjacent_floors, normalize_floor_id
 
         mapped = available_map_floors(self.site)
-        declared = self.site.floor_ids()
+        declared = self.site.floor_ids_bottom_up()  # physical adjacency (B2–B1–G)
         if not mapped and self.map_index is not None:
             mapped = declared or ["1"]
 
@@ -125,9 +125,15 @@ class VPRPipeline:
         query_image: np.ndarray,
         prior_floor=None,
         restrict_floor: bool = False,
+        intrinsics=None,
     ) -> VPRResult:
-        """restrict_floor: only try prior_floor (floor already confirmed, e.g. by cabin colour)."""
+        """restrict_floor: only try prior_floor (floor already confirmed, e.g. by cabin colour).
+        intrinsics: fmc.vpr.camera_intrinsics.Intrinsics of this exact image (else a guess)."""
         from fmc.floors import normalize_floor_id
+        from fmc.vpr.camera_intrinsics import camera_matrix
+
+        h_img, w_img = query_image.shape[:2]
+        K = camera_matrix(w_img, h_img, intrinsics) if intrinsics is not None else None
 
         # --- Stage A: floor-partitioned 2D-to-3D PnP ---
         if restrict_floor and prior_floor is not None:
@@ -139,7 +145,7 @@ class VPRPipeline:
             if idx is None:
                 continue
             t0 = time.perf_counter()
-            pose = idx.localize(query_image)
+            pose = idx.localize(query_image, K=K)
             t_pnp = (time.perf_counter() - t0) * 1000
             if pose is None:
                 logger.info("[VPR] PnP floor=%s failed (%.1fms)", floor, t_pnp)
@@ -176,7 +182,7 @@ class VPRPipeline:
         # unpartitioned fallback (legacy single-floor maps)
         if self.map_index is not None and not floors:
             t0 = time.perf_counter()
-            pose = self.map_index.localize(query_image)
+            pose = self.map_index.localize(query_image, K=K)
             t_pnp = (time.perf_counter() - t0) * 1000
             if pose is not None:
                 floor = normalize_floor_id(getattr(pose, "floor", prior_floor or "1") or "1")

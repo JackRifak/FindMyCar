@@ -129,7 +129,8 @@ class MapLandmarkIndex:
         cx, cy = width / 2.0, height / 2.0
         return np.array([[f, 0.0, cx], [0.0, f, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
 
-    def localize(self, query_bgr: np.ndarray) -> Optional[Pose6Dof]:
+    def localize(self, query_bgr: np.ndarray, K: Optional[np.ndarray] = None) -> Optional[Pose6Dof]:
+        """K: real 3x3 intrinsics for this image (else a ~61° HFOV guess)."""
         if query_bgr is None or query_bgr.size == 0:
             return None
         h, w = query_bgr.shape[:2]
@@ -160,7 +161,8 @@ class MapLandmarkIndex:
         pts_2d = np.array([kpts[m.queryIdx].pt for m in good], dtype=np.float64)
         pts_3d = np.array([self.positions[m.trainIdx] for m in good], dtype=np.float64)
 
-        K = self.camera_matrix(w, h)
+        if K is None:
+            K = self.camera_matrix(w, h)
         dist = np.zeros(5, dtype=np.float64)
 
         ok, rvec, tvec, inliers = cv2.solvePnPRansac(

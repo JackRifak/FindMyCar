@@ -81,6 +81,12 @@ class SiteConfig:
         """Declared floors in config order (user-defined naming & count)."""
         return [normalize_floor_id(f.get("floor")) for f in self.raw.get("floors", [])]
 
+    def floor_ids_bottom_up(self) -> list[str]:
+        """Declared floors in physical order, lowest first (B2, B1, G…) — for stacking,
+        up/down and adjacency. Config order is only the order they were added."""
+        from fmc.floors import floors_bottom_up
+        return floors_bottom_up(self.floor_ids())
+
     def vertical_connectors(self) -> list[dict]:
         """Stairs / elevators / ramps linking floors (see site config.yaml)."""
         raw = self.raw.get("vertical_connectors") or []
