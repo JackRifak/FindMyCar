@@ -606,3 +606,542 @@
 {"site_id":"site_00","received_at":1791416719.3624759,"device_id":"parking-mobile-mpbq1t","event":"xr_align","nav_mode":"webxr","reason":"ok #8 inl=12 res=1.11m dest_shift=0.46m rot=-1.0deg fixes=3 span=14.8m"}
 {"site_id":"site_00","received_at":1791416722.7553256,"device_id":"parking-mobile-mpbq1t","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=2.7deg rot=0.8deg seg=2 dist=0.0m straight=6.2m"}
 {"site_id":"site_00","received_at":1791416736.459423,"device_id":"parking-mobile-mpbq1t","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791418540.9378207,"device_id":"parking-mobile-fch4wj","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791418576.958486,"device_id":"parking-mobile-fch4wj","event":"xr_align","nav_mode":"webxr","reason":"skip #2 lowconf_0.43_25inl vote:votes_1/3"}
+{"site_id":"site_00","received_at":1791418580.672447,"device_id":"parking-mobile-fch4wj","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791418580.7237852,"device_id":"parking-mobile-fch4wj","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791418581.8666937,"device_id":"parking-mobile-fch4wj","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791418585.6246903,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418585.6257608,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418585.6380289,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418585.638545,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418585.6947095,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418585.6941326,"device_id":"parking-mobile-fch4wj","event":"landing_seed","nav_mode":"camera","reason":"cabin_B1_score0.91"}
+{"site_id":"site_00","received_at":1791418585.7074494,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418588.1290946,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418590.6257148,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418593.1116562,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418595.6402829,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418598.1377194,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418600.7710485,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418603.12681,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418605.7536933,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418608.1392062,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418610.644537,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418613.1523194,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418615.6451325,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418618.1330147,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418620.6172426,"device_id":"parking-mobile-fch4wj","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418623.2009928,"device_id":"parking-mobile-fch4wj","event":"webxr_start","nav_mode":"webxr","reason":"fresh_floor"}
+{"site_id":"site_00","received_at":1791418650.1164646,"device_id":"parking-mobile-fch4wj","event":"facing_uturn","nav_mode":"webxr","reason":"rel=-122deg heading=270"}
+{"site_id":"site_00","received_at":1791418650.8552194,"device_id":"parking-mobile-fch4wj","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791418694.119133,"device_id":"parking-mobile-gxjfc1","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791418702.5030556,"device_id":"parking-mobile-gxjfc1","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791418702.5035856,"device_id":"parking-mobile-gxjfc1","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791418703.351666,"device_id":"parking-mobile-gxjfc1","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791418705.562921,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418705.562921,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418705.5670197,"device_id":"parking-mobile-gxjfc1","event":"landing_seed","nav_mode":"camera","reason":"cabin_B1_score0.96"}
+{"site_id":"site_00","received_at":1791418705.5685868,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418705.5691433,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418705.569665,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418705.5707393,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418708.068351,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418710.551143,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418713.0667017,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418715.567221,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418718.0550704,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418720.55749,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418723.060018,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418725.5899415,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418728.0889213,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418730.5846877,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418733.0725741,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418735.5574174,"device_id":"parking-mobile-gxjfc1","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791418738.0660462,"device_id":"parking-mobile-gxjfc1","event":"webxr_start","nav_mode":"webxr","reason":"fresh_floor"}
+{"site_id":"site_00","received_at":1791418781.7413251,"device_id":"parking-mobile-gxjfc1","event":"xr_align","nav_mode":"webxr","reason":"skip #15 lowconf_0.44_16inl"}
+{"site_id":"site_00","received_at":1791418784.1215298,"device_id":"parking-mobile-gxjfc1","event":"xr_align","nav_mode":"webxr","reason":"ok #16 inl=14 res=5.48m dest_shift=5.65m rot=-8.7deg fixes=1 span=0.0m snap"}
+{"site_id":"site_00","received_at":1791418789.900053,"device_id":"parking-mobile-gxjfc1","event":"xr_align","nav_mode":"webxr","reason":"ok #18 inl=16 res=0.37m dest_shift=0.31m rot=0.9deg fixes=2 span=5.8m"}
+{"site_id":"site_00","received_at":1791418793.269594,"device_id":"parking-mobile-gxjfc1","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791418981.0636213,"device_id":"parking-mobile-qgvf40","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791419002.258333,"device_id":"parking-mobile-qgvf40","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791419002.2814877,"device_id":"parking-mobile-qgvf40","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791419003.3879564,"device_id":"parking-mobile-qgvf40","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791419010.2886772,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419010.3108625,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419010.3119059,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419010.3129594,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419010.3139958,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419010.3150194,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419010.3261116,"device_id":"parking-mobile-qgvf40","event":"landing_seed","nav_mode":"camera","reason":"cabin_B1_score0.80"}
+{"site_id":"site_00","received_at":1791419012.7296095,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419015.2253592,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419017.7255406,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419020.2082655,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419022.7123723,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419025.2619429,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419027.718667,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419030.2265747,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419032.7426944,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419035.2304027,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419037.748499,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419040.2439735,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419043.092057,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419045.4862125,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419047.7293742,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419050.2243588,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419052.7454555,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419055.2297766,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419057.7134273,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419060.2278705,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419062.726816,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419065.2494354,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419067.729814,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419070.2245173,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419072.86309,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419075.232681,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419077.7414956,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419080.238701,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419082.768636,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419085.240005,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419087.7689488,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419090.2260811,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419092.7377036,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419095.252098,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419097.7306824,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419100.2426424,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419102.728669,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419105.264203,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419107.7534392,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419110.2264907,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419112.7639341,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419115.2363944,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419117.7758539,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419120.2237673,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419122.7232962,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419125.2575538,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419127.788326,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419130.2256103,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419132.7166133,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419135.2277257,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419137.7317646,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419140.226747,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419142.7295532,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419145.302236,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419147.7414567,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419150.22754,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419152.7291114,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419155.2801843,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419157.7682464,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419160.2687552,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419162.7506018,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419165.2234614,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419167.746546,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419170.225134,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419172.7435365,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419175.2787876,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419177.8202178,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419180.2480323,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419182.8644454,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419185.2915049,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419187.787849,"device_id":"parking-mobile-qgvf40","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791419188.9478173,"device_id":"parking-mobile-qgvf40","event":"webxr_start","nav_mode":"webxr","reason":"fresh_floor"}
+{"site_id":"site_00","received_at":1791419227.7972193,"device_id":"parking-mobile-qgvf40","event":"xr_align","nav_mode":"webxr","reason":"skip #10 lowconf_0.46_32inl vote:votes_1/3"}
+{"site_id":"site_00","received_at":1791419234.725723,"device_id":"parking-mobile-qgvf40","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=2.9deg rot=1.5deg seg=5 dist=0.1m straight=6.0m"}
+{"site_id":"site_00","received_at":1791419240.8698444,"device_id":"parking-mobile-qgvf40","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791421919.4807546,"device_id":"parking-mobile-k9e9xg","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791421933.8636935,"device_id":"parking-mobile-k9e9xg","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791421933.9141853,"device_id":"parking-mobile-k9e9xg","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791421935.0385802,"device_id":"parking-mobile-k9e9xg","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791421937.9151511,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421937.9157686,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421937.9259946,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421937.9254842,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421937.9265852,"device_id":"parking-mobile-k9e9xg","event":"landing_seed","nav_mode":"camera","reason":"cabin_B1_score0.95"}
+{"site_id":"site_00","received_at":1791421937.9276037,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421937.9276037,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421940.4051466,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421942.9102807,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421945.5433137,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421947.9046292,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421950.4816675,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421952.980827,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421955.4091702,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421957.909124,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421960.4076831,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421962.8964515,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421965.4112625,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421967.941076,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421970.4233096,"device_id":"parking-mobile-k9e9xg","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791421971.494713,"device_id":"parking-mobile-k9e9xg","event":"webxr_start","nav_mode":"webxr","reason":"fresh_floor"}
+{"site_id":"site_00","received_at":1791422010.2659676,"device_id":"parking-mobile-k9e9xg","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791422032.6829998,"device_id":"parking-mobile-k9e9xg","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791422049.6589348,"device_id":"parking-mobile-k9e9xg","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791422050.419788,"device_id":"parking-mobile-k9e9xg","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791422071.1880326,"device_id":"parking-mobile-djuzci","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791422196.7403288,"device_id":"parking-mobile-2esnwu","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791422202.8620539,"device_id":"parking-mobile-2esnwu","event":"xr_align","nav_mode":"webxr","reason":"skip #2 lowconf_0.50_45inl vote:votes_1/3"}
+{"site_id":"site_00","received_at":1791422211.3842025,"device_id":"parking-mobile-2esnwu","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791422279.4565036,"device_id":"parking-mobile-yyzvux","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791422286.8087857,"device_id":"parking-mobile-yyzvux","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791422314.1110303,"device_id":"parking-mobile-dyifg1","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791422360.0315435,"device_id":"parking-mobile-dyifg1","event":"xr_align_stale","nav_mode":"webxr","reason":"jump_3.7m lost=34ms jump=3.7m"}
+{"site_id":"site_00","received_at":1791422364.6047888,"device_id":"parking-mobile-dyifg1","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=986ms jump=2.5m"}
+{"site_id":"site_00","received_at":1791422367.4465613,"device_id":"parking-mobile-dyifg1","event":"xr_anchor_fix","nav_mode":"webxr","reason":"recovered anchors=3 shift=0.11m rot=0.7deg placed=8 fixes=1"}
+{"site_id":"site_00","received_at":1791422367.4597895,"device_id":"parking-mobile-dyifg1","event":"xr_align_recovered","nav_mode":"webxr","reason":"anchors shift=0.11m"}
+{"site_id":"site_00","received_at":1791422395.2631776,"device_id":"parking-mobile-dyifg1","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791422664.4573662,"device_id":"parking-mobile-bm7ywn","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791422672.2777512,"device_id":"parking-mobile-bm7ywn","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791422672.2783139,"device_id":"parking-mobile-bm7ywn","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791422673.281627,"device_id":"parking-mobile-bm7ywn","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791422679.6534667,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422679.665063,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422679.6655707,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422679.6655707,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422679.6671584,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422679.6686895,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422679.669697,"device_id":"parking-mobile-bm7ywn","event":"landing_seed","nav_mode":"camera","reason":"cabin_B1_score0.92"}
+{"site_id":"site_00","received_at":1791422682.0783324,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422684.5970194,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422687.1152515,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422689.6184635,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422692.1176248,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422694.585068,"device_id":"parking-mobile-bm7ywn","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791422697.1163373,"device_id":"parking-mobile-bm7ywn","event":"webxr_start","nav_mode":"webxr","reason":"fresh_floor"}
+{"site_id":"site_00","received_at":1791422711.2944827,"device_id":"parking-mobile-bm7ywn","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791422781.4880342,"device_id":"parking-mobile-s04gy5","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791422785.1993537,"device_id":"parking-mobile-s04gy5","event":"xr_align","nav_mode":"webxr","reason":"skip #1 lowconf_0.44_14inl"}
+{"site_id":"site_00","received_at":1791422787.2250752,"device_id":"parking-mobile-s04gy5","event":"xr_align","nav_mode":"webxr","reason":"skip #2 lowconf_0.47_12inl"}
+{"site_id":"site_00","received_at":1791422789.2291963,"device_id":"parking-mobile-s04gy5","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791422789.300885,"device_id":"parking-mobile-s04gy5","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791422790.5346122,"device_id":"parking-mobile-s04gy5","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791423895.8903651,"device_id":"parking-mobile-qc307g","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791423911.703116,"device_id":"parking-mobile-qc307g","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791423911.704854,"device_id":"parking-mobile-qc307g","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791423912.803926,"device_id":"parking-mobile-qc307g","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791423943.9091463,"device_id":"parking-mobile-qc307g","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791423943.933773,"device_id":"parking-mobile-qc307g","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791423943.949142,"device_id":"parking-mobile-qc307g","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791423943.9822576,"device_id":"parking-mobile-qc307g","event":"landing_seed","nav_mode":"camera","reason":"cabin_B2_score0.99"}
+{"site_id":"site_00","received_at":1791423944.1554353,"device_id":"parking-mobile-qc307g","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791423944.1560128,"device_id":"parking-mobile-qc307g","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791423946.4069238,"device_id":"parking-mobile-qc307g","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791423948.8755794,"device_id":"parking-mobile-qc307g","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791423951.4315548,"device_id":"parking-mobile-qc307g","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791423953.8707428,"device_id":"parking-mobile-qc307g","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791423956.7515295,"device_id":"parking-mobile-qc307g","event":"webxr_start","nav_mode":"webxr","reason":"fresh_floor"}
+{"site_id":"site_00","received_at":1791423979.485574,"device_id":"parking-mobile-qc307g","event":"xr_align","nav_mode":"webxr","reason":"ok #8 inl=16 res=1.77m dest_shift=2.66m rot=-8.8deg fixes=1 span=0.0m snap"}
+{"site_id":"site_00","received_at":1791423990.6110466,"device_id":"parking-mobile-qc307g","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=-2.9deg rot=-1.5deg seg=4 dist=0.2m straight=6.0m"}
+{"site_id":"site_00","received_at":1791423997.9784722,"device_id":"parking-mobile-qc307g","event":"xr_align","nav_mode":"webxr","reason":"skip #15 lowconf_0.43_26inl vote:votes_1/3"}
+{"site_id":"site_00","received_at":1791424000.4302084,"device_id":"parking-mobile-qc307g","event":"xr_align","nav_mode":"webxr","reason":"skip #16 lowconf_0.42_14inl"}
+{"site_id":"site_00","received_at":1791424005.9658723,"device_id":"parking-mobile-qc307g","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791424073.8974814,"device_id":"parking-mobile-tbggy6","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791424105.1702828,"device_id":"parking-mobile-tbggy6","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791424105.1708171,"device_id":"parking-mobile-tbggy6","event":"webxr_end","nav_mode":"camera","reason":"lift"}
+{"site_id":"site_00","received_at":1791424106.2989862,"device_id":"parking-mobile-tbggy6","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791424109.604583,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424109.6106045,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424109.6408927,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424109.6408927,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424109.6419468,"device_id":"parking-mobile-tbggy6","event":"landing_seed","nav_mode":"camera","reason":"cabin_B1_score0.87"}
+{"site_id":"site_00","received_at":1791424109.6715436,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424109.6715436,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424112.1793165,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424114.6589525,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424117.1705375,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424119.594134,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424122.1071384,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424124.635668,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424127.0768628,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424128.3159952,"device_id":"parking-mobile-tbggy6","event":"webxr_start","nav_mode":"webxr","reason":"fresh_floor"}
+{"site_id":"site_00","received_at":1791424149.6242018,"device_id":"parking-mobile-tbggy6","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791424151.6325326,"device_id":"parking-mobile-tbggy6","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=3211ms jump=1.2m"}
+{"site_id":"site_00","received_at":1791424151.638467,"device_id":"parking-mobile-tbggy6","event":"xr_track_back","nav_mode":"webxr","reason":"lost_3212ms"}
+{"site_id":"site_00","received_at":1791424160.191326,"device_id":"parking-mobile-tbggy6","event":"facing_uturn","nav_mode":"webxr","reason":"rel=-122deg heading=269"}
+{"site_id":"site_00","received_at":1791424166.3432722,"device_id":"parking-mobile-tbggy6","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791424169.4101593,"device_id":"parking-mobile-tbggy6","event":"webxr_end","nav_mode":"camera","reason":"dead"}
+{"site_id":"site_00","received_at":1791424169.4621036,"device_id":"parking-mobile-tbggy6","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791424170.6823604,"device_id":"parking-mobile-tbggy6","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791424187.0232956,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424187.132695,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424187.3796813,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424187.380202,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424187.3823287,"device_id":"parking-mobile-tbggy6","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791424189.345037,"device_id":"parking-mobile-tbggy6","event":"webxr_start","nav_mode":"webxr","reason":"fresh_floor"}
+{"site_id":"site_00","received_at":1791424210.9476657,"device_id":"parking-mobile-tbggy6","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791426459.8265216,"device_id":"parking-mobile-e0uk0o","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791426473.032466,"device_id":"parking-mobile-e0uk0o","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791426475.3919086,"device_id":"parking-mobile-e0uk0o","event":"xr_track_back","nav_mode":"webxr","reason":"lost_3578ms"}
+{"site_id":"site_00","received_at":1791426477.6160235,"device_id":"parking-mobile-e0uk0o","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=6099ms jump=1.7m"}
+{"site_id":"site_00","received_at":1791426479.0216339,"device_id":"parking-mobile-e0uk0o","event":"facing_uturn","nav_mode":"webxr","reason":"rel=135deg heading=360"}
+{"site_id":"site_00","received_at":1791426482.4890268,"device_id":"parking-mobile-e0uk0o","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791426485.7770875,"device_id":"parking-mobile-e0uk0o","event":"webxr_end","nav_mode":"camera","reason":"dead"}
+{"site_id":"site_00","received_at":1791426485.8469977,"device_id":"parking-mobile-e0uk0o","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791426487.178726,"device_id":"parking-mobile-e0uk0o","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791426517.989178,"device_id":"parking-mobile-jbkzwi","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791426531.158882,"device_id":"parking-mobile-jbkzwi","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=6407ms jump=2.1m"}
+{"site_id":"site_00","received_at":1791426542.8556516,"device_id":"parking-mobile-jbkzwi","event":"facing_uturn","nav_mode":"webxr","reason":"rel=-126deg heading=1"}
+{"site_id":"site_00","received_at":1791426550.6920304,"device_id":"parking-mobile-jbkzwi","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791430565.0631757,"device_id":"parking-mobile-3yq4cw","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791430578.3573472,"device_id":"parking-mobile-3yq4cw","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791430580.782565,"device_id":"parking-mobile-3yq4cw","event":"xr_track_back","nav_mode":"webxr","reason":"lost_3589ms"}
+{"site_id":"site_00","received_at":1791430594.5849385,"device_id":"parking-mobile-3yq4cw","event":"webxr_end","nav_mode":"camera","reason":"dead"}
+{"site_id":"site_00","received_at":1791430594.5870373,"device_id":"parking-mobile-3yq4cw","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791430594.594577,"device_id":"parking-mobile-3yq4cw","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791430594.594577,"device_id":"parking-mobile-3yq4cw","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791430607.9979954,"device_id":"parking-mobile-bx4bxm","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791430626.5039668,"device_id":"parking-mobile-bx4bxm","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791430628.8464916,"device_id":"parking-mobile-bx4bxm","event":"xr_track_back","nav_mode":"webxr","reason":"lost_3606ms"}
+{"site_id":"site_00","received_at":1791430640.3137114,"device_id":"parking-mobile-bx4bxm","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791430643.6945803,"device_id":"parking-mobile-bx4bxm","event":"webxr_end","nav_mode":"camera","reason":"dead"}
+{"site_id":"site_00","received_at":1791430643.69771,"device_id":"parking-mobile-bx4bxm","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791430645.0456884,"device_id":"parking-mobile-bx4bxm","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791430750.6875763,"device_id":"parking-mobile-quioss","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791430764.396138,"device_id":"parking-mobile-quioss","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791430782.2035103,"device_id":"parking-mobile-hxn7e2","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791430795.4451413,"device_id":"parking-mobile-hxn7e2","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791430797.7087286,"device_id":"parking-mobile-hxn7e2","event":"xr_track_back","nav_mode":"webxr","reason":"lost_3345ms"}
+{"site_id":"site_00","received_at":1791430807.6166284,"device_id":"parking-mobile-hxn7e2","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791430808.317538,"device_id":"parking-mobile-hxn7e2","event":"xr_track_back","nav_mode":"webxr","reason":"lost_1809ms"}
+{"site_id":"site_00","received_at":1791430810.3135386,"device_id":"parking-mobile-hxn7e2","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791431113.5963535,"device_id":"parking-mobile-m1dwc2","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791431129.206516,"device_id":"parking-mobile-m1dwc2","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791431130.3897762,"device_id":"parking-mobile-m1dwc2","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791431154.6951919,"device_id":"parking-mobile-4vwc7q","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791431167.9961011,"device_id":"parking-mobile-4vwc7q","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791431171.392689,"device_id":"parking-mobile-4vwc7q","event":"webxr_end","nav_mode":"camera","reason":"dead"}
+{"site_id":"site_00","received_at":1791431171.394984,"device_id":"parking-mobile-4vwc7q","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791431172.531149,"device_id":"parking-mobile-4vwc7q","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791431230.4232528,"device_id":"parking-mobile-bt4jjh","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791431234.6881166,"device_id":"parking-mobile-bt4jjh","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3035ms space=local-floor"}
+{"site_id":"site_00","received_at":1791431236.0068426,"device_id":"parking-mobile-bt4jjh","event":"xr_align","nav_mode":"webxr","reason":"skip #1 lowconf_0.45_12inl"}
+{"site_id":"site_00","received_at":1791431247.939783,"device_id":"parking-mobile-bt4jjh","event":"facing_uturn","nav_mode":"webxr","reason":"rel=127deg heading=2"}
+{"site_id":"site_00","received_at":1791431249.730629,"device_id":"parking-mobile-bt4jjh","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791431250.7915177,"device_id":"parking-mobile-bt4jjh","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791431265.159787,"device_id":"parking-mobile-a7bb9a","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791431269.8810892,"device_id":"parking-mobile-a7bb9a","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3051ms space=local-floor"}
+{"site_id":"site_00","received_at":1791431275.0239253,"device_id":"parking-mobile-a7bb9a","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.10"}
+{"site_id":"site_00","received_at":1791431304.63181,"device_id":"parking-mobile-a7bb9a","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791467518.0068467,"device_id":"parking-mobile-fxrt7s","event":"facing_uturn","nav_mode":"idle","reason":"rel=-178deg heading=269"}
+{"site_id":"site_00","received_at":1791467520.2878964,"device_id":"parking-mobile-fxrt7s","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791467524.5322833,"device_id":"parking-mobile-fxrt7s","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3038ms space=local-floor"}
+{"site_id":"site_00","received_at":1791467550.6638894,"device_id":"parking-mobile-fxrt7s","event":"xr_floor_found","nav_mode":"webxr","reason":"y=-0.14"}
+{"site_id":"site_00","received_at":1791467557.99411,"device_id":"parking-mobile-fxrt7s","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791467561.2758033,"device_id":"parking-mobile-fxrt7s","event":"webxr_end","nav_mode":"camera","reason":"dead"}
+{"site_id":"site_00","received_at":1791467561.7348845,"device_id":"parking-mobile-fxrt7s","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791467563.1648705,"device_id":"parking-mobile-fxrt7s","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791467563.1762457,"device_id":"parking-mobile-fxrt7s","event":"facing_uturn","nav_mode":"camera","reason":"rel=-178deg heading=269"}
+{"site_id":"site_00","received_at":1791468863.9915204,"device_id":"parking-mobile-u828ts","event":"facing_uturn","nav_mode":"idle","reason":"rel=-180deg heading=270"}
+{"site_id":"site_00","received_at":1791468866.485398,"device_id":"parking-mobile-u828ts","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791468880.1425076,"device_id":"parking-mobile-u828ts","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791468883.3725724,"device_id":"parking-mobile-u828ts","event":"webxr_end","nav_mode":"camera","reason":"dead"}
+{"site_id":"site_00","received_at":1791468883.466563,"device_id":"parking-mobile-u828ts","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791468884.4070432,"device_id":"parking-mobile-u828ts","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791470103.376233,"device_id":"parking-mobile-kg5t0t","event":"facing_uturn","nav_mode":"idle","reason":"rel=-149deg heading=266"}
+{"site_id":"site_00","received_at":1791470106.1398242,"device_id":"parking-mobile-kg5t0t","event":"webxr_start","nav_mode":"webxr","reason":"start_nav"}
+{"site_id":"site_00","received_at":1791470111.005359,"device_id":"parking-mobile-kg5t0t","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3028ms space=local-floor"}
+{"site_id":"site_00","received_at":1791470111.4129095,"device_id":"parking-mobile-kg5t0t","event":"xr_floor_found","nav_mode":"webxr","reason":"y=-0.12"}
+{"site_id":"site_00","received_at":1791470127.1349447,"device_id":"parking-mobile-kg5t0t","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=-21.8deg rot=-10.9deg seg=0 dist=0.6m straight=6.1m"}
+{"site_id":"site_00","received_at":1791470135.5787616,"device_id":"parking-mobile-kg5t0t","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.09m rot=0.0deg placed=6 fixes=1"}
+{"site_id":"site_00","received_at":1791470141.1391413,"device_id":"parking-mobile-kg5t0t","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.00m rot=0.0deg placed=6 fixes=7"}
+{"site_id":"site_00","received_at":1791470146.740315,"device_id":"parking-mobile-kg5t0t","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.00m rot=0.0deg placed=6 fixes=13"}
+{"site_id":"site_00","received_at":1791470152.8626251,"device_id":"parking-mobile-kg5t0t","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.00m rot=0.0deg placed=6 fixes=19"}
+{"site_id":"site_00","received_at":1791470158.24743,"device_id":"parking-mobile-kg5t0t","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.00m rot=0.0deg placed=6 fixes=25"}
+{"site_id":"site_00","received_at":1791470160.875612,"device_id":"parking-mobile-kg5t0t","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791472795.6451228,"device_id":"parking-mobile-cicsks","event":"facing_uturn","nav_mode":"idle","reason":"rel=-154deg heading=270"}
+{"site_id":"site_00","received_at":1791472805.6709795,"device_id":"parking-mobile-cicsks","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791472809.8687468,"device_id":"parking-mobile-cicsks","event":"xr_start_heading","nav_mode":"webxr","reason":"fix=272deg turned_since=-175deg -> 97deg"}
+{"site_id":"site_00","received_at":1791472809.9024234,"device_id":"parking-mobile-cicsks","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3018ms space=local-floor"}
+{"site_id":"site_00","received_at":1791472810.2517102,"device_id":"parking-mobile-cicsks","event":"xr_floor_found","nav_mode":"webxr","reason":"y=-0.20"}
+{"site_id":"site_00","received_at":1791472851.3556802,"device_id":"parking-mobile-cicsks","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791473242.6687057,"device_id":"parking-mobile-gqrqnz","event":"facing_uturn","nav_mode":"idle","reason":"rel=-153deg heading=270"}
+{"site_id":"site_00","received_at":1791473244.7984767,"device_id":"parking-mobile-gqrqnz","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791473249.0268726,"device_id":"parking-mobile-gqrqnz","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3015ms space=local-floor"}
+{"site_id":"site_00","received_at":1791473252.4692037,"device_id":"parking-mobile-gqrqnz","event":"xr_floor_found","nav_mode":"webxr","reason":"y=-0.14"}
+{"site_id":"site_00","received_at":1791473278.916341,"device_id":"parking-mobile-gqrqnz","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791473317.700547,"device_id":"parking-mobile-25916e","event":"facing_uturn","nav_mode":"idle","reason":"rel=-151deg heading=268"}
+{"site_id":"site_00","received_at":1791473319.7052324,"device_id":"parking-mobile-25916e","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791473321.9198985,"device_id":"parking-mobile-25916e","event":"xr_calibrated","nav_mode":"webxr","reason":"hit_test after 737ms"}
+{"site_id":"site_00","received_at":1791473348.8394656,"device_id":"parking-mobile-25916e","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=-3.3deg rot=-1.6deg seg=0 dist=0.2m straight=6.3m"}
+{"site_id":"site_00","received_at":1791473350.827294,"device_id":"parking-mobile-25916e","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791473351.947947,"device_id":"parking-mobile-25916e","event":"xr_frame_rotated","nav_mode":"webxr","reason":"err=-91deg lost=2330ms (gyro vs ARCore turn)"}
+{"site_id":"site_00","received_at":1791473352.0192404,"device_id":"parking-mobile-25916e","event":"xr_track_back","nav_mode":"webxr","reason":"lost_2332ms"}
+{"site_id":"site_00","received_at":1791473352.0202932,"device_id":"parking-mobile-25916e","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=2330ms jump=2.1m rot_fixed=-91deg anchors=5/5"}
+{"site_id":"site_00","received_at":1791473359.5390332,"device_id":"parking-mobile-25916e","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=9.1deg rot=4.6deg seg=1 dist=0.3m straight=7.7m"}
+{"site_id":"site_00","received_at":1791473375.1951509,"device_id":"parking-mobile-25916e","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791481959.3555417,"device_id":"parking-mobile-bu3cgp","event":"facing_uturn","nav_mode":"idle","reason":"rel=-177deg heading=267"}
+{"site_id":"site_00","received_at":1791481963.7575347,"device_id":"parking-mobile-bu3cgp","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791481968.8454447,"device_id":"parking-mobile-bu3cgp","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3022ms space=local-floor"}
+{"site_id":"site_00","received_at":1791481970.9252617,"device_id":"parking-mobile-bu3cgp","event":"xr_floor_found","nav_mode":"webxr","reason":"y=-0.13"}
+{"site_id":"site_00","received_at":1791481982.5918217,"device_id":"parking-mobile-bu3cgp","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=5.1deg rot=2.6deg seg=0 dist=0.3m straight=6.2m"}
+{"site_id":"site_00","received_at":1791481991.7240062,"device_id":"parking-mobile-bu3cgp","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.62m rot=-3.1deg placed=6 fixes=1"}
+{"site_id":"site_00","received_at":1791482003.389885,"device_id":"parking-mobile-bu3cgp","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=-4.7deg rot=-2.3deg seg=1 dist=0.1m straight=6.3m"}
+{"site_id":"site_00","received_at":1791482018.7462697,"device_id":"parking-mobile-bu3cgp","event":"facing_uturn","nav_mode":"webxr","reason":"rel=-122deg heading=51"}
+{"site_id":"site_00","received_at":1791482022.367424,"device_id":"parking-mobile-bu3cgp","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791482024.1289306,"device_id":"parking-mobile-bu3cgp","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791482025.3321893,"device_id":"parking-mobile-bu3cgp","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791482179.6978672,"device_id":"parking-mobile-inev9j","event":"facing_uturn","nav_mode":"idle","reason":"rel=179deg heading=271"}
+{"site_id":"site_00","received_at":1791482184.228352,"device_id":"parking-mobile-inev9j","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791482198.009064,"device_id":"parking-mobile-inev9j","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3032ms space=local-floor"}
+{"site_id":"site_00","received_at":1791482199.0487733,"device_id":"parking-mobile-inev9j","event":"xr_align","nav_mode":"webxr","reason":"ok #1 inl=17 res=5.52m dest_shift=58.42m rot=-177.8deg fixes=1 span=0.0m snap"}
+{"site_id":"site_00","received_at":1791482213.522944,"device_id":"parking-mobile-inev9j","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791482214.4646933,"device_id":"parking-mobile-inev9j","event":"xr_frame_rotated","nav_mode":"webxr","reason":"err=-49deg lost=1963ms (gyro vs ARCore turn)"}
+{"site_id":"site_00","received_at":1791482214.7309318,"device_id":"parking-mobile-inev9j","event":"xr_track_back","nav_mode":"webxr","reason":"lost_1984ms"}
+{"site_id":"site_00","received_at":1791482214.7315671,"device_id":"parking-mobile-inev9j","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=1963ms jump=1.1m rot_fixed=-49deg anchors=3/4"}
+{"site_id":"site_00","received_at":1791482228.759841,"device_id":"parking-mobile-inev9j","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.21"}
+{"site_id":"site_00","received_at":1791482229.539061,"device_id":"parking-mobile-inev9j","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=2 shift=0.31m rot=4.4deg placed=6 fixes=1"}
+{"site_id":"site_00","received_at":1791482237.169069,"device_id":"parking-mobile-inev9j","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=-2.8deg rot=-1.4deg seg=1 dist=0.4m straight=6.1m"}
+{"site_id":"site_00","received_at":1791482256.5692058,"device_id":"parking-mobile-inev9j","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791482423.15918,"device_id":"parking-mobile-yot7mn","event":"facing_uturn","nav_mode":"idle","reason":"rel=180deg heading=270"}
+{"site_id":"site_00","received_at":1791482426.9191394,"device_id":"parking-mobile-yot7mn","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791482439.4450612,"device_id":"parking-mobile-yot7mn","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3037ms space=local-floor"}
+{"site_id":"site_00","received_at":1791482443.4077957,"device_id":"parking-mobile-yot7mn","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791482443.6069245,"device_id":"parking-mobile-yot7mn","event":"xr_frame_rotated","nav_mode":"webxr","reason":"err=136deg lost=1458ms (gyro vs ARCore turn)"}
+{"site_id":"site_00","received_at":1791482443.6378329,"device_id":"parking-mobile-yot7mn","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=1458ms jump=0.4m rot_fixed=136deg anchors=1/1"}
+{"site_id":"site_00","received_at":1791482443.6385145,"device_id":"parking-mobile-yot7mn","event":"xr_track_back","nav_mode":"webxr","reason":"lost_1460ms"}
+{"site_id":"site_00","received_at":1791482445.0130637,"device_id":"parking-mobile-yot7mn","event":"facing_uturn","nav_mode":"webxr","reason":"rel=-144deg heading=270"}
+{"site_id":"site_00","received_at":1791482447.9949217,"device_id":"parking-mobile-yot7mn","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=453ms jump=1.6m rot_fixed=116deg anchors=0/1"}
+{"site_id":"site_00","received_at":1791482447.9949217,"device_id":"parking-mobile-yot7mn","event":"xr_frame_rotated","nav_mode":"webxr","reason":"err=116deg lost=453ms (gyro vs ARCore turn)"}
+{"site_id":"site_00","received_at":1791482448.964692,"device_id":"parking-mobile-yot7mn","event":"xr_align","nav_mode":"webxr","reason":"skip #5 lowconf_0.44_17inl"}
+{"site_id":"site_00","received_at":1791482450.0098011,"device_id":"parking-mobile-yot7mn","event":"xr_align","nav_mode":"webxr","reason":"ok #6 inl=25 res=0.52m dest_shift=52.27m rot=166.5deg fixes=1 span=0.0m snap"}
+{"site_id":"site_00","received_at":1791482450.0098011,"device_id":"parking-mobile-yot7mn","event":"facing_uturn","nav_mode":"webxr","reason":"rel=179deg heading=266"}
+{"site_id":"site_00","received_at":1791482456.9305077,"device_id":"parking-mobile-yot7mn","event":"xr_align_stale","nav_mode":"webxr","reason":"jump_2.6m lost=240ms jump=2.6m"}
+{"site_id":"site_00","received_at":1791482465.0072188,"device_id":"parking-mobile-yot7mn","event":"xr_align_recovered","nav_mode":"webxr","reason":"last_position"}
+{"site_id":"site_00","received_at":1791482466.579356,"device_id":"parking-mobile-yot7mn","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=1 shift=1.72m rot=0.0deg placed=2 fixes=1"}
+{"site_id":"site_00","received_at":1791482475.8597407,"device_id":"parking-mobile-yot7mn","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.40"}
+{"site_id":"site_00","received_at":1791482487.8171136,"device_id":"parking-mobile-yot7mn","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=4.4deg rot=2.2deg seg=1 dist=0.1m straight=6.1m"}
+{"site_id":"site_00","received_at":1791482512.3488176,"device_id":"parking-mobile-yot7mn","event":"xr_align","nav_mode":"webxr","reason":"skip #45 lowconf_0.45_17inl"}
+{"site_id":"site_00","received_at":1791482519.0309603,"device_id":"parking-mobile-yot7mn","event":"xr_align","nav_mode":"webxr","reason":"skip #50 lowconf_0.43_14inl"}
+{"site_id":"site_00","received_at":1791482520.364473,"device_id":"parking-mobile-yot7mn","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.18m rot=-5.6deg placed=9 fixes=2"}
+{"site_id":"site_00","received_at":1791482525.7817984,"device_id":"parking-mobile-yot7mn","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.00m rot=0.0deg placed=9 fixes=8"}
+{"site_id":"site_00","received_at":1791482531.6649253,"device_id":"parking-mobile-yot7mn","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.00m rot=0.0deg placed=9 fixes=14"}
+{"site_id":"site_00","received_at":1791482537.1045578,"device_id":"parking-mobile-yot7mn","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.00m rot=0.0deg placed=9 fixes=20"}
+{"site_id":"site_00","received_at":1791482542.5750859,"device_id":"parking-mobile-yot7mn","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=4 shift=0.00m rot=0.0deg placed=9 fixes=26"}
+{"site_id":"site_00","received_at":1791482546.2082548,"device_id":"parking-mobile-yot7mn","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791486111.3124044,"device_id":"parking-mobile-1ip00y","event":"facing_uturn","nav_mode":"idle","reason":"rel=-175deg heading=265"}
+{"site_id":"site_00","received_at":1791486133.7962208,"device_id":"parking-mobile-x2m4gf","event":"facing_uturn","nav_mode":"idle","reason":"rel=178deg heading=272"}
+{"site_id":"site_00","received_at":1791486139.4744194,"device_id":"parking-mobile-x2m4gf","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791486149.7796404,"device_id":"parking-mobile-x2m4gf","event":"xr_start_heading","nav_mode":"webxr","reason":"SKIPPED no_gyro_at_fix fix=272deg | source=position fix_age=nonems fix_gyro=none gyro_now=136 last_gyro_event=8ms"}
+{"site_id":"site_00","received_at":1791486149.950933,"device_id":"parking-mobile-x2m4gf","event":"xr_calibrated","nav_mode":"webxr","reason":"hit_test after 1581ms"}
+{"site_id":"site_00","received_at":1791486168.0809748,"device_id":"parking-mobile-x2m4gf","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791486731.3689477,"device_id":"parking-mobile-mhmvog","event":"facing_uturn","nav_mode":"idle","reason":"rel=-180deg heading=270"}
+{"site_id":"site_00","received_at":1791486736.6893013,"device_id":"parking-mobile-mhmvog","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791486741.2000165,"device_id":"parking-mobile-mhmvog","event":"xr_start_heading","nav_mode":"webxr","reason":"SKIPPED no_gyro_at_fix fix=270deg | source=position fix_age=nonems fix_gyro=none gyro_now=49 last_gyro_event=7ms"}
+{"site_id":"site_00","received_at":1791486741.310831,"device_id":"parking-mobile-mhmvog","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3027ms space=local-floor"}
+{"site_id":"site_00","received_at":1791486741.6674902,"device_id":"parking-mobile-mhmvog","event":"xr_floor_found","nav_mode":"webxr","reason":"y=-0.06"}
+{"site_id":"site_00","received_at":1791486753.2004566,"device_id":"parking-mobile-mhmvog","event":"facing_uturn","nav_mode":"webxr","reason":"rel=-122deg heading=270"}
+{"site_id":"site_00","received_at":1791486766.2206457,"device_id":"parking-mobile-mhmvog","event":"facing_uturn","nav_mode":"webxr","reason":"rel=123deg heading=270"}
+{"site_id":"site_00","received_at":1791486776.923423,"device_id":"parking-mobile-mhmvog","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791487147.1118293,"device_id":"parking-mobile-v0qyo2","event":"facing_uturn","nav_mode":"idle","reason":"rel=179deg heading=271"}
+{"site_id":"site_00","received_at":1791487164.023051,"device_id":"parking-mobile-v0qyo2","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791487170.8948152,"device_id":"parking-mobile-v0qyo2","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=269deg turned_since=-177deg -> 92deg | source=pnp fix_age=12081ms fix_gyro=267 gyro_now=90 last_gyro_event=60ms"}
+{"site_id":"site_00","received_at":1791487170.9012406,"device_id":"parking-mobile-v0qyo2","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3007ms space=local-floor"}
+{"site_id":"site_00","received_at":1791487178.091776,"device_id":"parking-mobile-v0qyo2","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.12"}
+{"site_id":"site_00","received_at":1791487179.9120932,"device_id":"parking-mobile-v0qyo2","event":"xr_align","nav_mode":"webxr","reason":"ok #4 inl=19 res=4.31m dest_shift=3.38m rot=6.8deg fixes=1 span=0.0m snap"}
+{"site_id":"site_00","received_at":1791487199.4158685,"device_id":"parking-mobile-v0qyo2","event":"facing_uturn","nav_mode":"webxr","reason":"rel=-137deg heading=57"}
+{"site_id":"site_00","received_at":1791487204.7648091,"device_id":"parking-mobile-v0qyo2","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791487205.5614634,"device_id":"parking-mobile-v0qyo2","event":"xr_frame_rotated","nav_mode":"webxr","reason":"err=-160deg lost=2018ms (gyro vs ARCore turn)"}
+{"site_id":"site_00","received_at":1791487205.6857383,"device_id":"parking-mobile-v0qyo2","event":"xr_track_back","nav_mode":"webxr","reason":"lost_2024ms"}
+{"site_id":"site_00","received_at":1791487205.6885023,"device_id":"parking-mobile-v0qyo2","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=2018ms jump=0.9m rot_fixed=-160deg anchors=1/1"}
+{"site_id":"site_00","received_at":1791487208.4491289,"device_id":"parking-mobile-v0qyo2","event":"xr_align","nav_mode":"webxr","reason":"skip #15 lowconf_0.48_17inl"}
+{"site_id":"site_00","received_at":1791487211.1366558,"device_id":"parking-mobile-v0qyo2","event":"xr_align","nav_mode":"webxr","reason":"ok #17 inl=36 res=0.50m dest_shift=2.31m rot=-4.1deg fixes=1 span=0.0m snap"}
+{"site_id":"site_00","received_at":1791487220.253418,"device_id":"parking-mobile-v0qyo2","event":"xr_align","nav_mode":"webxr","reason":"skip #18 lowconf_0.47_17inl"}
+{"site_id":"site_00","received_at":1791487221.4061046,"device_id":"parking-mobile-v0qyo2","event":"facing_uturn","nav_mode":"webxr","reason":"rel=128deg heading=123"}
+{"site_id":"site_00","received_at":1791487227.2131257,"device_id":"parking-mobile-v0qyo2","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791489100.833182,"device_id":"parking-mobile-1qx9i6","event":"facing_uturn","nav_mode":"idle","reason":"rel=-180deg heading=270"}
+{"site_id":"site_00","received_at":1791489113.0075653,"device_id":"parking-mobile-1qx9i6","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791489126.2343032,"device_id":"parking-mobile-1qx9i6","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791489129.6016746,"device_id":"parking-mobile-1qx9i6","event":"webxr_end","nav_mode":"camera","reason":"dead"}
+{"site_id":"site_00","received_at":1791489129.6754107,"device_id":"parking-mobile-1qx9i6","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791489130.902489,"device_id":"parking-mobile-1qx9i6","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791489152.9432366,"device_id":"parking-mobile-jz45hm","event":"facing_uturn","nav_mode":"idle","reason":"rel=179deg heading=271"}
+{"site_id":"site_00","received_at":1791489166.2308304,"device_id":"parking-mobile-jz45hm","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791489176.5574658,"device_id":"parking-mobile-jz45hm","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=89deg turned_since=-3deg -> 86deg | source=pnp fix_age=11364ms fix_gyro=103 gyro_now=99 last_gyro_event=16ms localized=true ref=pnp"}
+{"site_id":"site_00","received_at":1791489176.877876,"device_id":"parking-mobile-jz45hm","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3021ms space=local-floor walked_before=0.1m fix_age=11388ms refix=urgent"}
+{"site_id":"site_00","received_at":1791489178.0050304,"device_id":"parking-mobile-jz45hm","event":"xr_align","nav_mode":"webxr","reason":"ok #1 inl=39 res=1.37m dest_shift=1.96m rot=-1.6deg fixes=1 span=0.0m snap"}
+{"site_id":"site_00","received_at":1791489180.2435157,"device_id":"parking-mobile-jz45hm","event":"xr_align","nav_mode":"webxr","reason":"skip #2 lowconf_0.45_14inl"}
+{"site_id":"site_00","received_at":1791489186.9812548,"device_id":"parking-mobile-jz45hm","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.25"}
+{"site_id":"site_00","received_at":1791489202.2500181,"device_id":"parking-mobile-jz45hm","event":"xr_frame_rotated","nav_mode":"webxr","reason":"err=-65deg lost=362ms (gyro vs ARCore turn)"}
+{"site_id":"site_00","received_at":1791489202.3547335,"device_id":"parking-mobile-jz45hm","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=362ms jump=0.8m rot_fixed=-65deg anchors=6/6"}
+{"site_id":"site_00","received_at":1791489212.790897,"device_id":"parking-mobile-jz45hm","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=3.6deg rot=1.8deg seg=1 dist=0.0m straight=6.2m"}
+{"site_id":"site_00","received_at":1791489249.6146135,"device_id":"parking-mobile-jz45hm","event":"facing_uturn","nav_mode":"webxr","reason":"rel=130deg heading=86"}
+{"site_id":"site_00","received_at":1791489250.1559992,"device_id":"parking-mobile-jz45hm","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791490302.3082936,"device_id":"parking-mobile-t0pj61","event":"facing_uturn","nav_mode":"idle","reason":"rel=163deg heading=272"}
+{"site_id":"site_00","received_at":1791490311.2396698,"device_id":"parking-mobile-t0pj61","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791490315.9969811,"device_id":"parking-mobile-t0pj61","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=273deg turned_since=179deg -> 92deg | source=pnp fix_age=13904ms fix_gyro=353 gyro_now=172 last_gyro_event=6ms localized=true ref=pnp"}
+{"site_id":"site_00","received_at":1791490316.003893,"device_id":"parking-mobile-t0pj61","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3012ms space=local-floor walked_before=0.1m fix_age=13938ms refix=urgent"}
+{"site_id":"site_00","received_at":1791490320.0695245,"device_id":"parking-mobile-t0pj61","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.03"}
+{"site_id":"site_00","received_at":1791490345.5595822,"device_id":"parking-mobile-t0pj61","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=2.2deg rot=1.1deg seg=1 dist=0.1m straight=6.3m"}
+{"site_id":"site_00","received_at":1791490352.0195773,"device_id":"parking-mobile-t0pj61","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=-2.9deg rot=-1.5deg seg=1 dist=0.4m straight=6.0m"}
+{"site_id":"site_00","received_at":1791490356.3964562,"device_id":"parking-mobile-t0pj61","event":"xr_anchor_fix","nav_mode":"webxr","reason":"anchors=2 shift=1.33m rot=0.1deg placed=12 fixes=1"}
+{"site_id":"site_00","received_at":1791490364.3375607,"device_id":"parking-mobile-t0pj61","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791494570.2699366,"device_id":"parking-mobile-tvc2ng","event":"facing_uturn","nav_mode":"idle","reason":"rel=165deg heading=272"}
+{"site_id":"site_00","received_at":1791494584.6769226,"device_id":"parking-mobile-tvc2ng","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791494589.4391618,"device_id":"parking-mobile-tvc2ng","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=275deg turned_since=155deg -> 70deg | source=pnp fix_age=19346ms fix_gyro=262 gyro_now=57 last_gyro_event=16ms localized=true ref=pnp"}
+{"site_id":"site_00","received_at":1791494589.5239093,"device_id":"parking-mobile-tvc2ng","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3033ms space=local-floor walked_before=0.0m fix_age=19367ms refix=urgent"}
+{"site_id":"site_00","received_at":1791494604.2804296,"device_id":"parking-mobile-tvc2ng","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.26"}
+{"site_id":"site_00","received_at":1791494622.7039025,"device_id":"parking-mobile-tvc2ng","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=4.2deg rot=2.1deg seg=0 dist=0.1m straight=6.2m"}
+{"site_id":"site_00","received_at":1791494631.4320884,"device_id":"parking-mobile-tvc2ng","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791494631.4326217,"device_id":"parking-mobile-tvc2ng","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791494631.43363,"device_id":"parking-mobile-tvc2ng","event":"facing_uturn","nav_mode":"camera","reason":"rel=162deg heading=275"}
+{"site_id":"site_00","received_at":1791497670.7017548,"device_id":"parking-mobile-prxu8p","event":"facing_uturn","nav_mode":"idle","reason":"rel=-180deg heading=270"}
+{"site_id":"site_00","received_at":1791497682.4831798,"device_id":"parking-mobile-prxu8p","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791497687.336222,"device_id":"parking-mobile-prxu8p","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=271deg turned_since=-166deg -> 105deg | source=pnp fix_age=13497ms fix_gyro=6 gyro_now=201 last_gyro_event=8ms localized=true ref=pnp"}
+{"site_id":"site_00","received_at":1791497687.345855,"device_id":"parking-mobile-prxu8p","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3006ms space=local-floor walked_before=0.1m fix_age=13516ms refix=urgent"}
+{"site_id":"site_00","received_at":1791497708.8250654,"device_id":"parking-mobile-prxu8p","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.10"}
+{"site_id":"site_00","received_at":1791497733.4180052,"device_id":"parking-mobile-prxu8p","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=5.7deg rot=2.8deg seg=2 dist=0.2m straight=6.0m"}
+{"site_id":"site_00","received_at":1791497752.9575307,"device_id":"parking-mobile-prxu8p","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=3.7deg rot=1.8deg seg=3 dist=0.1m straight=6.0m"}
+{"site_id":"site_00","received_at":1791498842.5747962,"device_id":"parking-mobile-ertzug","event":"facing_uturn","nav_mode":"idle","reason":"rel=-177deg heading=267"}
+{"site_id":"site_00","received_at":1791498858.5847278,"device_id":"parking-mobile-ertzug","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791498863.1474917,"device_id":"parking-mobile-ertzug","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=258deg turned_since=-161deg -> 97deg | source=pnp fix_age=7669ms fix_gyro=323 gyro_now=162 last_gyro_event=7ms localized=true ref=pnp"}
+{"site_id":"site_00","received_at":1791498863.226096,"device_id":"parking-mobile-ertzug","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3010ms space=local-floor walked_before=0.0m fix_age=7706ms refix=urgent"}
+{"site_id":"site_00","received_at":1791498873.36077,"device_id":"parking-mobile-ertzug","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.05"}
+{"site_id":"site_00","received_at":1791498883.9178705,"device_id":"parking-mobile-ertzug","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791498884.7774477,"device_id":"parking-mobile-ertzug","event":"xr_reloc_start","nav_mode":"webxr","reason":"tracking_lost lost=2054ms jump=1.8m anchors=6/6"}
+{"site_id":"site_00","received_at":1791498884.8426273,"device_id":"parking-mobile-ertzug","event":"xr_align_verify","nav_mode":"webxr","reason":"lost=2054ms jump=1.8m anchors=6/6"}
+{"site_id":"site_00","received_at":1791498884.8447504,"device_id":"parking-mobile-ertzug","event":"xr_track_back","nav_mode":"webxr","reason":"lost_2056ms"}
+{"site_id":"site_00","received_at":1791498904.501449,"device_id":"parking-mobile-ertzug","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791500260.7672276,"device_id":"parking-mobile-zbrww5","event":"facing_uturn","nav_mode":"idle","reason":"rel=180deg heading=271"}
+{"site_id":"site_00","received_at":1791500270.1202655,"device_id":"parking-mobile-zbrww5","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791500275.0056596,"device_id":"parking-mobile-zbrww5","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=271deg turned_since=170deg -> 81deg | source=pnp fix_age=14439ms fix_gyro=13 gyro_now=183 last_gyro_event=3ms localized=true ref=pnp"}
+{"site_id":"site_00","received_at":1791500275.017037,"device_id":"parking-mobile-zbrww5","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3024ms space=local-floor walked_before=0.1m fix_age=14458ms refix=urgent"}
+{"site_id":"site_00","received_at":1791500284.1041741,"device_id":"parking-mobile-zbrww5","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.45"}
+{"site_id":"site_00","received_at":1791500307.7243288,"device_id":"parking-mobile-zbrww5","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=-3.5deg rot=-1.7deg seg=0 dist=0.0m straight=6.1m"}
+{"site_id":"site_00","received_at":1791500314.7748394,"device_id":"parking-mobile-zbrww5","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=-2.3deg rot=-1.2deg seg=0 dist=0.3m straight=6.1m"}
+{"site_id":"site_00","received_at":1791500326.3056376,"device_id":"parking-mobile-zbrww5","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=4.8deg rot=2.4deg seg=1 dist=0.0m straight=6.2m"}
+{"site_id":"site_00","received_at":1791500350.9834774,"device_id":"parking-mobile-zbrww5","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791502205.859273,"device_id":"parking-mobile-d52hlf","event":"facing_uturn","nav_mode":"idle","reason":"rel=176deg heading=274"}
+{"site_id":"site_00","received_at":1791502219.0477211,"device_id":"parking-mobile-d52hlf","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791502226.4431098,"device_id":"parking-mobile-d52hlf","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=269deg snapped=270deg turned_since=-180deg -> phone=91deg | source=pnp fix_age=21618ms fix_gyro=278 gyro_now=98 last_gyro_event=4ms localized=true ref=pnp"}
+{"site_id":"site_00","received_at":1791502226.4834292,"device_id":"parking-mobile-d52hlf","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3003ms space=local-floor walked_before=0.1m fix_age=21643ms refix=urgent"}
+{"site_id":"site_00","received_at":1791502238.4610157,"device_id":"parking-mobile-d52hlf","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.15"}
+{"site_id":"site_00","received_at":1791502289.1821475,"device_id":"parking-mobile-d52hlf","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791515171.1849873,"device_id":"parking-mobile-5u4tpx","event":"facing_uturn","nav_mode":"idle","reason":"rel=-179deg heading=269"}
+{"site_id":"site_00","received_at":1791515177.9166436,"device_id":"parking-mobile-5u4tpx","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791515193.8957586,"device_id":"parking-mobile-5u4tpx","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=270deg snapped=270deg turned_since=-159deg -> phone=112deg | source=pnp fix_age=18901ms fix_gyro=270 gyro_now=112 last_gyro_event=18ms localized=true ref=pnp"}
+{"site_id":"site_00","received_at":1791515193.958339,"device_id":"parking-mobile-5u4tpx","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3019ms space=local-floor walked_before=0.0m fix_age=18964ms refix=urgent"}
+{"site_id":"site_00","received_at":1791515212.449269,"device_id":"parking-mobile-5u4tpx","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=-2.7deg rot=-1.3deg seg=1 dist=0.1m straight=6.0m"}
+{"site_id":"site_00","received_at":1791515226.2902715,"device_id":"parking-mobile-5u4tpx","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.69"}
+{"site_id":"site_00","received_at":1791515239.2064738,"device_id":"parking-mobile-5u4tpx","event":"xr_heading_fix","nav_mode":"webxr","reason":"walk err=-2.7deg rot=-1.4deg seg=3 dist=0.0m straight=6.3m"}
+{"site_id":"site_00","received_at":1791515248.9240396,"device_id":"parking-mobile-5u4tpx","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791515312.525643,"device_id":"parking-mobile-1ehddo","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791515317.01425,"device_id":"parking-mobile-1ehddo","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=274deg snapped=274deg turned_since=-62deg -> phone=212deg | source=pnp fix_age=9991ms fix_gyro=263 gyro_now=201 last_gyro_event=14ms localized=true ref=pnp"}
+{"site_id":"site_00","received_at":1791515317.0686433,"device_id":"parking-mobile-1ehddo","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3045ms space=local-floor walked_before=0.3m fix_age=10035ms refix=urgent"}
+{"site_id":"site_00","received_at":1791515323.934434,"device_id":"parking-mobile-1ehddo","event":"facing_uturn","nav_mode":"webxr","reason":"rel=-120deg heading=323"}
+{"site_id":"site_00","received_at":1791515328.486395,"device_id":"parking-mobile-1ehddo","event":"xr_track_lost","nav_mode":"webxr"}
+{"site_id":"site_00","received_at":1791515330.7145705,"device_id":"parking-mobile-1ehddo","event":"webxr_end","nav_mode":"camera","reason":"dead"}
+{"site_id":"site_00","received_at":1791515330.7885318,"device_id":"parking-mobile-1ehddo","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1791515334.1000082,"device_id":"parking-mobile-1ehddo","event":"nav_mode","nav_mode":"camera","reason":"floor_chevrons_pnp"}
+{"site_id":"site_00","received_at":1791515334.3658211,"device_id":"parking-mobile-1ehddo","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791515334.3661273,"device_id":"parking-mobile-1ehddo","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791515334.7040687,"device_id":"parking-mobile-1ehddo","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791515334.7040687,"device_id":"parking-mobile-1ehddo","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791515334.707354,"device_id":"parking-mobile-1ehddo","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791515336.8545392,"device_id":"parking-mobile-1ehddo","event":"start_ar_prompt","nav_mode":"camera","reason":"landing_pnp"}
+{"site_id":"site_00","received_at":1791515365.8301895,"device_id":"parking-mobile-a7hpbi","event":"facing_uturn","nav_mode":"idle","reason":"rel=-180deg heading=360"}
+{"site_id":"site_00","received_at":1791515380.8226187,"device_id":"parking-mobile-a7hpbi","event":"webxr_start","nav_mode":"webxr","reason":"start_nav camera_access=true"}
+{"site_id":"site_00","received_at":1791515385.38613,"device_id":"parking-mobile-a7hpbi","event":"xr_start_heading","nav_mode":"webxr","reason":"applied fix=181deg snapped=180deg turned_since=-4deg -> phone=176deg | source=pnp fix_age=6178ms fix_gyro=94 gyro_now=90 last_gyro_event=11ms localized=true ref=pnp"}
+{"site_id":"site_00","received_at":1791515385.4048047,"device_id":"parking-mobile-a7hpbi","event":"xr_calibrated","nav_mode":"webxr","reason":"estimated_floor after 3048ms space=local-floor walked_before=0.0m fix_age=6207ms refix=urgent"}
+{"site_id":"site_00","received_at":1791515412.2457166,"device_id":"parking-mobile-a7hpbi","event":"xr_floor_found","nav_mode":"webxr","reason":"y=0.95"}
+{"site_id":"site_00","received_at":1791515420.2786741,"device_id":"parking-mobile-a7hpbi","event":"facing_uturn","nav_mode":"webxr","reason":"rel=144deg heading=181"}
+{"site_id":"site_00","received_at":1791515420.522145,"device_id":"parking-mobile-a7hpbi","event":"webxr_end","nav_mode":"camera","reason":"session_end"}

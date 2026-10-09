@@ -22,6 +22,8 @@ AnyNodeId = Union[NodeId, LayeredNodeId]
 
 # Endpoints closer together than this are treated as the same junction.
 NODE_SNAP_TOLERANCE_M = 0.3
+# lift/stairs: cost per floor travelled, on top of the connector's one-off penalty_cost
+RIDE_PER_FLOOR_COST = 1.0
 
 
 def _round_xy(x: float, y: float, precision: int = 3) -> tuple[float, float]:
@@ -258,14 +260,22 @@ def build_layered_graph(
                 graph, fid, float(n["x"]), float(n["y"]), segs_by_floor.get(fid) or []
             )
 
-        for i in range(len(floors) - 1):
-            f0, f1 = floors[i], floors[i + 1]
+        # one ride = boarding penalty + a little per extra floor. Linking every pair of
+        # served floors (not just neighbours) means riding G→B2 costs 12+1, while getting
+        # off at B1 to change lifts costs 12+12 — the route stays in one lift instead of
+        # e.g. "PL3 to B1, then PL4 to B2" when both lifts land on the same B1 walkway node.
+        from fmc.floors import floors_bottom_up
+        stack = floors_bottom_up(floors)
+        pairs = [(floors[i], floors[j]) for i in range(len(floors)) for j in range(i + 1, len(floors))]
+        for f0, f1 in pairs:
             a = landings.get(f0)
             b = landings.get(f1)
             if not a or not b:
                 continue
+            hops = abs(stack.index(f0) - stack.index(f1)) if f0 in stack and f1 in stack else 1
             planar = math.hypot(a[1] - b[1], a[2] - b[2])
-            weight = penalty + planar
+            # one floor costs exactly penalty_cost (as before); each extra floor a little more
+            weight = penalty + RIDE_PER_FLOOR_COST * max(0, hops - 1) + planar
             meta = {
                 "kind": "vertical",
                 "type": ctype,

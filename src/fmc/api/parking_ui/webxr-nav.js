@@ -63,9 +63,32 @@ const HEAD_CONSENSUS_N = 3;
  * event, or just a relocalisation jump) — the old map→AR alignment then draws the route
  * through pillars. Hide arrows and re-align instead of showing a wrong path. --- */
 const RECOVER_VERIFY_MS = 800; // dropouts longer than this: re-check alignment
+/** after a dropout ARCore's turn and the gyro's turn must agree within this, else the
+ * AR frame came back rotated (small position jump, but arrows swung round you) */
+const RECOVER_ROT_DEG = 25;
 const RECOVER_JUMP_M = 1.0; // position jump beyond walking distance → frame moved
 const RECOVER_WALK_MPS = 1.6; // fastest plausible walk while hidden
 const STALE_FALLBACK_MS = 8000; // no PnP by then → re-anchor from where you were (approx.)
+
+/* --- continuous anchoring. ARCore anchors are re-positioned by ARCore whenever it corrects
+ * drift or relocalises after a tracking loss. Each anchor remembers its spot on the map; if
+ * the anchors near you move together, the map->AR alignment follows them. --- */
+const ANCHOR_SPACING_M = 2; // drop a new anchor every this far walked (denser = more nearby after a loss)
+const ANCHOR_MAX = 40; // oldest are deleted beyond this
+/** a tracking loss this long (or any frame jump) → relocalize: PnP + "tilt the phone up" */
+const RELOC_AFTER_MS = 2000;
+const ANCHOR_USE_N = 4; // nearest anchors used for a correction
+const ANCHOR_USE_RADIUS_M = 25; // further anchors carry too much ARCore error
+const ANCHOR_MOVE_M = 0.25; // anchors this far from where the alignment expects -> correct
+const ANCHOR_FIT_OK_M = 0.6; // after the fit every anchor must agree within this
+const ANCHOR_CHECK_MS = 250; // how often to compare anchors with the alignment
+const ANCHOR_SNAP_M = 1.0; // bigger correction -> snap instead of ease
+
+/* hit-test never finds the plain glossy car-park floor in some spots — then AR stayed
+ * uncalibrated forever (no arrows at all). After this long, calibrate on an estimated floor. */
+const CAL_FALLBACK_MS = 3000;
+const PHONE_HEIGHT_M = 1.4; // floor ≈ this far below the phone when the space isn't floor-level
+const FLOOR_REFIT_M = 0.15; // a real floor hit this far from the estimate → redraw at its height
 
 /** AR start: PnP heading within this of the first corridor's axis snaps onto it */
 const START_AXIS_SNAP = (25 * Math.PI) / 180;
@@ -447,8 +470,11 @@ function clampPathToDest(waypoints, destXY) {
  * PnP heading: 0° = +Y, 90° = +X (atan2(dx, dy))
  * destXY: bay coords — clamp path so it stops at this bay (not the next node)
  */
-export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = null, destXY = null) {
+export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = null, destXY = null, opts = {}) {
   let wps = (waypoints || []).map((w) => [Number(w[0]), Number(w[1])]);
+  // server "join the walkway" leg: waypoints[0]→[1] is a diagonal from where you stood, not
+  // a corridor — never use it as the axis to lock your heading onto (it's ~27° off)
+  const joinEnd = opts.joined && wps.length >= 3 ? wps[1] : null;
   if (wps.length < 2) return [origin.clone()];
 
   const pose = facilityPose || {};
@@ -472,12 +498,19 @@ export function pathFromWaypoints(waypoints, origin, initialFwd, facilityPose = 
   // which way the phone faces on the map. Use the PnP heading — assuming you face along the
   // route would erase a needed U-turn and draw the route straight ahead (wrong way).
   // Close to the first corridor's axis (either direction) → lock onto that axis exactly.
-  const dx0 = wps[1][0] - wps[0][0];
-  const dy0 = wps[1][1] - wps[0][1];
+  // axis = first corridor segment ahead (skip the join diagonal if we're still on it)
+  let ax = 0;
+  if (joinEnd && wps.length >= 3 && Math.hypot(wps[1][0] - joinEnd[0], wps[1][1] - joinEnd[1]) < 0.01) ax = 1;
+  const dx0 = wps[ax + 1][0] - wps[ax][0];
+  const dy0 = wps[ax + 1][1] - wps[ax][1];
   const segLen = Math.hypot(dx0, dy0);
   const segAngle = segLen >= 1e-6 ? Math.atan2(dx0, dy0) : 0;
   let facAngle;
-  if (Number.isFinite(pose.heading)) {
+  if (Number.isFinite(pose.heading) && pose.headingLive) {
+    // fix heading was already snapped at fix time; + gyro turn = where the phone points NOW
+    // (often mid-sweep, 5–15° off the corridor). Snapping again would rotate the whole path.
+    facAngle = (Number(pose.heading) * Math.PI) / 180;
+  } else if (Number.isFinite(pose.heading)) {
     const h = (Number(pose.heading) * Math.PI) / 180;
     const off = Math.abs(angDiff(h, segAngle));
     if (segLen >= 0.35 && off <= START_AXIS_SNAP) facAngle = segAngle; // facing along the route
@@ -635,6 +668,30 @@ function fitXf(fixes, prevRot) {
   const c = Math.cos(rot);
   const s = Math.sin(rot);
   return { rot, tx: pcx - (fcx * c - fcy * s), ty: pcy - (fcx * s + fcy * c), span };
+}
+
+/** facility->XR rigid transform from point pairs {f:{fx,fy}, x, z}; rot stays prevRot if < 2 pairs */
+export function fitXfFromPairs(pairs, prevRot) {
+  const n = pairs.length;
+  let fcx = 0, fcy = 0, pcx = 0, pcy = 0;
+  for (const q of pairs) {
+    fcx += q.f.fx; fcy += q.f.fy; pcx += q.x; pcy += -q.z;
+  }
+  fcx /= n; fcy /= n; pcx /= n; pcy /= n;
+  let rot = prevRot;
+  if (n >= 2) {
+    let sc = 0, sd = 0, span = 0;
+    for (const q of pairs) {
+      const ax = q.f.fx - fcx, ay = q.f.fy - fcy;
+      const bx = q.x - pcx, by = -q.z - pcy;
+      sc += ax * by - ay * bx;
+      sd += ax * bx + ay * by;
+      span = Math.max(span, Math.hypot(ax, ay));
+    }
+    if (span >= 1.0) rot = Math.atan2(sc, sd); // too close together -> rotation is noise
+  }
+  const c = Math.cos(rot), s = Math.sin(rot);
+  return { rot, tx: pcx - (fcx * c - fcy * s), ty: pcy - (fcx * s + fcy * c) };
 }
 
 /** public helper: facility polyline → XR path with soft corners */
@@ -927,8 +984,10 @@ export class WebXrNav {
 
     try {
       this.refSpace = await session.requestReferenceSpace("local-floor");
+      this.refSpaceType = "local-floor"; // y = 0 is ARCore's floor estimate
     } catch {
       this.refSpace = await session.requestReferenceSpace("local");
+      this.refSpaceType = "local";
     }
 
     const viewerSpace = await session.requestReferenceSpace("viewer");
@@ -993,6 +1052,8 @@ export class WebXrNav {
   }
 
   cleanup() {
+    // session is already over: its anchors died with it — don't call into native AR code
+    this.clearAnchors({ deleteNative: false });
     this.renderer.setAnimationLoop(null);
     this.hitSrc?.cancel();
     this.hitSrc = null;
@@ -1171,6 +1232,273 @@ export class WebXrNav {
     };
   }
 
+  /**
+   * facility pose for calibration, heading brought up to date: the PnP fix is seconds old
+   * and you've often turned since (e.g. after "Turn around"). The gyro measured that turn.
+   */
+  facilityPoseNow() {
+    const fp = this.opts.facilityPose;
+    if (!fp) {
+      this.opts.handlers?.onStartHeading?.({ applied: false, why: "no_facility_pose" });
+      return null;
+    }
+    const ref = fp.headingGyro;
+    const now = this.opts.getDeviceYaw?.();
+    const base = {
+      fixHeading: fp.heading,
+      fixGyro: ref,
+      gyroNow: now,
+      fixAgeMs: Number.isFinite(fp.headingAt) ? performance.now() - fp.headingAt : null,
+      source: fp.source || null,
+    };
+    // say exactly which input was missing — the correction silently not running hid a
+    // ~180° start error (turned round after "Turn around", AR used the old heading)
+    let why = null;
+    if (!Number.isFinite(fp.heading)) why = "no_fix_heading";
+    else if (!Number.isFinite(ref)) why = "no_gyro_at_fix";
+    else if (!this.opts.getDeviceYaw) why = "no_gyro_getter";
+    else if (!Number.isFinite(now)) why = "no_gyro_now";
+    if (why) {
+      this.opts.handlers?.onStartHeading?.({ ...base, applied: false, why });
+      return fp;
+    }
+    const turned = ((now - ref + 540) % 360) - 180; // (-180, 180]
+    this.startTurnDeg = turned;
+    // you stood still facing along the corridor for the PnP fix: snap THAT heading onto the
+    // corridor axis (removes PnP's ±5° noise) — the sweep/turn since comes from the gyro
+    const fixSnapped = this.snapToCorridorAxis(fp.heading);
+    this.opts.handlers?.onStartHeading?.({
+      ...base, applied: true, turnedDeg: turned, fixSnapped,
+    });
+    return { ...fp, heading: (fixSnapped + turned + 360) % 360, headingLive: true };
+  }
+
+  /** heading (deg) snapped to the first corridor's axis, either direction, if within 25° */
+  snapToCorridorAxis(headingDeg) {
+    const w = this.opts.waypoints || [];
+    for (let i = 0; i + 1 < w.length; i++) {
+      const dx = Number(w[i + 1][0]) - Number(w[i][0]);
+      const dy = Number(w[i + 1][1]) - Number(w[i][1]);
+      if (Math.hypot(dx, dy) < 0.35) continue;
+      const axis = Math.atan2(dx, dy);
+      const h = (headingDeg * Math.PI) / 180;
+      const off = Math.abs(angDiff(h, axis));
+      let out = null;
+      if (off <= START_AXIS_SNAP) out = axis;
+      else if (off >= Math.PI - START_AXIS_SNAP) out = axis + Math.PI;
+      return out == null ? headingDeg : (((out * 180) / Math.PI) % 360 + 360) % 360;
+    }
+    return headingDeg;
+  }
+
+  /* ----------------------------------------------------------- continuous anchoring */
+
+  clearAnchors({ deleteNative = true } = {}) {
+    if (deleteNative && this.session) {
+      for (const a of this.anchors || []) {
+        try { a.anchor?.delete?.(); } catch (_) { /* ignore */ }
+      }
+    }
+    this.anchors = [];
+    this.anchorPending = false;
+    this.anchorLastAt = 0;
+    this.anchorRebase = false;
+    this.anchorStats = { placed: 0, fixes: 0, recovered: 0 };
+  }
+
+  /** alignment changed by PnP / walking check: same real-world anchors, new map labels */
+  remapAnchors(oldXf, newXf) {
+    if (!oldXf || !newXf || !this.anchors?.length) return;
+    for (const a of this.anchors) {
+      if (!a.f) continue;
+      const w = xfApply(oldXf, a.f.fx, a.f.fy);
+      a.f = xfInverse(newXf, w.x, w.z);
+    }
+  }
+
+  updateAnchors(frame, pose = null) {
+    if (!this.calibrated || !this.xf || !this.refSpace || !frame) return;
+    if (typeof frame.createAnchor !== "function" || !frame.trackedAnchors) return;
+    if (!this.anchors) this.clearAnchors();
+    const now = performance.now();
+
+    // live XR poses of tracked anchors (ARCore moves these when it corrects itself)
+    const live = [];
+    for (const a of this.anchors) {
+      if (!a.anchor || !frame.trackedAnchors.has(a.anchor)) continue;
+      let pose = null;
+      try { pose = frame.getPose(a.anchor.anchorSpace, this.refSpace); } catch (_) { pose = null; }
+      if (!pose) continue;
+      const p = pose.transform.position;
+      if (!a.f && !this.alignStale && !this.xfEase) a.f = xfInverse(this.xf, p.x, p.z); // label on first sight
+      if (a.f) live.push({ a, x: p.x, z: p.z });
+    }
+
+    this.anchorTracked = live.length;
+    if (this.anchorRebase && !this.alignStale && !this.xfEase) {
+      // alignment re-established from scratch: relabel live anchors, drop ones not seen
+      for (const q of live) q.a.f = xfInverse(this.xf, q.x, q.z);
+      const keep = new Set(live.map((q) => q.a));
+      for (const a of this.anchors) {
+        if (!keep.has(a)) { try { a.anchor?.delete?.(); } catch (_) { /* ignore */ } }
+      }
+      this.anchors = this.anchors.filter((a) => keep.has(a));
+      this.anchorRebase = false;
+      return;
+    }
+
+    if (now - this.anchorLastAt >= ANCHOR_CHECK_MS && !this.xfEase) {
+      this.anchorLastAt = now;
+      this.checkAnchors(live, pose);
+    }
+
+    this.maybePlaceAnchor(frame);
+  }
+
+  /** do the anchors near you still sit where the alignment puts them? if not, follow them */
+  checkAnchors(live, pose = null) {
+    const me = this.tmp;
+    if (this.relocNeeded && this.relocSince) {
+      live = live.filter((q) => (q.a.t ?? 0) < this.relocSince);
+    }
+    let near = live
+      .map((q) => ({ ...q, d: Math.hypot(q.x - me.x, q.z - me.z) }))
+      .filter((q) => q.d <= ANCHOR_USE_RADIUS_M)
+      .sort((p, q) => p.d - q.d)
+      .slice(0, ANCHOR_USE_N);
+    if (!near.length) return;
+    const resid = (xf, q) => {
+      const w = xfApply(xf, q.a.f.fx, q.a.f.fy);
+      return Math.hypot(w.x - q.x, w.z - q.z);
+    };
+    const res = near.map((q) => resid(this.xf, q)).sort((p, q) => p - q);
+    const median = res[Math.floor(res.length / 2)];
+    // fine as is -> unless we're stale, where any consistent anchor set is a recovery
+    if (!this.alignStale && median < ANCHOR_MOVE_M) {
+      // after a dropout: ≥2 anchors still agree → alignment confirmed, no PnP needed
+      if (this.relocNeeded && near.length >= 2) this.endReloc("anchors_confirmed", { anchors: near.length });
+      return;
+    }
+    if (this.alignStale && near.length < 2) {
+      // one anchor: it pins the position; the gyro gives the rotation (turn since the loss)
+      this.recoverFromAnchorAndGyro(near[0], pose);
+      return;
+    }
+
+    let fit = null;
+    for (let tries = 0; tries < 2 && near.length >= 1; tries++) {
+      fit = fitXfFromPairs(near.map((q) => ({ f: q.a.f, x: q.x, z: q.z })), this.xf.rot);
+      const r = near.map((q) => resid(fit, q));
+      const worst = Math.max(...r);
+      if (worst <= ANCHOR_FIT_OK_M) break;
+      if (near.length <= 2) { fit = null; break; } // disagreeing pair -> can't tell which is right
+      near = near.filter((_, i) => i !== r.indexOf(worst)); // drop the odd one out, refit once
+      fit = null;
+    }
+    if (!fit) return;
+
+    const here = xfInverse(this.xf, me.x, me.z);
+    const a = xfApply(this.xf, here.fx, here.fy);
+    const b = xfApply(fit, here.fx, here.fy);
+    const shift = Math.hypot(a.x - b.x, a.z - b.z);
+    const rotDeg = (angDiff(fit.rot, this.xf.rot) * 180) / Math.PI;
+    const recovered = this.alignStale;
+    if (recovered) {
+      this.alignStale = false;
+      this.alignUrgent = false;
+      this.anchorStats.recovered += 1;
+    }
+    if (recovered || shift > ANCHOR_SNAP_M) {
+      this.xfEase = null;
+      this.xf = fit;
+      this.rebuildPath();
+    } else {
+      this.xfEase = { from: { ...this.xf }, to: fit, t0: performance.now() };
+    }
+    this.anchorStats.fixes += 1;
+    this.walkTrail = []; // trail was recorded in the old frame
+    this.opts.handlers?.onAnchorFix?.({ anchors: near.length, shift, rotDeg, recovered });
+    if (recovered) this.opts.handlers?.onAlignRecovered?.({ source: "anchors", destShift: shift });
+    if (this.relocNeeded && near.length >= 2) this.endReloc("anchors", { anchors: near.length });
+  }
+
+  /**
+   * stale (frame jumped) with only one anchor relocalised: the anchor pins where you are on
+   * the map, the gyro says how far you turned since the last good frame → full transform.
+   * Arrows come back at once; relocalize mode stays on so PnP / a 2nd anchor confirms it.
+   */
+  recoverFromAnchorAndGyro(q, pose) {
+    const g = this.lastGood;
+    const camNow = pose ? this.alignPoseOf(pose).yaw : null;
+    const devNow = this.opts.getDeviceYaw?.();
+    if (!q || !g || g.facHeading == null || !Number.isFinite(g.devYaw) || camNow == null || !Number.isFinite(devNow)) {
+      return false;
+    }
+    const dDev = angDiff((devNow * Math.PI) / 180, (g.devYaw * Math.PI) / 180);
+    const target = xfPivot(g.facHeading + dDev - camNow, q.a.f, q.x, q.z);
+    const me = this.tmp;
+    const here = xfInverse(this.xf, me.x, me.z);
+    const a = xfApply(this.xf, here.fx, here.fy);
+    const b = xfApply(target, here.fx, here.fy);
+    this.xfEase = null;
+    this.xf = target;
+    this.rebuildPath();
+    this.alignStale = false;
+    this.alignUrgent = false;
+    this.walkTrail = [];
+    this.anchorStats.recovered += 1;
+    this.anchorStats.fixes += 1;
+    const shift = Math.hypot(a.x - b.x, a.z - b.z);
+    this.opts.handlers?.onAnchorFix?.({ anchors: 1, shift, rotDeg: 0, recovered: true, gyro: true });
+    this.opts.handlers?.onAlignRecovered?.({ source: "anchor_gyro", destShift: shift });
+    return true;
+  }
+
+  /* relocalize mode: after a long loss / frame jump, PnP runs (app) until a fix or anchors
+   * confirm the alignment. Continuous PnP is off otherwise. */
+  startReloc(info = {}) {
+    if (this.relocNeeded) return;
+    this.relocNeeded = true;
+    this.relocSince = performance.now();
+    this.opts.handlers?.onRelocNeeded?.(info);
+  }
+
+  endReloc(source, info = {}) {
+    if (!this.relocNeeded) return;
+    this.relocNeeded = false;
+    const ms = performance.now() - (this.relocSince || performance.now());
+    this.opts.handlers?.onRelocDone?.({ source, ms, ...info });
+  }
+
+  /** a new anchor on the floor under you every ANCHOR_SPACING_M (never while unsure where we are) */
+  maybePlaceAnchor(frame) {
+    if (this.anchorPending || this.alignStale || this.xfEase) return;
+    const me = this.tmp;
+    const last = this.anchors[this.anchors.length - 1];
+    if (last && Math.hypot(me.x - last.x, me.z - last.z) < ANCHOR_SPACING_M) return;
+    const y = this.floorY ?? this.groundY ?? me.y;
+    let promise = null;
+    try {
+      promise = frame.createAnchor(new XRRigidTransform({ x: me.x, y, z: me.z }), this.refSpace);
+    } catch (_) {
+      promise = null;
+    }
+    if (!promise) return;
+    this.anchorPending = true;
+    const entry = { anchor: null, f: null, x: me.x, z: me.z, t: performance.now() };
+    promise.then((anchor) => {
+      this.anchorPending = false;
+      if (!this.session) return; // session ended meanwhile — the anchor died with it
+      entry.anchor = anchor;
+      this.anchors.push(entry);
+      this.anchorStats.placed += 1;
+      while (this.anchors.length > ANCHOR_MAX) {
+        const old = this.anchors.shift();
+        try { old.anchor?.delete?.(); } catch (_) { /* ignore */ }
+      }
+    }).catch(() => { this.anchorPending = false; });
+  }
+
   /** tracked again after a dropout — was the AR frame kept, or did it move? */
   onTrackingRecovered(pose) {
     const lostMs = performance.now() - this.lostAt;
@@ -1184,21 +1512,70 @@ export class WebXrNav {
     const plausible = RECOVER_JUMP_M + (lostMs / 1000) * RECOVER_WALK_MPS;
     if (this.spaceReset || jump > plausible) {
       this.markAlignStale(this.spaceReset ? "reset" : `jump_${jump.toFixed(1)}m`, { lostMs, jump });
-    } else if (lostMs > RECOVER_VERIFY_MS) {
-      // frame probably intact — keep arrows, but re-check with fresh PnP; pre-dropout fixes
-      // may belong to a slightly different frame, so don't mix them in
-      this.alignFixes = [];
-      this.headVotes = [];
-      this.alignUrgent = true;
-      this.walkSinceFix = WALK_COOLDOWN_M;
-      this.opts.handlers?.onAlignVerify?.({ lostMs, jump });
+    } else {
+      if (lostMs >= RELOC_AFTER_MS) this.startReloc({ lostMs, jump });
+      const rot = this.checkFrameRotation(pose, lostMs);
+      if (lostMs > RECOVER_VERIFY_MS || rot) {
+        // position looks intact — keep arrows, but re-check with fresh PnP; pre-dropout
+        // fixes may belong to a slightly different frame, so don't mix them in
+        this.alignFixes = [];
+        this.headVotes = [];
+        this.alignUrgent = true;
+        this.walkSinceFix = WALK_COOLDOWN_M;
+        this.opts.handlers?.onAlignVerify?.({
+          lostMs,
+          jump,
+          rotErrDeg: rot?.errDeg ?? null,
+          anchorsPlaced: this.anchorStats?.placed ?? 0,
+          anchorsTracked: this.anchorTracked ?? 0,
+        });
+      }
     }
     this.spaceReset = false;
+  }
+
+  /**
+   * ARCore can come back rotated about where you stand: tiny position jump, but every arrow
+   * swings round (e.g. after pointing the camera back along the way you came). The gyro kept
+   * measuring your real turn through the dropout — if ARCore's turn disagrees, undo the
+   * difference, pivoting on where you were.
+   */
+  checkFrameRotation(pose, lostMs, witness = null) {
+    // pre-dropout pair; snapshot it — rememberGood() overwrites lastGood on every new frame
+    const g = witness || (this.lastGood ? { ...this.lastGood } : null);
+    const camNow = this.alignPoseOf(pose).yaw;
+    const devNow = this.opts.getDeviceYaw?.();
+    if (!g || g.camYaw == null || !Number.isFinite(g.devYaw) || !Number.isFinite(devNow)) {
+      return null; // no usable witness (no gyro)
+    }
+    if (camNow == null) {
+      // camera at the floor right now — judge on the first frame looking outward (≤ 3 s)
+      this.rotCheckPending = { g, lostMs, until: performance.now() + 3000 };
+      return null;
+    }
+    this.rotCheckPending = null;
+    const dAr = angDiff(camNow, g.camYaw);
+    const dDev = angDiff((devNow * Math.PI) / 180, (g.devYaw * Math.PI) / 180);
+    const err = angDiff(dAr, dDev);
+    const errDeg = (err * 180) / Math.PI;
+    if (Math.abs(errDeg) < RECOVER_ROT_DEG || !this.xf) return null;
+    // true map heading now = heading before + gyro turn; solve for the transform rotation
+    const facNow = g.facHeading != null ? g.facHeading + dDev : this.xf.rot + camNow - err;
+    const p = pose.transform.position;
+    // anchors keep their map labels: if ARCore relocalised them they'll refine this further
+    this.xfEase = null;
+    this.xf = xfPivot(facNow - camNow, g.f, p.x, p.z);
+    this.walkTrail = [];
+    this.walkObs = [];
+    this.rebuildPath();
+    this.opts.handlers?.onFrameRotated?.({ errDeg, lostMs });
+    return { errDeg };
   }
 
   /** AR frame moved under us: alignment is invalid until a fresh fix (arrows hidden) */
   markAlignStale(reason, info = {}) {
     if (this.alignStale) return;
+    this.startReloc({ ...info, reason });
     this.alignStale = true;
     this.staleSince = performance.now();
     this.alignFixes = [];
@@ -1215,11 +1592,16 @@ export class WebXrNav {
   rememberGood(pose) {
     const a = this.alignPoseOf(pose);
     const f = xfInverse(this.xf, a.x, a.z);
+    const dev = this.opts.getDeviceYaw?.();
+    const paired = a.yaw != null && Number.isFinite(dev);
     this.lastGood = {
       x: a.x,
       z: a.z,
       f,
       facHeading: a.yaw != null ? this.xf.rot + a.yaw : this.lastGood?.facHeading ?? null,
+      // camera yaw (rad) + gyro yaw (deg) taken together: the turn witness across a dropout
+      camYaw: paired ? a.yaw : this.lastGood?.camYaw ?? null,
+      devYaw: paired ? dev : this.lastGood?.devYaw ?? null,
     };
   }
 
@@ -1235,6 +1617,7 @@ export class WebXrNav {
     this.xf = xfPivot(g.facHeading - yaw, g.f, p.x, p.z);
     this.rebuildPath();
     this.alignStale = false;
+    this.anchorRebase = true; // approximate -> anchors re-label from here
     this.walkSinceFix = WALK_COOLDOWN_M;
     this.opts.handlers?.onAlignRecovered?.({ source: "last_position" });
   }
@@ -1284,7 +1667,12 @@ export class WebXrNav {
   calibrate(pos, orient, hitPos = null) {
     this.fwd.copy(this.floorForward(pos, orient, hitPos));
 
-    const origin = pos.clone();
+    // anchor the fix's position at the first tracked XR point (see onFrame), unless that's
+    // implausibly far (> 15 m — then something else happened; use where you are now)
+    const pre = this.preCalOrigin;
+    const usePre = pre && Math.hypot(pre.x - pos.x, pre.z - pos.z) <= 15;
+    const origin = usePre ? new THREE.Vector3(pre.x, pre.y, pre.z) : pos.clone();
+    this.walkedBeforeCal = pre ? Math.hypot(pre.x - pos.x, pre.z - pos.z) : 0;
     if (this.floorY != null) origin.y = this.floorY;
 
     const wps = this.opts.waypoints;
@@ -1299,6 +1687,10 @@ export class WebXrNav {
     this.lostAt = null;
     this.spaceReset = false;
     this.lastGood = null;
+    this.rotCheckPending = null;
+    this.relocNeeded = false;
+    this.relocSince = 0;
+    this.clearAnchors();
     this.walkTrail = [];
     this.walkSinceFix = 0;
     this.walkObs = [];
@@ -1311,12 +1703,18 @@ export class WebXrNav {
         wps,
         origin,
         this.fwd,
-        this.opts.facilityPose || null,
+        this.facilityPoseNow(),
         this.opts.destXY || null,
+        { joined: Boolean(this.opts.routeJoined) },
       );
       this.xf = raw.xf || null;
       this.facWps = raw.facWps || null;
       this.corridorWps = raw.corridorWps || raw.facWps || null;
+      // route starts with the server's diagonal join from your position: that stretch isn't
+      // a corridor, so the walking-direction check must not compare against it
+      if (this.opts.routeJoined && wps.length >= 3) {
+        this.corridorWps = wps.slice(1).map((w) => [Number(w[0]), Number(w[1])]);
+      }
       this.path = raw;
     } else {
       this.path = pathFromLegs(this.legs, origin, this.fwd);
@@ -1393,6 +1791,15 @@ export class WebXrNav {
       this.reticle.visible = true;
       this.reticle.matrix.copy(this.mat);
       this.floorY = hitPose.transform.position.y;
+      if (this.floorEstimated) {
+        // first real floor hit after an estimated calibration: put the arrows on it
+        this.floorEstimated = false;
+        if (Math.abs(this.floorY - (this.groundY ?? this.floorY)) > FLOOR_REFIT_M) {
+          this.groundY = this.floorY;
+          this.rebuildPath();
+        }
+        this.opts.handlers?.onFloorFound?.({ y: this.floorY });
+      }
       hitPos = new THREE.Vector3(
         hitPose.transform.position.x,
         hitPose.transform.position.y,
@@ -1403,12 +1810,34 @@ export class WebXrNav {
     }
 
     if (!this.calibrated) {
-      if (this.floorY == null || !hitPos) {
+      const now = performance.now();
+      if (this.uncalSince == null) this.uncalSince = now;
+      // where ARCore first tracked you: closest XR point to where the PnP fix was taken.
+      // Walking between here and calibration must not become start-position error.
+      if (!this.preCalOrigin && !pose.emulatedPosition) {
+        this.preCalOrigin = { x: this.tmp.x, y: this.tmp.y, z: this.tmp.z };
+      }
+      if (this.floorY != null && hitPos) {
+        // aim path toward the floor spot you're looking at (not behind you)
+        this.calibrate(this.tmp, pose.transform.orientation, hitPos);
+        this.opts.handlers?.onCalibrated?.({
+          source: "hit_test", waitMs: now - this.uncalSince, walkedM: this.walkedBeforeCal,
+        });
+      } else if (now - this.uncalSince >= CAL_FALLBACK_MS && !pose.emulatedPosition) {
+        // no floor plane found: estimate it, start guiding now, refine when a hit arrives
+        this.floorY = this.refSpaceType === "local-floor" ? 0 : this.tmp.y - PHONE_HEIGHT_M;
+        this.floorEstimated = true;
+        this.calibrate(this.tmp, pose.transform.orientation, null);
+        this.opts.handlers?.onCalibrated?.({
+          source: "estimated_floor",
+          waitMs: now - this.uncalSince,
+          space: this.refSpaceType,
+          walkedM: this.walkedBeforeCal,
+        });
+      } else {
         this.renderer.render(this.scene, this.camera);
         return;
       }
-      // aim path toward the floor spot you're looking at (not behind you)
-      this.calibrate(this.tmp, pose.transform.orientation, hitPos);
     }
 
     this.stepAlignEase();
@@ -1423,6 +1852,12 @@ export class WebXrNav {
       this.rememberGood(pose);
       if (this.walkTrail) this.trackWalk(this.tmp);
     }
+    if (this.rotCheckPending && !degraded && !this.alignStale) {
+      const pend = this.rotCheckPending;
+      if (performance.now() > pend.until) this.rotCheckPending = null;
+      else this.checkFrameRotation(pose, pend.lostMs, pend.g);
+    }
+    if (!degraded) this.updateAnchors(frame, pose);
     const closest = closestOnPath(this.path, this.tmp.x, this.tmp.z);
     this.progressM = closest.progressM;
     if (this.progressM > this.maxProgressM) this.maxProgressM = this.progressM;
@@ -1480,6 +1915,10 @@ export class WebXrNav {
       this.alignUrgent = false;
       this.opts.handlers?.onAlignRecovered?.({ source: "pnp", destShift });
     }
+    // PnP is the better map truth: anchors keep their real-world spot, relabel their map spot
+    // (after a frame jump the old alignment means nothing -> re-label from live poses instead)
+    if (recovered) this.anchorRebase = true;
+    else this.remapAnchors(this.xfEase?.to || this.xf, target);
     if (first || destShift > ALIGN_SNAP_M) {
       this.xfEase = null;
       this.xf = { rot: target.rot, tx: target.tx, ty: target.ty };
@@ -1524,6 +1963,7 @@ export class WebXrNav {
     const f = pivotFac || xfInverse(this.xf, pivot.x, pivot.z);
     const target = xfPivot(newRot, f, pivot.x, pivot.z);
     this.xfPivotXr = { x: pivot.x, z: pivot.z };
+    this.remapAnchors(this.xfEase?.to || this.xf, target);
     if (ease && Math.abs(delta) < (WALK_SNAP_DEG * Math.PI) / 180) {
       this.xfEase = { from: { ...this.xf }, to: target, t0: performance.now() };
     } else {

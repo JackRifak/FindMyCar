@@ -148,7 +148,16 @@
     <section id="panel-segments" class="panel" style="display:none">
       <p class="panel-kicker">Step 2 · Paths</p>
       <h3>Walkable paths</h3>
-      <p class="hint">Click corridor endpoints in pairs along the corridor's centre. Shared corners within ~0.3&nbsp;m auto-merge. Drag either dashed edge of a band (or its round handle) to move that side on its own, so the line can sit off-centre in a wide corridor; hold Shift for 0.1&nbsp;m steps. Typing a total width re-centres the band.</p>
+      <p class="hint">Click corridor endpoints in pairs along the corridor's centre. Shared corners within ~0.3&nbsp;m auto-merge. Drag either dashed edge of a band (or its round handle) to move that side on its own, so the line can sit off-centre in a wide corridor; hold Shift for 0.1&nbsp;m steps. Typing a total width re-centres the band. Click a path to select it (Del deletes, Esc deselects); drag its ends to shrink or extend it — they snap onto other paths (Alt: move freely). Shift+click on a path starts a new one there.</p>
+      <div id="segmentSelBar" class="seg-selbar" hidden>
+        <span id="segmentSelInfo"></span>
+        <div class="action-row">
+          <button type="button" id="segDeleteBtn" class="btn-secondary" title="Delete (Del)">Delete</button>
+          <button type="button" id="segReverseBtn" class="btn-secondary" title="Swap ends (band stays put)">Reverse</button>
+          <button type="button" id="segCenterBtn" class="btn-secondary" title="Make the band symmetric about the line">Centre band</button>
+          <button type="button" id="segDeselectBtn" class="btn-secondary" title="Deselect (Esc)">Done</button>
+        </div>
+      </div>
       <div id="segmentsList" class="list-stack"></div>
       <div class="action-row">
         <button type="button" id="undoSegmentBtn" class="btn-secondary">Undo last</button>

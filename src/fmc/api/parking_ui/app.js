@@ -14,6 +14,14 @@ const XR_TRACK_LOST_MS = 1200; // pose gone this long → hide arrows + "raise t
  */
 const LOOKING_DOWN_BETA = 35;
 const HOLD_PHONE_HINT = "Hold the phone at chest height, tilted ~45° — floor arrows and pillars both in view";
+/** ARCore starts tracking fastest with sideways motion (parallax) — not by walking away */
+const AR_START_HINT = "Move the phone slowly side to side — keep pillars or signs in view";
+const AR_PLACED_HINT = "Arrows placed — start walking";
+/** fix older than this when the arrows appear → you may have walked since: re-fix at once */
+const XR_START_FIX_STALE_MS = 4000;
+/** first AR-frame fix after such a start may be a little weaker — any fix beats a wrong start */
+const XR_FIRST_FIX_MIN_CONF = 0.42;
+const XR_FIRST_FIX_MIN_INLIERS = 15;
 /** pose gone this long → give up on XR, hand back to camera + PnP */
 const XR_TRACK_DEAD_MS = 4500;
 const XR_TRACK_GRACE_MS = 12000;
@@ -22,6 +30,14 @@ const CABIN_HITS_NEEDED = 2;
 /** AR re-alignment: PnP on XR frames — only strong fixes move the path */
 /** AR alignment only trusts PnP fixes at or above this confidence */
 const XR_ALIGN_MIN_CONF = 0.5;
+/**
+ * Continuous AR-frame PnP is OFF for now: AR relies on ARCore + anchors + gyro, and PnP only
+ * runs to relocalize after a tracking loss (see relocNeeded). Flip to true to restore the
+ * periodic re-alignment (and the start-up re-fix).
+ */
+const XR_CONTINUOUS_PNP = false;
+const XR_RELOC_GIVEUP_MS = 25000; // relocalize attempts stop after this
+const RELOC_HINT = "Tilt the phone up — point at pillars or signs to relocalize";
 /** weaker PnP fixes still vote on heading (rotation only) — 3 agreeing ones rotate the path */
 const XR_HEADING_VOTE_MIN_CONF = 0.4;
 const XR_HEADING_VOTE_MIN_INLIERS = 20;
@@ -97,6 +113,7 @@ const state = {
   landingPose: null, // PnP/VPR lock on Floor B — origin for fresh XR
   cabinHits: 0, // consecutive lift-lobby colour matches for the landing floor
   devicePitch: null, // DeviceOrientation beta — see LOOKING_DOWN_BETA
+  headingFix: null, // {heading, gyro, at, source} of the last real fix — AR start direction
   awaitingLandingLock: false, // true from lift handoff until PnP on dest floor
   floorOrder: [], // site floor labels, bottom→top when available
   lastCompassSample: null,
@@ -1097,6 +1114,9 @@ async function claimXrSlice({ fromGesture = false } = {}) {
         x: Number(lp.x),
         y: Number(lp.y),
         heading: Number(lp.heading),
+        headingGyro: Number.isFinite(lp.headingGyro) ? lp.headingGyro : null,
+        headingAt: lp.headingAt ?? null,
+        source: lp.method || "landing",
       },
       fresh: true,
       skipCamRelease: true,
@@ -1708,7 +1728,7 @@ function facingRelDeg() {
   const p1 = lookAheadOnRoute(wps, x, y, 0.5);
   const p2 = lookAheadOnRoute(wps, x, y, 3.5);
   if (!p1 || !p2 || Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) < 0.5) return null;
-  return normHeadingDelta(bearingTo(p1[0], p1[1], p2[0], p2[1]), state.position.heading);
+  return normHeadingDelta(bearingTo(p1[0], p1[1], p2[0], p2[1]), currentHeadingDeg());
 }
 
 /**
@@ -1727,7 +1747,7 @@ function facingOverride(next) {
     void logClientDiagnostic({
       event: "facing_uturn",
       nav_mode: clientNavMode(),
-      reason: `rel=${Math.round(rel)}deg heading=${Math.round(state.position.heading)}`,
+      reason: `rel=${Math.round(rel)}deg heading=${Math.round(currentHeadingDeg())}`,
     });
   }
   if (facingUturn) return { label: "Turn around", kind: "uturn", distanceM: 0 };
@@ -1944,7 +1964,9 @@ function startArTracking() {
       if (!res.ok) return;
       const pos = await res.json();
       if (!pos.tracking) return;
+      // VIO update: new x/y, but keep the last fix's heading reference (gyro, time, source)
       state.position = {
+        ...state.position,
         floor: pos.floor,
         x: pos.x,
         y: pos.y,
@@ -1952,6 +1974,7 @@ function startArTracking() {
         confidence: pos.confidence,
         tracking: true,
       };
+      if (!state.headingFix) adoptHeading(pos.heading, "vio_track");
       setStatusChip("ARCore VIO", "live");
       if (ui.positionState) ui.positionState.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}`;
       ui.metricCoords.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`;
@@ -2108,10 +2131,47 @@ function phoneLookingDown() {
   return Math.abs(b) < LOOKING_DOWN_BETA;
 }
 
-// tilt only — always on (the compass listener below starts with calibration, which is skipped)
+// tilt + gyro yaw — always on (the compass listener below starts with calibration, which is
+// skipped). Plain "deviceorientation" is the relative, gyro-based one on Android: no magnet
+// noise, so its turn is a trustworthy witness while ARCore tracking drops out.
 window.addEventListener("deviceorientation", (event) => {
   if (typeof event.beta === "number" && Number.isFinite(event.beta)) state.devicePitch = event.beta;
+  if (event.absolute) return;
+  const h = computeEulerHeading(event);
+  if (h != null && Number.isFinite(h)) {
+    state.gyroYaw = h;
+    state.gyroYawAt = performance.now();
+  }
 }, true);
+
+/**
+ * A heading reached us without going through applyVprFix (server /position poll, /track
+ * VIO reply…). If it's a new value — not the one we already reference — remember it with
+ * the gyro reading *now*. Same value again (polls repeat it every 2 s) must NOT refresh
+ * the gyro reading, or the turn you make afterwards would be erased.
+ */
+function adoptHeading(heading, source) {
+  const h = Number(heading);
+  if (!Number.isFinite(h)) return;
+  const hf = state.headingFix;
+  if (hf && Math.abs(((h - hf.heading + 540) % 360) - 180) < 0.5) return;
+  state.headingFix = { heading: h, gyro: deviceYawDeg(), at: performance.now(), source };
+}
+
+/** map heading now: last fix's heading + how far the gyro says you've turned since */
+function currentHeadingDeg() {
+  const hf = state.headingFix;
+  const h = hf ? hf.heading : Number(state.position.heading);
+  const ref = hf ? hf.gyro : state.position.headingGyro;
+  const now = deviceYawDeg();
+  if (!Number.isFinite(h) || !Number.isFinite(ref) || !Number.isFinite(now)) return h;
+  return (h + (((now - ref + 540) % 360) - 180) + 360) % 360;
+}
+
+/** gyro yaw (deg, clockwise) if fresh, else null */
+function deviceYawDeg() {
+  return state.gyroYawAt && performance.now() - state.gyroYawAt < 500 ? state.gyroYaw : null;
+}
 
 function onDeviceOrientation(event) {
   const heading = computeEulerHeading(event);
@@ -2591,6 +2651,7 @@ async function encodeXrCameraFrame(maxDimension, jpegQuality) {
  * re-fits map→AR so heading error at start and ARCore drift don't push the bay off.
  */
 async function runXrAlignLoop(nav) {
+  let captureFails = 0;
   let attempts = 0;
   let lastTryAt = 0;
   let lastFixAt = 0;
@@ -2601,9 +2662,17 @@ async function runXrAlignLoop(nav) {
     if (!(state.webXrActive && webXrNav === nav)) return;
     if (!nav.calibrated || state.inFloorTransition || liftHandoffBusy || nav.arrived) continue;
     const now = performance.now();
+    const reloc = Boolean(nav.relocNeeded || nav.alignStale);
+    if (!XR_CONTINUOUS_PNP && !reloc) continue; // PnP only to recover after a tracking loss
+    if (nav.relocNeeded && nav.relocSince && now - nav.relocSince > XR_RELOC_GIVEUP_MS) {
+      nav.endReloc("gave_up");
+      continue;
+    }
     const here = nav.xrPosition();
     const walked = here && lastFixXr ? Math.hypot(here.x - lastFixXr.x, here.z - lastFixXr.z) : 0;
-    const due = nav.alignUrgent
+    const due = reloc
+      ? now - lastTryAt >= XR_RECOVER_TRY_MS
+      : nav.alignUrgent
       ? now - lastTryAt >= XR_RECOVER_TRY_MS
       : accepted < 2
       ? now - lastTryAt >= XR_ALIGN_WARMUP_MS
@@ -2616,8 +2685,18 @@ async function runXrAlignLoop(nav) {
     let blob = null;
     try {
       blob = await nav.grabFrameBlob({ maxDim: 1280, quality: 0.8 });
-    } catch (_) {
-      continue; // busy (lift/floor-detect grab) or no camera-access yet
+      captureFails = 0;
+    } catch (err) {
+      // busy (lift/floor-detect grab) or no camera-access: without frames no PnP corrections
+      captureFails += 1;
+      if (captureFails === 3 || captureFails % 20 === 0) {
+        void logClientDiagnostic({
+          event: "xr_frame_capture_failed",
+          nav_mode: "webxr",
+          reason: `${captureFails}x ${String(err?.message || err).slice(0, 60)} camera_access=${nav.hasCameraAccess}`,
+        });
+      }
+      continue;
     }
     const xr = blob?.xrPose;
     if (!xr || webXrNav !== nav) continue;
@@ -2656,7 +2735,10 @@ async function runXrAlignLoop(nav) {
     if (!isPnp) reason = "not_pnp";
     else if (legFloor != null && !sameFloor(pos.floor, legFloor)) reason = `floor_${pos.floor}`;
     else if (conf < XR_ALIGN_MIN_CONF
-      && !(nav.alignStale && conf >= XR_RECOVER_MIN_CONF && inl >= XR_RECOVER_MIN_INLIERS)) {
+      && !(nav.alignStale && conf >= XR_RECOVER_MIN_CONF && inl >= XR_RECOVER_MIN_INLIERS)
+      && !(nav.firstFixRelaxed && accepted === 0
+        && conf >= XR_FIRST_FIX_MIN_CONF && inl >= XR_FIRST_FIX_MIN_INLIERS)
+      && !(nav.relocNeeded && conf >= XR_FIRST_FIX_MIN_CONF && inl >= XR_FIRST_FIX_MIN_INLIERS)) {
       reason = `lowconf_${conf.toFixed(2)}_${inl}inl`;
       // too weak to move the path, good enough to vote on which way the map faces
       if (conf >= XR_HEADING_VOTE_MIN_CONF && inl >= XR_HEADING_VOTE_MIN_INLIERS) {
@@ -2679,6 +2761,8 @@ async function runXrAlignLoop(nav) {
     if (out?.accepted) {
       accepted += 1;
       nav.alignUrgent = false;
+      nav.firstFixRelaxed = false;
+      nav.endReloc("pnp", { conf, inl });
       lastFixAt = performance.now();
       lastFixXr = { x: xr.x, z: xr.z };
       state.position = {
@@ -2691,6 +2775,12 @@ async function runXrAlignLoop(nav) {
         heading: pos.heading,
         confidence: pos.confidence,
         tracking: true,
+      };
+      state.headingFix = {
+        heading: Number(pos.raw_heading ?? pos.heading),
+        gyro: deviceYawDeg(), // frame is ~0.5 s old; good enough for a later AR restart
+        at: performance.now(),
+        source: "xr_align",
       };
       if (ui.metricCoords) ui.metricCoords.textContent = `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)} m`;
       if (ui.metricHeading) ui.metricHeading.textContent = `${Math.round(pos.heading)}°`;
@@ -2723,6 +2813,8 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
     frame = await encodeXrCameraFrame(maxDimension, jpegQuality);
   }
   if (!frame) throw new Error("Camera frame is not ready yet.");
+  // gyro yaw when this frame was taken: AR later adds how far you've turned since this fix
+  const gyroAtCapture = deviceYawDeg();
 
   const diagnostics = {
     trigger,
@@ -2799,7 +2891,9 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
     const error = await response.text();
     throw new Error(error || "Localization failed");
   }
-  return { position: await response.json(), diagnostics };
+  const position = await response.json();
+  position.gyro_at_capture = gyroAtCapture;
+  return { position, diagnostics };
 }
 
 /** server-side nav debug: webxr | camera | idle */
@@ -2830,8 +2924,19 @@ function applyVprFix(pos) {
     rawX: Number.isFinite(pos.raw_x) ? pos.raw_x : null,
     rawY: Number.isFinite(pos.raw_y) ? pos.raw_y : null,
     heading: pos.heading,
+    headingGyro: Number.isFinite(pos.gyro_at_capture) ? pos.gyro_at_capture : null,
+    headingAt: performance.now(),
+    headingSource: pos.method || "fix",
     confidence: pos.confidence,
     tracking: true,
+  };
+  // AR start direction = this fix's heading + gyro turn since. Kept apart from
+  // state.position, which /track (native ARCore VIO) and /position replies overwrite.
+  state.headingFix = {
+    heading: Number(pos.heading),
+    gyro: Number.isFinite(pos.gyro_at_capture) ? pos.gyro_at_capture : null,
+    at: performance.now(),
+    source: pos.method || "fix",
   };
   state.hasLocalizedPosition = true;
   state.lastLocalizeMethod = pos.method || null;
@@ -2907,6 +3012,8 @@ function applyVprFix(pos) {
       x: anchor.x,
       y: anchor.y,
       heading: Number(pos.heading),
+      headingGyro: Number.isFinite(pos.gyro_at_capture) ? pos.gyro_at_capture : null,
+      headingAt: performance.now(),
       floor: normFloor(pos.floor),
       method: pos.method || null,
       confidence: Number(pos.confidence) || 0,
@@ -3154,9 +3261,13 @@ async function startWebXrNav(opts = {}) {
   } else {
     showFloorArrows(false);
   }
+  const hf = state.headingFix;
   const facilityPose = opts.facilityPose || {
     ...arAnchorXY(state.position.x, state.position.y, state.position.rawX, state.position.rawY),
-    heading: Number(state.position.heading),
+    heading: hf ? hf.heading : Number(state.position.heading),
+    headingGyro: hf && Number.isFinite(hf.gyro) ? hf.gyro : null,
+    headingAt: hf ? hf.at : null,
+    source: hf ? hf.source : "position",
   };
   const remWps = api.remainingWaypoints
     ? api.remainingWaypoints(wps, facilityPose.x, facilityPose.y)
@@ -3179,6 +3290,8 @@ async function startWebXrNav(opts = {}) {
     legs,
     distanceM,
     facilityPose,
+    getDeviceYaw: deviceYawDeg, // gyro turn witness across tracking dropouts
+    routeJoined: Boolean(activeRouteLeg()?.joined), // leg starts with a join-the-walkway stretch
     // pin bay when this floor's path ends at the slot (not a lift door)
     destXY: (!hasFloorChangeAhead() && onDestFloor()) ? routeDestPoint() : null,
     destLabel: ui.slotInput?.value?.trim() || "",
@@ -3219,7 +3332,7 @@ async function startWebXrNav(opts = {}) {
               reason: `lost_${Math.round(performance.now() - xrTrackLostAt)}ms`,
             });
             // a frame jump on recovery already put up the "re-aligning" hint — keep it
-            if (!webXrNav?.alignStale) {
+            if (!webXrNav?.alignStale && !webXrNav?.relocNeeded) {
               setStatusChip("AR nav", "live");
               setHint("", false);
             }
@@ -3236,20 +3349,39 @@ async function startWebXrNav(opts = {}) {
           void logClientDiagnostic({ event: "xr_track_lost", nav_mode: "webxr" });
           setStatusChip("AR paused", "warn");
           // plain glossy floor has no features — looking further down makes it worse
-          setHint(
-            phoneLookingDown()
-              ? "AR lost tracking — raise the phone so pillars and walls are in view"
-              : "AR lost tracking — hold still and aim at pillars, signs or bay numbers",
-            true,
-          );
+          setHint(RELOC_HINT, true);
         }
         if (lost > XR_TRACK_DEAD_MS) {
           void handXrToCamera(state.inFloorTransition ? "lift" : "dead");
         }
       },
+      onRelocNeeded: (info) => {
+        setStatusChip("AR relocalizing", "warn");
+        setHint(RELOC_HINT, true);
+        void logClientDiagnostic({
+          event: "xr_reloc_start",
+          nav_mode: "webxr",
+          reason: `${info.reason || "tracking_lost"}${info.lostMs != null ? ` lost=${Math.round(info.lostMs)}ms` : ""}`
+            + `${info.jump != null ? ` jump=${Number(info.jump).toFixed(1)}m` : ""}`
+            + ` anchors=${webXrNav?.anchorTracked ?? 0}/${webXrNav?.anchorStats?.placed ?? 0}`,
+        });
+      },
+      onRelocDone: (info) => {
+        if (!webXrNav?.alignStale) {
+          setStatusChip("AR nav", "live");
+          if (ui.arHint?.textContent === RELOC_HINT) setHint("", false);
+        }
+        void logClientDiagnostic({
+          event: "xr_reloc_done",
+          nav_mode: "webxr",
+          reason: `${info.source} after ${Math.round(info.ms)}ms`
+            + `${info.anchors != null ? ` anchors=${info.anchors}` : ""}`
+            + `${info.conf != null ? ` conf=${Number(info.conf).toFixed(2)} inl=${info.inl}` : ""}`,
+        });
+      },
       onAlignStale: (info) => {
         setStatusChip("AR re-aligning", "warn");
-        setHint("AR lost its place — point at pillars, signs or bay numbers to re-align", true);
+        setHint(RELOC_HINT, true);
         void logClientDiagnostic({
           event: "xr_align_stale",
           nav_mode: "webxr",
@@ -3261,19 +3393,79 @@ async function startWebXrNav(opts = {}) {
         void logClientDiagnostic({
           event: "xr_align_verify",
           nav_mode: "webxr",
-          reason: `lost=${Math.round(info.lostMs)}ms jump=${info.jump.toFixed(1)}m`,
+          reason: `lost=${Math.round(info.lostMs)}ms jump=${info.jump.toFixed(1)}m`
+            + `${info.rotErrDeg != null ? ` rot_fixed=${info.rotErrDeg.toFixed(0)}deg` : ""}`
+            + ` anchors=${info.anchorsTracked}/${info.anchorsPlaced}`,
+        });
+      },
+      onStartHeading: (info) => {
+        const r = (v) => (Number.isFinite(v) ? Math.round(v) : "none");
+        const gyroAge = state.gyroYawAt ? Math.round(performance.now() - state.gyroYawAt) : "never";
+        const ctx = `source=${info.source ?? "?"} fix_age=${r(info.fixAgeMs)}ms `
+          + `fix_gyro=${r(info.fixGyro)} gyro_now=${r(info.gyroNow)} last_gyro_event=${gyroAge}ms `
+          + `localized=${state.hasLocalizedPosition} ref=${state.headingFix?.source ?? "none"}`;
+        void logClientDiagnostic({
+          event: "xr_start_heading",
+          nav_mode: "webxr",
+          reason: info.applied
+            ? `applied fix=${r(info.fixHeading)}deg snapped=${r(info.fixSnapped)}deg `
+              + `turned_since=${r(info.turnedDeg)}deg `
+              + `-> phone=${r(((info.fixSnapped ?? info.fixHeading) + info.turnedDeg + 360) % 360)}deg | ${ctx}`
+            : `SKIPPED ${info.why} fix=${r(info.fixHeading)}deg | ${ctx}`,
+        });
+      },
+      onCalibrated: (info) => {
+        setHint(AR_PLACED_HINT, true);
+        setTimeout(() => {
+          if (ui.arHint?.textContent === AR_PLACED_HINT) setHint("", false);
+        }, 4000);
+        // the fix may be old (you walked before ARCore tracked): re-fix from AR frames now,
+        // and let the first one count a little earlier
+        const fixAge = state.headingFix ? performance.now() - state.headingFix.at : Infinity;
+        if (XR_CONTINUOUS_PNP && fixAge > XR_START_FIX_STALE_MS && webXrNav) {
+          webXrNav.alignUrgent = true;
+          webXrNav.firstFixRelaxed = true;
+        }
+        void logClientDiagnostic({
+          event: "xr_calibrated",
+          nav_mode: "webxr",
+          reason: `${info.source} after ${Math.round(info.waitMs)}ms${info.space ? ` space=${info.space}` : ""}`
+            + ` walked_before=${Number(info.walkedM || 0).toFixed(1)}m fix_age=${Number.isFinite(fixAge) ? Math.round(fixAge) : "none"}ms`
+            + `${fixAge > XR_START_FIX_STALE_MS ? " refix=urgent" : ""}`,
+        });
+      },
+      onFloorFound: (info) => {
+        void logClientDiagnostic({ event: "xr_floor_found", nav_mode: "webxr", reason: `y=${info.y.toFixed(2)}` });
+      },
+      onFrameRotated: (info) => {
+        void logClientDiagnostic({
+          event: "xr_frame_rotated",
+          nav_mode: "webxr",
+          reason: `err=${info.errDeg.toFixed(0)}deg lost=${Math.round(info.lostMs)}ms (gyro vs ARCore turn)`,
         });
       },
       onAlignRecovered: (info) => {
         setStatusChip("AR nav", "live");
-        setHint(
-          info.source === "pnp" ? "" : "Arrows restored from your last position — they'll firm up as you walk",
-          info.source !== "pnp",
-        );
+        // pnp / anchors put the arrows back exactly; last_position is only approximate
+        const approx = info.source === "last_position";
+        setHint(approx ? "Arrows restored from your last position — they'll firm up as you walk" : "", approx);
         void logClientDiagnostic({
           event: "xr_align_recovered",
           nav_mode: "webxr",
-          reason: info.source === "pnp" ? `pnp dest_shift=${info.destShift.toFixed(2)}m` : info.source,
+          reason: approx ? info.source : `${info.source} shift=${Number(info.destShift || 0).toFixed(2)}m`,
+        });
+      },
+      onAnchorFix: (a) => {
+        // drift corrections can be frequent — log recoveries always, the rest at most every 5 s
+        const now = performance.now();
+        if (!a.recovered && now - (state.lastAnchorLogAt || 0) < 5000) return;
+        state.lastAnchorLogAt = now;
+        const st = webXrNav?.anchorStats || {};
+        void logClientDiagnostic({
+          event: "xr_anchor_fix",
+          nav_mode: "webxr",
+          reason: `${a.recovered ? "recovered " : ""}anchors=${a.anchors} shift=${a.shift.toFixed(2)}m `
+            + `rot=${a.rotDeg.toFixed(1)}deg placed=${st.placed ?? "?"} fixes=${st.fixes ?? "?"}`,
         });
       },
       onHeadingFix: (h) => {
@@ -3393,7 +3585,7 @@ async function startWebXrNav(opts = {}) {
   void logClientDiagnostic({
     event: "webxr_start",
     nav_mode: "webxr",
-    reason: opts.fresh ? "fresh_floor" : "start_nav",
+    reason: (opts.fresh ? "fresh_floor" : "start_nav") + ` camera_access=${webXrNav?.hasCameraAccess}`,
   });
   void runXrAlignLoop(webXrNav);
   setRouteBtnMode("stop");
@@ -3402,15 +3594,15 @@ async function startWebXrNav(opts = {}) {
     startXrLiftWatch();
     startXrHealthWatch();
     setStatusMsg("AR on — aim at the floor a few metres ahead to place arrows (keep AR near the lift)");
-    setHint(HOLD_PHONE_HINT, true);
+    setHint(AR_START_HINT, true);
   } else if (opts.fresh) {
     startXrHealthWatch();
     setStatusMsg("Fresh AR on this floor — origin from landing PnP");
-    setHint(HOLD_PHONE_HINT, true);
+    setHint(AR_START_HINT, true);
   } else {
     startXrHealthWatch();
     setStatusMsg("Aim at the floor a few metres ahead — lime chevrons guide the route");
-    setHint(HOLD_PHONE_HINT, true);
+    setHint(AR_START_HINT, true);
   }
   return true;
 }
@@ -4020,6 +4212,7 @@ async function refreshCurrentPosition() {
     if (!response.ok) return;
     const pos = await response.json();
     state.position = {
+      ...state.position,
       floor: pos.floor,
       x: pos.x,
       y: pos.y,
@@ -4027,6 +4220,7 @@ async function refreshCurrentPosition() {
       confidence: pos.confidence,
       tracking: pos.tracking,
     };
+    if (pos.tracking) adoptHeading(pos.heading, "position_poll");
     updateRouteStatus();
   } catch (error) {
     console.warn("Unable to refresh current position.", error);

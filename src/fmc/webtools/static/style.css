@@ -762,3 +762,8 @@ button:disabled {
 
 .seg-width { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; font-size: 11px; color: var(--muted, #667); }
 .seg-width input { width: 52px; padding: 2px 4px; font-size: 11px; }
+
+.seg-selbar { margin: 8px 0; padding: 8px; border: 1px solid #ffd166; border-radius: 8px; background: rgba(255, 209, 102, 0.08); font-size: 12px; }
+.seg-selbar .action-row { margin-top: 6px; flex-wrap: wrap; gap: 6px; }
+.list-item.is-selected { outline: 2px solid #ffd166; outline-offset: -2px; }
+.list-item.seg-row { cursor: pointer; }

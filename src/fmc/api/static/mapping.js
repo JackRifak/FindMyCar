@@ -1568,6 +1568,179 @@ if (btnDeleteSelection) {
     btnDeleteSelection.onclick = () => deleteInteractiveSelection();
 }
 
+// ── per-floor show / hide in the 3D viewer ──────────────────────────────────
+// Every object drawn for a floor (points, deck, label, plan, tags, live poses) carries
+// userData.floor; a chip per floor toggles them all. Remembered across visits.
+const hiddenFloors3D = (() => {
+    try { return new Set(JSON.parse(localStorage.getItem('fmc_hidden_floors_3d') || '[]').map(String)); }
+    catch (_) { return new Set(); }
+})();
+
+function applyFloorVisibility() {
+    const groups = [currentPoints, floorDeckGroup, floorPlanGroup, landmarkGroup, poseGroup];
+    for (const g of groups) {
+        if (!g) continue;
+        g.traverse((o) => {
+            if (o === g || o.userData.floor == null) return;
+            o.visible = !hiddenFloors3D.has(String(o.userData.floor));
+        });
+    }
+}
+
+function renderFloorChips(floors) {
+    const box = document.getElementById('viewer-floor-chips');
+    if (!box) return;
+    box.innerHTML = '';
+    // top floor first, like a building section
+    [...floors].reverse().forEach((fid) => {
+        const level = floors.indexOf(fid);
+        const tint = tintForFloor(level, fid);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'viewer-floor-chip' + (hiddenFloors3D.has(String(fid)) ? ' is-off' : '');
+        btn.title = `Show / hide floor ${fid}`;
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        dot.style.background = '#' + new THREE.Color(tint.r, tint.g, tint.b).getHexString();
+        btn.append(dot, document.createTextNode(String(fid)));
+        btn.onclick = () => {
+            const key = String(fid);
+            if (hiddenFloors3D.has(key)) hiddenFloors3D.delete(key);
+            else hiddenFloors3D.add(key);
+            try { localStorage.setItem('fmc_hidden_floors_3d', JSON.stringify([...hiddenFloors3D])); } catch (_) {}
+            btn.classList.toggle('is-off', hiddenFloors3D.has(key));
+            clearCloudSelection();
+            applyFloorVisibility();
+        };
+        box.appendChild(btn);
+    });
+}
+
+// ── floor plans in the 3D viewer ────────────────────────────────────────────
+// Each floor's plan image is georeferenced (pixel → map affine from /map/transform), so its
+// four corners map through facilityToScene() exactly like the point cloud — the plan sits
+// on that floor's deck in the same relative coordinates.
+let show3DPlans = (() => {
+    try { return localStorage.getItem('fmc_show_3d_plans') !== '0'; } catch (_) { return true; }
+})();
+let floorPlanGroup = null;
+let floorPlanRenderSeq = 0;
+const floorPlanCache = {}; // floor → { transform, img } | null (missing)
+const btnToggle3DPlans = document.getElementById('btn-toggle-3d-plans');
+
+function syncPlansButton() {
+    if (!btnToggle3DPlans) return;
+    btnToggle3DPlans.innerText = show3DPlans ? 'Plans: ON' : 'Plans: OFF';
+    btnToggle3DPlans.classList.toggle('is-on', show3DPlans);
+}
+syncPlansButton();
+if (btnToggle3DPlans) {
+    btnToggle3DPlans.onclick = () => {
+        show3DPlans = !show3DPlans;
+        try { localStorage.setItem('fmc_show_3d_plans', show3DPlans ? '1' : '0'); } catch (_) {}
+        syncPlansButton();
+        if (show3DPlans) void renderFloorPlans3D(viewerFrame);
+        else clearFloorPlans3D();
+    };
+}
+
+function clearFloorPlans3D() {
+    floorPlanRenderSeq++; // cancel any in-flight render
+    if (!floorPlanGroup) return;
+    if (scene) scene.remove(floorPlanGroup);
+    floorPlanGroup.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) {
+            if (o.material.map) o.material.map.dispose();
+            o.material.dispose();
+        }
+    });
+    floorPlanGroup = null;
+}
+
+async function loadFloorPlanAsset(fid) {
+    if (fid in floorPlanCache) return floorPlanCache[fid];
+    const q = `?floor=${encodeURIComponent(fid)}`;
+    let asset = null;
+    try {
+        const tr = await fetch(getApiUrl('/map/transform' + q));
+        if (tr.ok) {
+            const transform = await tr.json();
+            const img = await new Promise((resolve) => {
+                const im = new Image();
+                im.crossOrigin = 'anonymous';
+                im.onload = () => resolve(im);
+                im.onerror = () => resolve(null);
+                im.src = getApiUrl('/map/floorplan' + q);
+            });
+            if (img && img.naturalWidth > 0) asset = { transform, img };
+        }
+    } catch (_) { /* no plan for this floor */ }
+    floorPlanCache[fid] = asset;
+    if (!asset) logDebug(`[Viewer] No georeferenced floor plan for ${fid}`, 'warn');
+    return asset;
+}
+
+async function renderFloorPlans3D(frame) {
+    clearFloorPlans3D();
+    if (!show3DPlans || !frame || !scene) return;
+    const seq = ++floorPlanRenderSeq;
+    const group = new THREE.Group();
+    const floors = frame.floorOrder || [];
+    let drawn = 0;
+    for (const fid of floors) {
+        const asset = await loadFloorPlanAsset(fid);
+        if (seq !== floorPlanRenderSeq) return; // re-render/toggle started meanwhile
+        if (!asset) continue;
+        const { transform: t, img } = asset;
+        const W = img.naturalWidth;
+        const H = img.naturalHeight;
+        // image corners: pixel → map (same affine as the tag picker) → scene (same as cloud)
+        const toScene = (px, py) => facilityToScene(
+            t.a * px + t.b * py + t.tx,
+            t.c * px + t.d * py + t.ty,
+            frame, fid,
+        );
+        const c = [toScene(0, 0), toScene(W, 0), toScene(W, H), toScene(0, H)];
+        const lift = 0.012; // just above the deck so it doesn't z-fight
+        const pos = new Float32Array([
+            c[0].x, c[0].y + lift, c[0].z,
+            c[1].x, c[1].y + lift, c[1].z,
+            c[2].x, c[2].y + lift, c[2].z,
+            c[3].x, c[3].y + lift, c[3].z,
+        ]);
+        // image top-left = uv (0,1) (textures load with flipY)
+        const uv = new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]);
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+        geo.setIndex([0, 1, 2, 0, 2, 3]);
+        geo.computeVertexNormals();
+        const tex = new THREE.Texture(img);
+        tex.needsUpdate = true;
+        if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+        else if ('encoding' in tex && THREE.sRGBEncoding) tex.encoding = THREE.sRGBEncoding;
+        tex.anisotropy = 4;
+        const mat = new THREE.MeshBasicMaterial({
+            map: tex,
+            transparent: true,
+            opacity: 0.6,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = -1; // under the points
+        mesh.userData.floor = fid;
+        group.add(mesh);
+        drawn++;
+    }
+    if (seq !== floorPlanRenderSeq) return;
+    floorPlanGroup = group;
+    scene.add(group);
+    applyFloorVisibility();
+    logDebug(`[Viewer] Floor plans drawn on ${drawn}/${floors.length} floors`, drawn ? 'info' : 'warn');
+}
+
 function floorStackOffset(floorId, frame) {
     if (!frame) return 0;
     const order = frame.floorOrder || [];
@@ -1631,6 +1804,8 @@ function renderLivePoseMarkers(poses) {
         const pos = facilityToScene(p.x, p.y, viewerFrame, p.floor);
         const g = new THREE.Group();
         g.position.set(pos.x, pos.y, pos.z);
+        g.userData.floor = p.floor != null ? String(p.floor) : null;
+        g.visible = !(g.userData.floor && hiddenFloors3D.has(g.userData.floor));
 
         // body
         const body = new THREE.Mesh(
@@ -1767,26 +1942,34 @@ async function loadAndRender3DLandmarks(center, scale, floorY) {
         const commonFloorY = (floorY !== undefined) ? floorY : 0.0;
         const frame = viewerFrame || { center, scale, floorY: commonFloorY, floorOrder: [], stackM: 4.0 };
 
+        // Every tag is drawn where it was placed on the floor plan (facility_x/y) — that's
+        // map coordinates, same as the aligned cloud. (A single response-wide "aligned" flag
+        // used to switch ALL tags to raw ARCore coords, piling them on one line.)
+        // Tags re-placed on the same spot across sessions are merged into one pin.
+        const MERGE_M = 0.3;
+        const pins = [];
         landmarks.forEach((lm) => {
-            const isUserTag = lm.type === 'user_tag';
-            const colorHex = isUserTag ? 0xff3b30 : 0xff9500;
-            const colorCss = isUserTag ? '#ff3b30' : '#ff9500';
             const fl = String(lm.floor != null ? lm.floor : (frame.floorOrder[0] || '1'));
+            const fx = Number(lm.facility_x !== undefined ? lm.facility_x : lm.x);
+            const fy = Number(lm.facility_y !== undefined ? lm.facility_y : lm.y);
+            if (!Number.isFinite(fx) || !Number.isFinite(fy)) return;
+            const isUserTag = lm.type === 'user_tag';
+            const hit = pins.find((p) => p.fl === fl && p.isUserTag === isUserTag
+                && Math.hypot(p.fx - fx, p.fy - fy) <= MERGE_M);
+            if (hit) hit.items.push(lm);
+            else pins.push({ fl, fx, fy, isUserTag, items: [lm] });
+        });
 
-            // Aligned PLY: (fx, fy, h) → rotateX → (fx, h, -fy)
-            // Local PLY:   (mx, h, mz) → rotateX → (mx, mz, -h)
-            let rotatedX, rotatedZ, labelXY;
-            if (aligned || lm.type === 'facility_landmark') {
-            const rawX = lm.facility_x !== undefined ? lm.facility_x : lm.x;
-            const rawY = lm.facility_y !== undefined ? lm.facility_y : lm.y;
-                rotatedX = rawX;
-                rotatedZ = -rawY;
-                labelXY = `${fl} (${rawX.toFixed(1)}, ${rawY.toFixed(1)})`;
-            } else {
-                rotatedX = lm.x;
-                rotatedZ = lm.z;
-                labelXY = `${fl} path (${lm.x.toFixed(1)}, ${lm.z.toFixed(1)})`;
-            }
+        pins.forEach((pin) => {
+            const { fl, isUserTag } = pin;
+            const lm = pin.items[0];
+            const allUnaligned = isUserTag && pin.items.every((t) => t.aligned === false);
+            const colorHex = allUnaligned ? 0x8b97a8 : isUserTag ? 0xff3b30 : 0xff9500;
+            const colorCss = allUnaligned ? '#8b97a8' : isUserTag ? '#ff3b30' : '#ff9500';
+            const rotatedX = pin.fx;
+            const rotatedZ = -pin.fy;
+            const labelXY = `${fl} (${pin.fx.toFixed(1)}, ${pin.fy.toFixed(1)})`
+                + (allUnaligned ? ' · not aligned' : '');
 
             const sceneX = (rotatedX - center.x) * scale;
             const sceneZ = (rotatedZ - center.z) * scale;
@@ -1797,6 +1980,7 @@ async function loadAndRender3DLandmarks(center, scale, floorY) {
 
             const pinGroup = new THREE.Group();
             pinGroup.position.set(sceneX, sceneY, sceneZ);
+            pinGroup.userData.floor = fl;
 
             // 1. Slender vertical pin pole extending UP from the floor plane
             const poleHeight = 1.0;
@@ -1821,8 +2005,11 @@ async function loadAndRender3DLandmarks(center, scale, floorY) {
             ringMesh.position.y = 0.01;
             pinGroup.add(ringMesh);
 
-            // 4. Floating 3D billboard label
-            const labelText = isUserTag ? `📍 ${lm.label || 'Tag'}` : `📍 ${lm.label || lm.id}`;
+            // 4. Floating 3D billboard label (merged pins list every tag number)
+            const nums = pin.items.map((t) => (t.label || '').replace(/^Tag\s*/, '')).filter(Boolean);
+            const labelText = isUserTag
+                ? (pin.items.length > 1 ? `📍 Tags ${nums.join(', ')}` : `📍 ${lm.label || 'Tag'}`)
+                : `📍 ${lm.label || lm.id}`;
             const subText = labelXY;
             const sprite = createLandmarkLabel(labelText, subText, colorCss);
             sprite.position.y = poleHeight + 0.55;
@@ -1845,8 +2032,10 @@ async function loadAndRender3DLandmarks(center, scale, floorY) {
             });
             const line = new THREE.Line(lineGeo, lineMat);
             line.computeLineDistances();
+            line.userData.floor = fl;
             landmarkGroup.add(line);
         });
+        applyFloorVisibility();
 
         const nFloors = Object.keys(planeByFloor).length;
         if (viewerStats && landmarks.length > 0) {
@@ -1982,6 +2171,7 @@ function clearCloudScene() {
     currentPoints = null;
     if (floorDeckGroup && scene) scene.remove(floorDeckGroup);
     floorDeckGroup = null;
+    clearFloorPlans3D();
 }
 
 function clearSelectHighlight() {
@@ -2090,6 +2280,7 @@ function pickCloudInScreenRect(x0, y0, x1, y1) {
     const out = [];
 
     for (const layer of cloudPickLayers) {
+        if (hiddenFloors3D.has(String(layer.floor))) continue; // can't select what you can't see
         const pos = layer.mesh.geometry.attributes.position;
         const n = pos.count;
         layer.mesh.updateMatrixWorld(true);
@@ -2474,6 +2665,7 @@ function renderStackedCloud(data) {
                 sizeAttenuation: true
             });
             const mesh = new THREE.Points(geo, mat);
+            mesh.userData.floor = fid;
             currentPoints.add(mesh);
             cloudPickLayers.push({
                 mesh,
@@ -2494,6 +2686,7 @@ function renderStackedCloud(data) {
         const deck = new THREE.Mesh(deckGeo, deckMat);
         deck.rotation.x = -Math.PI / 2;
         deck.position.set(deckCx, deckY, deckCz);
+        deck.userData.floor = fid;
         floorDeckGroup.add(deck);
 
         const edgeGeo = new THREE.EdgesGeometry(deckGeo);
@@ -2505,6 +2698,7 @@ function renderStackedCloud(data) {
         const edge = new THREE.LineSegments(edgeGeo, edgeMat);
         edge.rotation.x = -Math.PI / 2;
         edge.position.set(deckCx, deckY + 0.005, deckCz);
+        edge.userData.floor = fid;
         floorDeckGroup.add(edge);
 
         // thin connector post between stacked floors
@@ -2515,12 +2709,14 @@ function renderStackedCloud(data) {
                 new THREE.MeshBasicMaterial({ color: 0x666666, transparent: true, opacity: 0.35 })
             );
             post.position.set(gMinX - pad * 0.5, floorY + (level - 0.5) * gap, gMinZ - pad * 0.5);
+            post.userData.floor = fid;
             floorDeckGroup.add(post);
         }
 
         const hex = '#' + new THREE.Color(tint.r, tint.g, tint.b).getHexString();
         const label = makeFloorLabel(`Floor ${fid}`, hex);
         label.position.set(gMinX - 0.15, deckY + 0.55, gMinZ - 0.15);
+        label.userData.floor = fid;
         floorDeckGroup.add(label);
     });
 
@@ -2535,7 +2731,10 @@ function renderStackedCloud(data) {
         stackM,
     };
 
+    renderFloorChips(stackFloors);
+    applyFloorVisibility();
     loadAndRender3DLandmarks(center, scale, floorY);
+    void renderFloorPlans3D(viewerFrame);
 
     if (scene) {
         const existingGrid = scene.children.find((c) => c.type === 'GridHelper');

@@ -310,3 +310,140 @@ def calculate_multifloor_route(
         start_floor=start_floor,
         dest_floor=dest_floor,
     )
+
+
+# ---------------------------------------------------------------- join the walkway
+# Walkways are corridor CENTRE lines and corridors can be ~8 m wide, so the user is often
+# metres to the side of where the route starts. Instead of starting the route on the line
+# beside them, start it at their position and merge onto the line a little way ahead —
+# the 2D map, camera chevrons and AR then all show one path from where the user stands.
+JOIN_MIN_OFF_M = 0.75  # closer than this to the line: no join leg
+JOIN_MIN_M = 3.0  # merge point at least this far along the route…
+JOIN_MAX_M = 8.0  # …and at most this far (2× the sideways offset in between)
+
+
+def join_walkway(waypoints: list, x: float, y: float) -> tuple[list, float]:
+    """[(x, y)] + merge into `waypoints` (whose first point is the line point beside the
+    user). Never merges past the first corner. Returns (new waypoints, added length)."""
+    wps = [(float(p[0]), float(p[1])) for p in (waypoints or [])]
+    if len(wps) < 2:
+        return wps, 0.0
+    (ax, ay), (bx, by) = wps[0], wps[1]
+    off = math.hypot(x - ax, y - ay)
+    if off < JOIN_MIN_OFF_M:
+        return wps, 0.0
+    want = max(JOIN_MIN_M, min(JOIN_MAX_M, 2.0 * off))
+    seg = math.hypot(bx - ax, by - ay)
+    if seg <= want:
+        merge, rest = (bx, by), wps[2:]  # short first stretch: join at the first corner
+        skipped = seg
+    else:
+        k = want / seg
+        merge, rest = (ax + (bx - ax) * k, ay + (by - ay) * k), wps[1:]
+        skipped = want
+    out = [(x, y), merge, *rest]
+    added = math.hypot(merge[0] - x, merge[1] - y) - skipped
+    return out, added
+
+
+LANE_STRAIGHT_DEG = 20.0  # turn smaller than this at a vertex = straight-through junction
+LANE_ON_LINE_M = 0.3  # lane end this close to segment 2's line → connect directly (no L step)
+
+
+def _unit(ax: float, ay: float, bx: float, by: float) -> tuple[float, float, float]:
+    dx, dy = bx - ax, by - ay
+    n = math.hypot(dx, dy)
+    return (dx / n, dy / n, n) if n > 1e-9 else (0.0, 0.0, 0.0)
+
+
+def lane_walkway(waypoints: list, x: float, y: float, ends_at_bay: bool = False) -> tuple[list, float, str]:
+    """Route from the user's own lane, no diagonals.
+
+    waypoints[0] is the centre-line point beside the user. Segment 1 runs from the user
+    PARALLEL to the corridor, at their sideways offset, through any straight-through
+    junctions, up to the first corner. There it joins segment 2:
+      * "direct" — the lane end already lies on segment 2's line (always at a 90° corner):
+        just turn and carry on along segment 2;
+      * "L" — it doesn't (angled corner): one perpendicular step onto segment 2, then on.
+    If the leg ends while still in the lane (e.g. a lift door straight ahead), a final
+    sideways step reaches it. The spur into a bay counts as a corner like any other.
+    Returns (new waypoints, added length, mode) with mode "none" | "direct" | "L" | "end".
+    """
+    w = [(float(p[0]), float(p[1])) for p in (waypoints or [])]
+    if len(w) < 2:
+        return w, 0.0, "none"
+    ox, oy = x - w[0][0], y - w[0][1]  # sideways offset from the centre line
+    if math.hypot(ox, oy) < JOIN_MIN_OFF_M:
+        return w, 0.0, "none"
+    old_len = _path_length(w)
+    out = [(x, y)]
+    mode = "end"
+    k = 1
+    while k < len(w):
+        cx, cy = w[k]
+        ex, ey = cx + ox, cy + oy  # lane point level with vertex k
+        if k == len(w) - 1:
+            # leg ends while still in the lane: step sideways onto its end point
+            out.append((ex, ey))
+            out.append((cx, cy))
+            break
+        u1 = _unit(*w[k - 1], cx, cy)
+        u2 = _unit(cx, cy, *w[k + 1])
+        cos_t = max(-1.0, min(1.0, u1[0] * u2[0] + u1[1] * u2[1]))
+        if math.degrees(math.acos(cos_t)) < LANE_STRAIGHT_DEG:
+            k += 1  # straight-through junction: stay in the lane
+            continue
+        # corner: lane ends level with it, then join segment 2
+        out.append((ex, ey))
+        sx, sy, slen = u2
+        t = (ex - cx) * sx + (ey - cy) * sy  # how far along segment 2 the lane end sits
+        h = abs((ex - cx) * sy - (ey - cy) * sx)  # how far off segment 2's line
+        if h < LANE_ON_LINE_M:
+            mode = "direct"
+            if t >= slen - 0.05:
+                out.extend(w[k + 2:])  # lane end already past segment 2's end
+            else:
+                out.extend(w[k + 1:])
+        else:
+            mode = "L"
+            tc = max(0.0, min(slen, t))
+            out.append((cx + sx * tc, cy + sy * tc))  # perpendicular step onto segment 2
+            out.extend(w[k + 1:])
+        break
+    # drop near-duplicate consecutive points
+    clean = [out[0]]
+    for q in out[1:]:
+        if math.hypot(q[0] - clean[-1][0], q[1] - clean[-1][1]) >= 0.05:
+            clean.append(q)
+    return clean, _path_length(clean) - old_len, mode
+
+
+def join_route_to_position(route: "Route", start_floor, x: float, y: float) -> tuple[float, str]:
+    """Start the route's first walk leg (on start_floor) at the user's position, following
+    their own lane (lane_walkway). Returns (sideways offset, mode)."""
+    from fmc.floors import normalize_floor_id
+
+    if not route or not route.legs:
+        return 0.0, "none"
+    leg = route.legs[0]
+    if leg.floor_transition or not leg.waypoints:
+        return 0.0, "none"
+    if leg.floor is not None and normalize_floor_id(leg.floor) != normalize_floor_id(start_floor):
+        return 0.0, "none"
+    old = [(float(p[0]), float(p[1])) for p in leg.waypoints]
+    ends_at_bay = len(route.legs) == 1  # otherwise leg 0 ends at a lift/stairs door
+    new_wps, added, mode = lane_walkway(old, x, y, ends_at_bay)
+    if mode == "none":
+        return 0.0, "none"
+    leg.waypoints = new_wps
+    leg.distance = float(leg.distance) + added
+    route.total_distance = float(route.total_distance) + added
+    flat: list[tuple[float, float]] = []
+    for lg in route.legs:
+        if lg.floor_transition:
+            continue
+        for wp in lg.waypoints:
+            if not flat or math.hypot(wp[0] - flat[-1][0], wp[1] - flat[-1][1]) >= 0.05:
+                flat.append((float(wp[0]), float(wp[1])))
+    route.waypoints = flat
+    return math.hypot(x - old[0][0], y - old[0][1]), mode

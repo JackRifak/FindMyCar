@@ -164,9 +164,9 @@ def diagnostics_client_event(event: dict):
     append_client_event(_site.data_dir, payload)
     device_id = event.get("device_id") or "?"
     ev = event.get("event") or "client_event"
-    if ev in ("webxr_skip", "webxr_start", "webxr_end", "nav_mode", "frame_skipped_blur"):
-        reason = event.get("reason") or event.get("nav_mode") or event.get("frame_source") or ""
-        logger.info(f"[{device_id}] client {ev} {reason}".strip())
+    # print every phone event (xr_track_lost, xr_align, landing_seed, …), not just a few
+    reason = event.get("reason") or event.get("nav_mode") or event.get("frame_source") or ""
+    logger.info(f"[{device_id}] client {ev} {reason}".strip())
     return {"logged": True}
 
 
@@ -660,6 +660,9 @@ class RouteLegResponse(BaseModel):
     waypoints: list[tuple[float, float]] = []
     floor_transition: dict | None = None
     distance: float = 0.0
+    # True when waypoints[0] → waypoints[1] is the diagonal "join the walkway" stretch from
+    # the user's position (not a corridor line — AR's walking-direction check skips it)
+    joined: bool = False
 
 
 class RouteResponse(BaseModel):
@@ -668,6 +671,38 @@ class RouteResponse(BaseModel):
     waypoints: list[tuple[float, float]]
     total_distance: float
     legs: list[RouteLegResponse] = []
+
+
+_last_route_sig: dict[str, tuple] = {}
+
+
+def _log_route(device_id: str, slot_id: str, floor: str, x: float, y: float, dest_floor: str, route) -> None:
+    """Log the calculated route — only when it changes for this device + slot (the client
+    re-requests it after every fix, every few seconds)."""
+    legs = route.legs or []
+    # signature at 0.5 m resolution: small position noise doesn't re-log an identical route
+    sig = (slot_id, tuple(
+        (str(leg.floor), tuple((round(px * 2) / 2, round(py * 2) / 2) for px, py in leg.waypoints),
+         (leg.floor_transition or {}).get("connector_id"))
+        for leg in legs
+    ))
+    if _last_route_sig.get(device_id) == sig:
+        return
+    _last_route_sig[device_id] = sig
+    logger.info(
+        f"[{device_id}] ROUTE to {slot_id}: {floor} ({x:.2f}, {y:.2f}) -> {dest_floor} | "
+        f"{route.total_distance:.1f} m, {len(legs)} leg(s)"
+    )
+    for i, leg in enumerate(legs, 1):
+        tf = leg.floor_transition
+        if tf:
+            logger.info(
+                f"[{device_id}]   leg {i}: {tf.get('type', 'connector')} {tf.get('connector_id', '?')} "
+                f"{tf.get('from_floor')} -> {tf.get('to_floor')}"
+            )
+        else:
+            pts = " -> ".join(f"({px:.1f}, {py:.1f})" for px, py in leg.waypoints)
+            logger.info(f"[{device_id}]   leg {i}: floor {leg.floor} {float(leg.distance):.1f} m: {pts}")
 
 
 @app.get("/route/{device_id}", response_model=RouteResponse)
@@ -693,6 +728,7 @@ def get_route(device_id: str, slot_id: str):
         raise HTTPException(status_code=404, detail="No known position for this device — call /localize first")
     floor, x, y = last
     floor = normalize_floor_id(floor)
+    user_x, user_y = x, y  # where the user actually is (inside the corridor band)
     # start on the corridor the last fix was matched to, not whichever centre line is
     # nearest (near a junction that can be the crossing corridor)
     rs = getattr(fuser, "_route_start", None)
@@ -749,6 +785,11 @@ def get_route(device_id: str, slot_id: str):
             ),
         )
 
+    # one path from where the user stands: their own lane, parallel to the corridor, up to
+    # the first corner, then straight / L onto the next segment — no diagonals
+    from fmc.navigation.routing import join_route_to_position
+    lane_off, lane_mode = join_route_to_position(route, floor, user_x, user_y)
+
     legs = [
         RouteLegResponse(
             floor=normalize_floor_id(leg.floor) if leg.floor is not None else None,
@@ -756,9 +797,13 @@ def get_route(device_id: str, slot_id: str):
             waypoints=list(leg.waypoints),
             floor_transition=leg.floor_transition,
             distance=float(leg.distance),
+            # no diagonal join any more (lane runs parallel to the corridor) — AR needs no
+            # special-casing; field kept for older clients
+            joined=False,
         )
-        for leg in (route.legs or [])
+        for i, leg in enumerate(route.legs or [])
     ]
+    _log_route(device_id, slot_id, floor, user_x, user_y, dest_floor, route)
     return RouteResponse(
         floor=floor,
         dest_floor=dest_floor,
@@ -1295,9 +1340,9 @@ def get_map_tags():
             except Exception as e:
                 logger.warning(f"[API /map/tags] Failed reading tags.json: {e}")
                 
-    # Facility spots only make sense once the cloud is in facility coordinates
+    # survey spots are map coordinates — the viewer draws everything in map coordinates
     facility_landmarks = []
-    if aligned:
+    if True:
         locations_file = _site.index_dir / "locations.csv"
         if locations_file.exists():
             try:

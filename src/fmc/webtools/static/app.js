@@ -4,6 +4,8 @@
 // plain fetch() + canvas.
 
 const state = {
+  selectedSegment: null, // index of the walkway selected in segments mode
+  endDrag: null, // {i, end, axis, moved, …} while dragging a walkway end
   siteId: null,
   floor: null,
   mode: "view",
@@ -91,6 +93,114 @@ function bandScreen(seg) {
 
 function edgeOffset(g, side) {
   return side > 0 ? g.hp : g.hm;
+}
+
+/* ---------------- walkway selection + end dragging ---------------- */
+const SEG_HIT_PX = 7; // click this close to a line to select it
+const END_HIT_PX = 9; // press this close to an end to drag it
+const SNAP_PX = 10; // dragged end snaps to other walkways within this
+
+/** endpoint under the mouse → {i, end: 1|2}; the selected walkway wins ties */
+function segEndAt(mx, my) {
+  if (state.mode !== "segments" || !state.overlays.segments) return null;
+  let best = null;
+  const consider = (seg, i) => {
+    for (const end of [1, 2]) {
+      const s = imageToScreen(seg["px" + end], seg["py" + end]);
+      const d = Math.hypot(mx - s.x, my - s.y);
+      if (d <= END_HIT_PX && (!best || d < best.d)) best = { i, end, d };
+    }
+  };
+  const sel = state.selectedSegment;
+  if (sel != null && state.segments[sel]) consider(state.segments[sel], sel);
+  if (best) return best;
+  state.segments.forEach((seg, i) => { if (seg.px1 !== undefined) consider(seg, i); });
+  return best;
+}
+
+/** walkway whose line is under the mouse (nearest within SEG_HIT_PX) */
+function segmentAt(mx, my) {
+  if (state.mode !== "segments" || !state.overlays.segments) return null;
+  let best = null;
+  state.segments.forEach((seg, i) => {
+    if (seg.px1 === undefined) return;
+    const a = imageToScreen(seg.px1, seg.py1);
+    const b = imageToScreen(seg.px2, seg.py2);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((mx - a.x) * dx + (my - a.y) * dy) / (dx * dx + dy * dy || 1)));
+    const d = Math.hypot(mx - (a.x + t * dx), my - (a.y + t * dy));
+    if (d <= SEG_HIT_PX && (!best || d < best.d)) best = { i, d };
+  });
+  return best ? best.i : null;
+}
+
+function segLengthM(seg) {
+  const ppm = pxPerMeter();
+  const L = Math.hypot(seg.px2 - seg.px1, seg.py2 - seg.py1);
+  return ppm ? L / ppm : null;
+}
+
+function selectSegment(i) {
+  state.selectedSegment = i;
+  renderSegmentsPanel();
+  draw();
+}
+
+/**
+ * new position for a dragged end (image coords). Default: slide along the walkway's own
+ * line (shrink / extend); Alt: free. Snaps to other walkways' ends / lines nearby.
+ */
+function dragEndTarget(drag, mx, my, free) {
+  const seg = state.segments[drag.i];
+  const o = drag.end === 1 ? { x: seg.px2, y: seg.py2 } : { x: seg.px1, y: seg.py1 }; // fixed end
+  let p = screenToImage(mx, my);
+  const ux = drag.axis.x, uy = drag.axis.y; // unit direction fixed-end → dragged-end (at drag start)
+  const minLen = (pxPerMeter() || 20) * 0.5; // never shorter than 0.5 m
+  if (!free) {
+    const t = Math.max(minLen, (p.x - o.x) * ux + (p.y - o.y) * uy);
+    p = { x: o.x + ux * t, y: o.y + uy * t };
+  }
+  // snap candidates: other walkways' ends, and where our line crosses their lines
+  const snapImg = SNAP_PX / state.zoom;
+  let best = null;
+  // corners (ends) win over points along a line within the snap radius
+  const offer = (q, weight = 1) => {
+    const raw = Math.hypot(q.x - p.x, q.y - p.y);
+    if (raw > snapImg) return;
+    const d = raw * weight;
+    if (!best || d < best.d) best = { ...q, d };
+  };
+  state.segments.forEach((s2, j) => {
+    if (j === drag.i || s2.px1 === undefined) return;
+    const e1 = { x: s2.px1, y: s2.py1 }, e2 = { x: s2.px2, y: s2.py2 };
+    if (free) {
+      offer(e1, 0.4);
+      offer(e2, 0.4);
+    } else {
+      // keep it on our axis: offer the other ends' projections and line crossings
+      for (const e of [e1, e2]) {
+        const t = (e.x - o.x) * ux + (e.y - o.y) * uy;
+        if (t >= minLen && Math.hypot(e.x - (o.x + ux * t), e.y - (o.y + uy * t)) <= snapImg) offer({ x: o.x + ux * t, y: o.y + uy * t });
+      }
+    }
+    // intersection of our line (o + u t) with segment s2
+    const vx = e2.x - e1.x, vy = e2.y - e1.y;
+    const den = ux * vy - uy * vx;
+    if (Math.abs(den) > 1e-9) {
+      const t = ((e1.x - o.x) * vy - (e1.y - o.y) * vx) / den;
+      const k = ((e1.x - o.x) * uy - (e1.y - o.y) * ux) / den;
+      if (t >= minLen && k >= 0 && k <= 1) offer({ x: o.x + ux * t, y: o.y + uy * t });
+    } else if (!free) {
+      // parallel: nothing to cross
+    }
+    if (free) {
+      // free mode: also snap onto the nearest point of another walkway's line
+      const L2 = vx * vx + vy * vy || 1;
+      const k = Math.max(0, Math.min(1, ((p.x - e1.x) * vx + (p.y - e1.y) * vy) / L2));
+      offer({ x: e1.x + vx * k, y: e1.y + vy * k });
+    }
+  });
+  return best ? { x: best.x, y: best.y, snapped: true } : { ...p, snapped: false };
 }
 
 /** which band edge (if any) is under screen point (mx, my) — for width dragging */
@@ -374,10 +484,22 @@ function draw() {
           }
         }
       }
+      const segIdx = state.segments.indexOf(seg);
+      const isSel = state.mode === "segments" && state.selectedSegment === segIdx;
+      if (isSel) drawLine(a, b, "#ffd166", 7); // highlight under the line
       drawLine(a, b, segColor, 3);
       if (state.mode === "segments") {
-        drawDot(a.x, a.y, segColor, 5);
-        drawDot(b.x, b.y, segColor, 5);
+        for (const [end, s] of [[1, a], [2, b]]) {
+          const hot = (state.endDrag?.moved && state.endDrag.i === segIdx && state.endDrag.end === end)
+            || (state.endHover?.i === segIdx && state.endHover.end === end);
+          if (isSel || hot) drawSquare(s.x, s.y, hot ? "#ffd166" : "#ffffff", hot ? 7 : 6);
+          else drawDot(s.x, s.y, segColor, 5);
+        }
+        if (state.endDrag?.moved && state.endDrag.i === segIdx) {
+          const L = segLengthM(seg);
+          const tip = state.endDrag.end === 1 ? a : b;
+          drawLabel(tip.x + 10, tip.y - 10, `${L != null ? L.toFixed(1) + " m" : ""}${state.endDrag.snapped ? " · snapped" : ""}`, "#ffd166");
+        }
       }
     }
   }
@@ -546,12 +668,28 @@ canvas.addEventListener("mousedown", (e) => {
   }
   if (e.button === 0) { // left-press on a corridor band edge: drag to resize it
     const rect = canvas.getBoundingClientRect();
-    const hit = bandEdgeAt(e.clientX - rect.left, e.clientY - rect.top);
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const hit = bandEdgeAt(mx, my);
     if (hit) {
       e.preventDefault();
       state.widthDrag = { i: hit.i, side: hit.side, moved: false };
       canvas.style.cursor = "grabbing";
       draw();
+      return;
+    }
+    // press on a walkway end: becomes a drag once the mouse moves (a plain click still
+    // starts/finishes a new walkway there, as before)
+    const end = segEndAt(mx, my);
+    if (end) {
+      const seg = state.segments[end.i];
+      const ox = end.end === 1 ? seg.px2 : seg.px1, oy = end.end === 1 ? seg.py2 : seg.py1;
+      const ex = seg["px" + end.end], ey = seg["py" + end.end];
+      const L = Math.hypot(ex - ox, ey - oy) || 1;
+      state.endDrag = {
+        i: end.i, end: end.end, downX: mx, downY: my, moved: false,
+        axis: { x: (ex - ox) / L, y: (ey - oy) / L },
+        orig: { x: ex, y: ey },
+      };
     }
   }
 });
@@ -565,6 +703,22 @@ window.addEventListener("mousemove", (e) => {
   const rect = canvas.getBoundingClientRect();
   const mx = e.clientX - rect.left;
   const my = e.clientY - rect.top;
+  if (state.endDrag) {
+    const d = state.endDrag;
+    if (!d.moved && Math.hypot(mx - d.downX, my - d.downY) < 4) return;
+    if (!d.moved) {
+      d.moved = true;
+      state.selectedSegment = d.i;
+      canvas.style.cursor = "grabbing";
+    }
+    const q = dragEndTarget(d, mx, my, e.altKey);
+    const seg = state.segments[d.i];
+    seg["px" + d.end] = q.x;
+    seg["py" + d.end] = q.y;
+    d.snapped = q.snapped;
+    draw();
+    return;
+  }
   if (state.widthDrag) {
     const seg = state.segments[state.widthDrag.i];
     const ppm = pxPerMeter();
@@ -599,12 +753,28 @@ window.addEventListener("mousemove", (e) => {
     const changed = (hit?.i ?? -1) !== (state.bandHover?.i ?? -1)
       || (hit?.side ?? 0) !== (state.bandHover?.side ?? 0);
     state.bandHover = hit;
-    canvas.style.cursor = hit ? "grab" : "";
-    if (changed) draw();
+    const endHover = hit ? null : segEndAt(mx, my);
+    const endChanged = (endHover?.i ?? -1) !== (state.endHover?.i ?? -1) || (endHover?.end ?? 0) !== (state.endHover?.end ?? 0);
+    state.endHover = endHover;
+    const overLine = !hit && !endHover && segmentAt(mx, my) != null;
+    canvas.style.cursor = hit || endHover ? "grab" : overLine && !state.pendingSegmentPt ? "pointer" : "";
+    if (changed || endChanged) draw();
   }
 });
 window.addEventListener("mouseup", () => {
   state.dragging = false;
+  if (state.endDrag) {
+    const d = state.endDrag;
+    state.endDrag = null;
+    if (d.moved) {
+      state.suppressClick = true; // the release must not also add a walkway point
+      canvas.style.cursor = "";
+      renderSegmentsPanel();
+      const L = segLengthM(state.segments[d.i]);
+      setStatus(`Walkway #${d.i} ${L != null ? `now ${L.toFixed(1)} m` : "resized"}${d.snapped ? " (snapped to a walkway)" : ""} — click Save segments to keep it`);
+      draw();
+    }
+  }
   if (state.widthDrag) {
     // the click that ends a resize must not also drop a segment point
     state.suppressClick = true;
@@ -626,8 +796,67 @@ canvas.addEventListener("click", (e) => {
   }
   if (!state.img) return;
   const rect = canvas.getBoundingClientRect();
-  const p = screenToImage(e.clientX - rect.left, e.clientY - rect.top);
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const p = screenToImage(mx, my);
+  if (state.mode === "segments" && !state.pendingSegmentPt && !e.shiftKey && !segEndAt(mx, my)) {
+    // click a walkway's line: select it (Shift+click starts a new walkway on it instead)
+    const hit = segmentAt(mx, my);
+    if (hit != null) {
+      selectSegment(hit);
+      return;
+    }
+    if (state.selectedSegment != null) {
+      selectSegment(null); // first click on empty space just deselects
+      return;
+    }
+  }
   handleClick(p.x, p.y);
+});
+
+// keyboard: Delete / Backspace removes the selected walkway, Esc deselects / cancels
+window.addEventListener("keydown", (e) => {
+  if (state.mode !== "segments") return;
+  const tag = (document.activeElement?.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  if ((e.key === "Delete" || e.key === "Backspace") && state.selectedSegment != null) {
+    e.preventDefault();
+    deleteSelectedSegment();
+  } else if (e.key === "Escape") {
+    state.pendingSegmentPt = null;
+    selectSegment(null);
+  }
+});
+
+function deleteSelectedSegment() {
+  const i = state.selectedSegment;
+  if (i == null || !state.segments[i]) return;
+  state.segments.splice(i, 1);
+  state.selectedSegment = null;
+  renderSegmentsPanel();
+  setStatus(`Walkway #${i} deleted — click Save segments to keep it`);
+  draw();
+}
+
+document.getElementById("segDeleteBtn")?.addEventListener("click", deleteSelectedSegment);
+document.getElementById("segDeselectBtn")?.addEventListener("click", () => selectSegment(null));
+document.getElementById("segReverseBtn")?.addEventListener("click", () => {
+  const seg = state.segments[state.selectedSegment];
+  if (!seg) return;
+  [seg.px1, seg.px2] = [seg.px2, seg.px1];
+  [seg.py1, seg.py2] = [seg.py2, seg.py1];
+  // left/right are relative to the direction: swap so the band stays where it is
+  [seg.width_left, seg.width_right] = [seg.width_right ?? null, seg.width_left ?? null];
+  renderSegmentsPanel();
+  draw();
+});
+document.getElementById("segCenterBtn")?.addEventListener("click", () => {
+  const seg = state.segments[state.selectedSegment];
+  if (!seg) return;
+  if (Number.isFinite(seg.width_left) || Number.isFinite(seg.width_right)) seg.width = +totalWidthM(seg).toFixed(2);
+  seg.width_left = null;
+  seg.width_right = null;
+  renderSegmentsPanel();
+  draw();
 });
 
 function handleClick(px, py) {
@@ -661,6 +890,8 @@ document.querySelectorAll(".mode-btn").forEach((btn) => {
     btn.classList.add("active");
     state.mode = btn.dataset.mode;
     state.pendingSegmentPt = null;
+    state.selectedSegment = null;
+    state.endDrag = null;
     state.pendingNewLocationPoint = null;
     document.getElementById("newLocationForm").style.display = "none";
     document.querySelectorAll(".panel").forEach((p) => (p.style.display = "none"));
@@ -722,9 +953,25 @@ function renderControlPointsPanel() {
 function renderSegmentsPanel() {
   const el = document.getElementById("segmentsList");
   el.innerHTML = "";
+  if (state.selectedSegment != null && !state.segments[state.selectedSegment]) state.selectedSegment = null;
+  const bar = document.getElementById("segmentSelBar");
+  if (bar) {
+    const sel = state.segments[state.selectedSegment];
+    bar.hidden = !sel;
+    if (sel) {
+      const L = segLengthM(sel);
+      document.getElementById("segmentSelInfo").textContent =
+        `Walkway #${state.selectedSegment}${L != null ? ` · ${L.toFixed(1)} m` : ""}`
+        + ` · band ${totalWidthM(sel).toFixed(1)} m — drag its ends to shrink / extend (Alt: move freely)`;
+    }
+  }
   state.segments.forEach((seg, i) => {
     const row = document.createElement("div");
-    row.className = "list-item";
+    row.className = "list-item seg-row" + (state.selectedSegment === i ? " is-selected" : "");
+    row.addEventListener("click", (ev) => {
+      if (ev.target.closest("input, button, label")) return;
+      selectSegment(state.selectedSegment === i ? null : i);
+    });
     row.innerHTML = `#${i} (${seg.px1.toFixed(0)},${seg.py1.toFixed(0)}) → (${seg.px2.toFixed(0)},${seg.py2.toFixed(0)})
       <label class="seg-width" title="Total corridor width in metres. Typing a value centres the band on the line; drag either edge on the plan to set each side separately. Blank = default ${DEFAULT_CORRIDOR_WIDTH_M} m">
         <input type="number" min="0.5" max="30" step="0.5" placeholder="${DEFAULT_CORRIDOR_WIDTH_M}" value="${Number.isFinite(seg.width) ? seg.width : ""}" data-w="${i}"> m
@@ -745,7 +992,10 @@ function renderSegmentsPanel() {
   });
   el.querySelectorAll(".del-btn").forEach((btn) => {
     btn.addEventListener("click", (e) => {
-      state.segments.splice(+e.target.dataset.i, 1);
+      const i = +e.target.dataset.i;
+      state.segments.splice(i, 1);
+      if (state.selectedSegment === i) state.selectedSegment = null;
+      else if (state.selectedSegment > i) state.selectedSegment -= 1;
       renderSegmentsPanel();
       draw();
     });
@@ -782,6 +1032,7 @@ function renderSlotsPanel() {
 
 document.getElementById("undoSegmentBtn").addEventListener("click", () => {
   state.segments.pop();
+  if (state.selectedSegment != null && state.selectedSegment >= state.segments.length) state.selectedSegment = null;
   renderSegmentsPanel();
   draw();
 });

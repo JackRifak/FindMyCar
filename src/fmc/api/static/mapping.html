@@ -499,6 +499,15 @@
             border-radius: 8px;
             box-shadow: none;
         }
+        .viewer-floor-chips { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+        .viewer-floor-chips:empty { display: none; }
+        .viewer-floor-chip {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+            border: 1px solid var(--line); background: var(--bg-panel); color: var(--text);
+        }
+        .viewer-floor-chip .dot { width: 10px; height: 10px; border-radius: 50%; }
+        .viewer-floor-chip.is-off { opacity: 0.45; text-decoration: line-through; }
         .viewer-toolbar button.is-active {
             background: var(--danger);
             color: #fff;
@@ -815,6 +824,8 @@
             <button type="button" id="btn-delete-selection" class="btn-danger" disabled>Delete Selected</button>
             <button type="button" id="btn-viewer-prune-floor" class="btn-danger-outline">Delete Floor</button>
             <button type="button" id="btn-toggle-3d-landmarks" class="btn-soft is-on">Tags: ON</button>
+            <button type="button" id="btn-toggle-3d-plans" class="btn-soft is-on" title="Show each floor's georeferenced floor plan under its point cloud">Plans: ON</button>
+            <div id="viewer-floor-chips" class="viewer-floor-chips" aria-label="Show / hide floors"></div>
         </div>
     </div>
 

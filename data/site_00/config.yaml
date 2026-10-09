@@ -4,65 +4,26 @@ floors:
 - floor: B1
   zones: []
   walkable_segments:
-  - x1: 5.77
-    y1: -25.172
-    x2: 11.695
-    y2: -25.212
-    width: 2.0
-    width_left: 1.5
-    width_right: 0.5
-  - x1: 11.667
-    y1: -25.127
-    x2: 11.752
-    y2: -20.483
-    width: 1.0
-    width_left: 0.5
-    width_right: 0.5
-  - x1: 11.724
-    y1: -20.427
-    x2: 14.997
-    y2: -20.518
-    width: 4.5
-    width_left: 2.0
-    width_right: 2.5
-  - x1: 5.346
-    y1: -4.16
-    x2: -17.672
-    y2: -4.055
+  - x1: 4.439
+    y1: -4.156
+    x2: -25.996
+    y2: -4.017
     width: 6.0
     width_left: 3.0
     width_right: 3.0
-  - x1: 5.641
-    y1: -22.203
-    x2: -16.934
-    y2: -22.157
+  - x1: 4.412
+    y1: -22.2
+    x2: -25.922
+    y2: -22.139
     width: 6.5
     width_left: 3.0
     width_right: 3.5
-  - x1: 11.673
-    y1: -25.12
-    x2: 22.269
-    y2: -25.335
   - x1: 22.269
     y1: -30.892
-    x2: 22.179
-    y2: -5.588
+    x2: 22.174
+    y2: -4.1
     width: 6.0
     width_left: 3.0
-    width_right: 3.0
-  - x1: 5.293
-    y1: -4.094
-    x2: 25.352
-    y2: -4.101
-    width: 6.0
-    width_left: 3.0
-    width_right: 3.0
-  - x1: 22.177
-    y1: -5.587
-    x2: 22.177
-    y2: -4.111
-    width: 6.5
-    width_left: 3.5
     width_right: 3.0
   - x1: 4.439
     y1: -4.134
@@ -71,21 +32,25 @@ floors:
     width: 7.0
     width_left: 3.5
     width_right: 3.5
-  - x1: 5.752
-    y1: -25.163
-    x2: 4.396
-    y2: -25.144
-    width: 2.0
-    width_left: 0.5
-    width_right: 1.5
-  - x1: 11.737
-    y1: -20.402
-    x2: 14.999
-    y2: -19.51
   - x1: 11.753
-    y1: -20.451
-    x2: 14.939
-    y2: -21.982
+    y1: -20.433
+    x2: 14.872
+    y2: -20.44
+  - x1: 11.732
+    y1: -20.433
+    x2: 11.732
+    y2: -24.581
+  - x1: 22.247
+    y1: -24.602
+    x2: 4.408
+    y2: -24.566
+  - x1: 4.439
+    y1: -4.144
+    x2: 25.512
+    y2: -4.187
+    width: 6.0
+    width_left: 3.0
+    width_right: 3.0
   landmarks: []
   vehicle_slots:
   - slot_id: 87-04C
