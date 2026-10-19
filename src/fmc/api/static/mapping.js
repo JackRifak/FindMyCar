@@ -846,10 +846,19 @@ const lobby = {
     liveHue: null,
     meterTimer: null,
     sampleCanvas: document.createElement('canvas'),
+    target: null, // floor being scanned, or LOBBY_CABIN_KEY for the lift interior
 };
+// keep in sync with fmc/vpr/cabin_colour.py CABIN_KEY
+const LOBBY_CABIN_KEY = '_cabin';
+/** what the overlay is scanning right now */
+function lobbyTarget() {
+    return lobby.target || selectedMapFloor();
+}
 const lobbyEls = {
     list: document.getElementById('lobby-floors'),
     scanBtn: document.getElementById('lobby-scan-btn'),
+    cabinBtn: document.getElementById('lobby-cabin-btn'),
+    title: document.getElementById('lobby-overlay-title'),
     overlay: document.getElementById('lobby-overlay'),
     floorLabel: document.getElementById('lobby-floor-label'),
     doneBtn: document.getElementById('lobby-done-btn'),
@@ -878,7 +887,7 @@ function lobbyBuzz(pattern) {
 function lobbyFloorIds() {
     const ids = mapFloorSelect ? [...mapFloorSelect.options].map((o) => o.value).filter(Boolean) : [];
     for (const f of Object.keys(lobby.floors)) if (!ids.includes(f)) ids.push(f);
-    return ids;
+    return ids.filter((f) => f !== LOBBY_CABIN_KEY);
 }
 
 function lobbyStatus(info) {
@@ -910,8 +919,33 @@ function renderLobbyFloors() {
             ? (f === active ? 'Scan this floor’s lobby walls' : '—')
             : info.too_similar
                 ? `Too close to ${info.closest_floor} — rescan both`
-                : `${info.samples} sample${info.samples === 1 ? '' : 's'} · ${Math.round(info.colour_frac * 100)}% coloured`;
+                : info.needs_rescan
+                    ? 'Old hue-only scan — Reset & rescan (adds saturation)'
+                    : `${info.samples} sample${info.samples === 1 ? '' : 's'} · ${Math.round(info.colour_frac * 100)}% coloured`;
         const pill = document.createElement('span');
+        pill.className = `lobby-pill lobby-pill--${st.cls}`;
+        pill.textContent = st.text;
+        row.append(sw, name, meta, pill);
+        lobbyEls.list.appendChild(row);
+    }
+    {
+        // lift interior: a reject class, so the lift's own wood/stone never reads as a floor
+        const info = lobby.floors[LOBBY_CABIN_KEY];
+        const row = document.createElement('div');
+        row.className = 'lobby-floor';
+        const sw = document.createElement('span');
+        sw.className = 'lobby-swatch';
+        if (info?.samples) sw.style.background = lobbyHueCss(info.dominant_hue_deg);
+        const name = document.createElement('span');
+        name.className = 'lobby-floor__name';
+        name.textContent = 'Lift';
+        const meta = document.createElement('span');
+        meta.className = 'lobby-floor__meta';
+        meta.textContent = info?.samples
+            ? `inside the cabin · ${info.samples} sample${info.samples === 1 ? '' : 's'}`
+            : 'Scan inside the lift so its walls never count as a floor';
+        const pill = document.createElement('span');
+        const st = lobbyStatus(info);
         pill.className = `lobby-pill lobby-pill--${st.cls}`;
         pill.textContent = st.text;
         row.append(sw, name, meta, pill);
@@ -953,7 +987,7 @@ async function loadLobbyColours() {
 
 function renderLobbyDots() {
     if (!lobbyEls.dots) return;
-    const n = lobby.floors[selectedMapFloor()]?.samples || 0;
+    const n = lobby.floors[lobbyTarget()]?.samples || 0;
     lobbyEls.dots.innerHTML = '';
     for (let i = 0; i < LOBBY_TARGET_SAMPLES; i++) {
         const d = document.createElement('span');
@@ -1039,8 +1073,9 @@ function updateLobbyMeter() {
     }
 }
 
-function openLobbyScan() {
-    const floor = selectedMapFloor();
+function openLobbyScan(target = null) {
+    lobby.target = target === LOBBY_CABIN_KEY ? LOBBY_CABIN_KEY : null;
+    const floor = lobbyTarget();
     if (!floor) {
         statusEl.innerText = 'Pick the map floor first.';
         return;
@@ -1050,7 +1085,17 @@ function openLobbyScan() {
         return;
     }
     lobby.scanning = true;
-    lobbyEls.floorLabel.textContent = floor;
+    if (lobbyEls.title) {
+        if (lobby.target) {
+            lobbyEls.title.textContent = 'Inside the lift (doors closed)';
+        } else {
+            lobbyEls.title.textContent = 'Floor ';
+            lobbyEls.floorLabel.textContent = floor;
+            lobbyEls.title.append(lobbyEls.floorLabel, ' lobby');
+        }
+    } else {
+        lobbyEls.floorLabel.textContent = floor;
+    }
     lobbyEls.overlay.classList.remove('hidden');
     lobbyEls.overlay.parentElement?.classList.add('is-lobby-scan');
     renderLobbyDots();
@@ -1064,12 +1109,13 @@ function closeLobbyScan() {
     lobbyEls.overlay.parentElement?.classList.remove('is-lobby-scan');
     if (lobby.meterTimer) clearInterval(lobby.meterTimer);
     lobby.meterTimer = null;
+    lobby.target = null;
     renderLobbyFloors();
 }
 
 async function captureLobbySample() {
     if (lobby.busy) return;
-    const floor = selectedMapFloor();
+    const floor = lobbyTarget();
     let blob = null;
     lobby.busy = true;
     lobbyEls.shutter.disabled = true;
@@ -1093,7 +1139,11 @@ async function captureLobbySample() {
         await loadLobbyColours();
         const info = lobby.floors[floor] || {};
         const n = info.samples || data.samples;
-        if (info.too_similar) {
+        if (floor === LOBBY_CABIN_KEY) {
+            lobbyEls.guide.textContent = n >= LOBBY_TARGET_SAMPLES
+                ? 'Lift interior done ✓ — tap Done'
+                : `Saved ${n}/${LOBBY_TARGET_SAMPLES} — walls, floor, other corner`;
+        } else if (info.too_similar) {
             lobbyEls.guide.textContent = `Saved ${n} — but it looks like Floor ${info.closest_floor}. Try other walls`;
             lobbyBuzz([40, 60, 40]);
         } else if (n >= LOBBY_TARGET_SAMPLES) {
@@ -1118,9 +1168,10 @@ async function captureLobbySample() {
 }
 
 async function resetLobbyFloor() {
-    const floor = selectedMapFloor();
+    const floor = lobbyTarget();
     if (!floor || !lobby.floors[floor]?.samples) return;
-    if (!confirm(`Delete the lobby colour for Floor ${floor}?`)) return;
+    const what = floor === LOBBY_CABIN_KEY ? 'the lift interior colour' : `the lobby colour for Floor ${floor}`;
+    if (!confirm(`Delete ${what}?`)) return;
     try {
         await fetch(getApiUrl(`/map/cabin-colour/${encodeURIComponent(floor)}`), { method: 'DELETE' });
         logDebug(`Lobby colour reset for floor ${floor}`, 'warn');
@@ -1131,7 +1182,8 @@ async function resetLobbyFloor() {
 }
 
 if (lobbyEls.scanBtn) {
-    lobbyEls.scanBtn.addEventListener('click', openLobbyScan);
+    lobbyEls.scanBtn.addEventListener('click', () => openLobbyScan());
+    lobbyEls.cabinBtn?.addEventListener('click', () => openLobbyScan(LOBBY_CABIN_KEY));
     lobbyEls.doneBtn.addEventListener('click', closeLobbyScan);
     lobbyEls.shutter.addEventListener('click', captureLobbySample);
     lobbyEls.resetBtn.addEventListener('click', resetLobbyFloor);

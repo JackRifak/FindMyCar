@@ -14,10 +14,11 @@ Run:
     uvicorn fmc.webtools.server:app --reload --port 8001
 Then open http://127.0.0.1:8001/
 
-Deliberately NOT caching the VPRPipeline per site (unlike fmc.api.server) --
-this is a low-traffic editing/dev tool, not a production hot path, and a
-stale cached index after re-ingestion is exactly the bug that bit the
-position API earlier in this project. Simplicity over speed here.
+The VPRPipeline is cached per site but keyed on a fingerprint of the site's index files
+(map DB pointer, landmark npz files, embeddings, dataset), so a re-ingest / Finalize gets a
+fresh pipeline on the next query -- the stale-index bug the position API once had can't
+happen here. Rebuilding it per request cost ~20 s per Localize (all 305k landmarks, then
+every floor again from H2GIS).
 """
 from __future__ import annotations
 
@@ -25,11 +26,14 @@ import csv
 import math
 import re
 import shutil
+import threading
+import time
 from pathlib import Path
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -44,7 +48,6 @@ from fmc.dataset.build_index import build_index
 from fmc.dataset.capture import next_sequence_for_site, register_capture
 from fmc.dataset.locations import delete_location, get_location, load_locations_csv, upsert_location
 from fmc.dataset.schema import delete_record, load_records, records_for_location, save_records
-from fmc.fusion.map_matching import snap_to_walkable
 from fmc.georeference import (
     ControlPoint,
     FloorPlanTransform,
@@ -54,7 +57,7 @@ from fmc.georeference import (
     save_control_points_csv,
     transform_residuals,
 )
-from fmc.navigation.routing import calculate_route
+from fmc.navigation.routing import calculate_multifloor_route, calculate_route, join_route_to_position
 from fmc.pdf_render import render_pdf_page
 from fmc.vpr.pipeline import VPRPipeline
 
@@ -140,11 +143,22 @@ class SlotIn(BaseModel):
     zone: str
 
 
+class MarkerIn(BaseModel):
+    px: float
+    py: float
+    marker_id: int
+    facing_deg: float
+    height_m: float = 1.4
+    size_m: float = 0.23
+
+
 class RouteRequest(BaseModel):
     floor: str = "1"
     start_x: float
     start_y: float
     slot_id: str
+    # localized heading (deg) — helps pick the corridor you're in near a junction
+    heading: float | None = None
 
 
 class CaptureLocationIn(BaseModel):
@@ -634,7 +648,19 @@ def get_geometry(site_id: str, floor: str):
             entry["px"], entry["py"] = transform.world_to_pixel(slot["x"], slot["y"])
         slot_out.append(entry)
 
-    return {"segments": seg_out, "slots": slot_out}
+    marker_out = []
+    for m in (floor_entry.get("markers", []) if floor_entry else []):
+        entry = dict(m)
+        if transform is not None:
+            entry["px"], entry["py"] = transform.world_to_pixel(m["x"], m["y"])
+        marker_out.append(entry)
+
+    other_ids = sorted({
+        int(m.get("marker_id", -1))
+        for f in site.raw.get("floors", []) if normalize_floor_id(f.get("floor")) != fid
+        for m in f.get("markers") or []
+    })
+    return {"segments": seg_out, "slots": slot_out, "markers": marker_out, "other_floor_marker_ids": other_ids}
 
 
 @app.put("/api/sites/{site_id}/floors/{floor}/segments")
@@ -664,6 +690,63 @@ def put_segments(site_id: str, floor: str, segments: list[SegmentIn]):
     return {"saved": len(world_segments)}
 
 
+@app.put("/api/sites/{site_id}/floors/{floor}/markers")
+def put_markers(site_id: str, floor: str, markers: list[MarkerIn]):
+    """Lift-lobby ArUco markers of this floor (fmc.vpr.aruco_markers). IDs are unique
+    site-wide: lobbies are stacked, so the ID is what tells the floors apart."""
+    site = get_site_or_404(site_id)
+    fid = _prep_floor_assets(site, floor)
+    transform = _load_transform_or_none(site, fid)
+    if transform is None:
+        raise HTTPException(400, f"No transform saved yet for floor '{fid}' — fit & save control points first")
+    ids = [m.marker_id for m in markers]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(400, f"Duplicate marker IDs on floor {fid}: {ids}")
+    for f in site.raw.get("floors", []):
+        if normalize_floor_id(f.get("floor")) == fid:
+            continue
+        clash = sorted(set(ids) & {int(m.get("marker_id", -1)) for m in f.get("markers") or []})
+        if clash:
+            raise HTTPException(400, f"Marker ID(s) {clash} already used on floor {f.get('floor')} — IDs must be unique site-wide")
+    for m in markers:
+        if not (0 <= m.marker_id < 50):
+            raise HTTPException(400, f"Marker ID {m.marker_id} out of range 0–49 (DICT_4X4_50)")
+        if not (0.05 <= m.size_m <= 1.0) or not (0.3 <= m.height_m <= 3.0):
+            raise HTTPException(400, f"Marker {m.marker_id}: size 0.05–1 m and height 0.3–3 m")
+
+    out = []
+    for m in markers:
+        x, y = transform.pixel_to_world(m.px, m.py)
+        out.append({
+            "marker_id": int(m.marker_id), "x": round(x, 3), "y": round(y, 3),
+            "height_m": round(float(m.height_m), 3), "facing_deg": round(float(m.facing_deg) % 360.0, 1),
+            "size_m": round(float(m.size_m), 4),
+        })
+    floor_entry = get_or_create_floor(site, fid)
+    if out:
+        floor_entry["markers"] = out
+    else:
+        floor_entry.pop("markers", None)
+    save_site_config(site)
+    return {"saved": len(out)}
+
+
+@app.get("/api/sites/{site_id}/markers/{marker_id}.svg")
+def marker_svg(site_id: str, marker_id: int, size_m: float = 0.23, label: str = ""):
+    """Printable marker at real size — print at 100 % on matte paper (A3 for 23 cm)."""
+    from fastapi.responses import Response
+
+    from fmc.vpr import aruco_markers
+
+    site = get_site_or_404(site_id)
+    if not (0 <= marker_id < 50) or not (0.05 <= size_m <= 1.0):
+        raise HTTPException(400, "marker_id 0–49, size_m 0.05–1.0")
+    svg = aruco_markers.svg_for_print(marker_id, size_m, label, aruco_markers.dictionary_name(site))
+    return Response(svg, media_type="image/svg+xml", headers={
+        "Content-Disposition": f'inline; filename="marker_{marker_id}_{round(size_m * 1000)}mm.svg"',
+    })
+
+
 @app.put("/api/sites/{site_id}/floors/{floor}/slots")
 def put_slots(site_id: str, floor: str, slots: list[SlotIn]):
     site = get_site_or_404(site_id)
@@ -685,9 +768,86 @@ def put_slots(site_id: str, floor: str, slots: list[SlotIn]):
 
 # ---------------------------------------------------------------- live testing
 
+# site_id -> (index fingerprint, VPRPipeline)
+_pipelines: dict[str, tuple[tuple, VPRPipeline]] = {}
+_pipelines_lock = threading.Lock()
+# files whose change can't alter what localize() returns
+_FP_SKIP_SUFFIXES = (".trace.db", ".ply")
+_FP_SKIP_NAMES = {"cabin_colours.json", "tags.json", "locations.csv"}
+
+
+def _index_fingerprint(site) -> tuple:
+    """(name, size, mtime) of the index files, plus the current-DB pointer's content.
+    H2GIS .mv.db files are named, not stat'ed: H2 touches them on every open, and a new
+    map always lands in a new file + pointer swap."""
+    d = Path(site.index_dir)
+    if not d.exists():
+        return ()
+    fp = []
+    for f in sorted(d.iterdir()):
+        if not f.is_file() or f.name in _FP_SKIP_NAMES or f.name.endswith(_FP_SKIP_SUFFIXES):
+            continue
+        if f.name.endswith(".mv.db"):
+            fp.append((f.name,))
+            continue
+        st = f.stat()
+        entry = (f.name, st.st_size, st.st_mtime_ns)
+        if f.name.endswith(".current"):
+            entry += (f.read_text(encoding="utf-8", errors="replace").strip(),)
+        fp.append(entry)
+    return tuple(fp)
+
+
+def _pipeline_for(site) -> VPRPipeline:
+    """cached pipeline, rebuilt when the site's index files change"""
+    fp = _index_fingerprint(site)
+    with _pipelines_lock:
+        hit = _pipelines.get(site.site_id)
+        if hit and hit[0] == fp:
+            return hit[1]
+        pipe = VPRPipeline(site)
+        _pipelines[site.site_id] = (fp, pipe)
+        return pipe
+
+
 # 3D map keyframes come from ~1280x720 ARCore frames; full-res gallery photos (4032x3024)
 # put ORB features at ~3x the map's scale and PnP match far fewer of them
 QUERY_MAX_DIM = 1280
+
+# A camera-app photo is wider than the parking app's video frame: a 26 mm-equivalent main
+# camera is f ≈ 0.72 × long side, the server's default guess is 0.85 (made for video
+# frames). ~18% focal error and RANSAC rejects the correct matches. So use the photo's
+# EXIF focal length, and without EXIF retry once with the typical photo focal.
+PHOTO_F_RATIO = 0.72
+_EXIF_IFD = 0x8769
+_EXIF_FOCAL_35MM = 41989  # FocalLengthIn35mmFilm
+_FULL_FRAME_DIAG_MM = 43.27  # 35 mm film diagonal
+
+
+def _decode_photo(contents: bytes):
+    """BGR image upright per EXIF orientation, plus the 35 mm-equivalent focal (or None)."""
+    try:
+        import io
+        from PIL import Image, ImageOps
+
+        img = Image.open(io.BytesIO(contents))
+        f35 = None
+        try:
+            v = img.getexif().get_ifd(_EXIF_IFD).get(_EXIF_FOCAL_35MM)
+            f35 = float(v) if v else None
+        except Exception:
+            f35 = None
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR), f35
+    except Exception:
+        frame = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
+        return frame, None
+
+
+def _photo_intrinsics(w: int, h: int, f_px: float):
+    from fmc.vpr.camera_intrinsics import Intrinsics
+
+    return Intrinsics(fx=f_px, fy=f_px, cx=w / 2.0, cy=h / 2.0, width=w, height=h)
 
 
 @app.post("/api/sites/{site_id}/query")
@@ -700,8 +860,7 @@ async def query_position(site_id: str, file: UploadFile = File(...), floor: str 
         raise HTTPException(400, "No index built yet for this site (fmc.dataset.build_index)")
 
     contents = await file.read()
-    np_arr = np.frombuffer(contents, np.uint8)
-    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    frame, f35 = _decode_photo(contents)
     if frame is None:
         raise HTTPException(400, "Could not decode uploaded image")
 
@@ -711,15 +870,48 @@ async def query_position(site_id: str, file: UploadFile = File(...), floor: str 
         frame = cv2.resize(frame, (round(src_w * scale), round(src_h * scale)), interpolation=cv2.INTER_AREA)
     h, w = frame.shape[:2]
 
-    pipeline = VPRPipeline(site)  # not cached -- see module docstring
-    if pipeline.map_index is None and not any(
-        pipeline._index_for_floor(f) is not None for f in site.floor_ids()
-    ):
-        raise HTTPException(400, "No 3D map yet -- map the floor in the mapping app and Finalize first")
-    # editor floor first (prior only -- other mapped floors are still tried)
-    result = pipeline.localize(frame, prior_floor=normalize_floor_id(floor) if floor else None)
+    prior = normalize_floor_id(floor) if floor else None
 
-    image_info = {"source_size": [src_w, src_h], "query_size": [w, h]}
+    # focal candidates, best first: EXIF → default guess (video-like frames) → photo guess
+    long_side = max(w, h)
+    if f35:
+        focals = [(f35 * math.hypot(w, h) / _FULL_FRAME_DIAG_MM, f"exif {f35:g} mm-eq")]
+    else:
+        from fmc.vpr.camera_intrinsics import GUESS_F_RATIO
+
+        focals = [
+            (GUESS_F_RATIO * long_side, f"guess {GUESS_F_RATIO}×long side"),
+            (PHOTO_F_RATIO * long_side, f"photo guess {PHOTO_F_RATIO}×long side"),
+        ]
+    used = {"focal_px": None, "focal_source": None, "tries": 0}
+
+    def _run():
+        # cached per site, rebuilt on index change -- see module docstring
+        pipeline = _pipeline_for(site)
+        if pipeline.map_index is None and not any(
+            pipeline._index_for_floor(f) is not None for f in site.floor_ids()
+        ):
+            return None
+        res = None
+        for f_px, src in focals:
+            used.update(focal_px=round(f_px, 1), focal_source=src, tries=used["tries"] + 1)
+            # editor floor first (prior only -- other mapped floors are still tried)
+            res = pipeline.localize(frame, prior_floor=prior, intrinsics=_photo_intrinsics(w, h, f_px))
+            if res.matched:
+                break
+        return res
+
+    # off the event loop: this server also hosts the parking API (/floor-plan mount)
+    t0 = time.perf_counter()
+    result = await run_in_threadpool(_run)
+    if result is None:
+        raise HTTPException(400, "No 3D map yet -- map the floor in the mapping app and Finalize first")
+    elapsed_ms = round((time.perf_counter() - t0) * 1000)
+
+    image_info = {
+        "source_size": [src_w, src_h], "query_size": [w, h], "elapsed_ms": elapsed_ms,
+        "focal_px": used["focal_px"], "focal_source": used["focal_source"], "focal_tries": used["tries"],
+    }
     if not result.matched:
         return {
             "matched": False,
@@ -756,10 +948,15 @@ async def query_position(site_id: str, file: UploadFile = File(...), floor: str 
 
 @app.post("/api/sites/{site_id}/route")
 def get_route(site_id: str, req: RouteRequest):
-    """Compute a route from a given world position to a vehicle slot and
-    return waypoints in both world and pixel coordinates, for drawing on
-    the map -- same fmc.navigation.routing + fmc.fusion.map_matching the
-    position API uses."""
+    """Route from a localized position to a vehicle slot -- the SAME steps as the parking
+    API's /route (fmc.api.server.get_route), so the editor shows what the phone will:
+      1. match the position into its corridor BAND (not onto the centre line)
+      2. route from that corridor's centre line, across floors via vertical_connectors
+      3. lane start: parallel to the corridor from where you stand up to the first corner,
+         then straight / L onto the next segment (join_route_to_position)
+    Waypoints come back in world metres and, per leg, in that leg's floor-plan pixels."""
+    from fmc.fusion.map_matching import match_to_walkable
+
     site = get_site_or_404(site_id)
     floor = normalize_floor_id(req.floor)
     segments = site.walkable_segments(floor)
@@ -769,22 +966,78 @@ def get_route(site_id: str, req: RouteRequest):
     slot = site.vehicle_slot(req.slot_id)
     if slot is None:
         raise HTTPException(404, f"Unknown slot_id: {req.slot_id}")
-    if normalize_floor_id(slot["floor"]) != floor:
-        raise HTTPException(400, "Cross-floor routing isn't implemented yet")
+    dest_floor = normalize_floor_id(slot["floor"])
 
-    snapped_x, snapped_y = snap_to_walkable(req.start_x, req.start_y, segments)
-    route = calculate_route(segments, start_x=snapped_x, start_y=snapped_y, dest_x=slot["x"], dest_y=slot["y"])
+    # 1. inside the corridor band — unchanged if already in it; route from its centre line
+    center: list = []
+    user_x, user_y, _ = match_to_walkable(
+        req.start_x, req.start_y, segments, heading_deg=req.heading, center_out=center,
+    )
+    start_x, start_y = center[0] if center else (user_x, user_y)
+
+    # 2. same routing choice as /route
+    floors_segments = {
+        normalize_floor_id(f["floor"]): list(f.get("walkable_segments") or [])
+        for f in site.raw.get("floors", [])
+    }
+    connectors = site.vertical_connectors()
+    if dest_floor == floor and not connectors:
+        route = calculate_route(segments, start_x=start_x, start_y=start_y, dest_x=slot["x"], dest_y=slot["y"])
+    else:
+        route = calculate_multifloor_route(
+            floors_segments=floors_segments,
+            vertical_connectors=connectors,
+            start_floor=floor,
+            start_x=start_x,
+            start_y=start_y,
+            dest_floor=dest_floor,
+            dest_x=slot["x"],
+            dest_y=slot["y"],
+            dest_slot_id=req.slot_id,
+        )
     if route is None:
+        if dest_floor != floor and not connectors:
+            raise HTTPException(400, f"Cross-floor route {floor}→{dest_floor} needs vertical_connectors in config.yaml")
         raise HTTPException(404, "No route found -- the walkable graph may be disconnected between these points")
 
-    transform = _load_transform_or_none(site, floor)
-    waypoints_px = None
-    if transform is not None:
-        waypoints_px = [transform.world_to_pixel(x, y) for x, y in route.waypoints]
+    # 3. lane start from where the user actually stands
+    lane_off, lane_mode = join_route_to_position(route, floor, user_x, user_y)
+
+    transforms: dict = {}
+
+    def to_px(fl, pts):
+        fl = normalize_floor_id(fl)
+        if fl not in transforms:
+            transforms[fl] = _load_transform_or_none(site, fl)
+        t = transforms[fl]
+        return [t.world_to_pixel(x, y) for x, y in pts] if t is not None else None
+
+    legs = []
+    for leg in route.legs or []:
+        lf = normalize_floor_id(leg.floor) if leg.floor is not None else floor
+        wps = [(float(x), float(y)) for x, y in leg.waypoints]
+        legs.append({
+            "floor": lf,
+            "instruction": leg.instruction,
+            "floor_transition": leg.floor_transition,
+            "distance": float(leg.distance),
+            "waypoints": wps,
+            "waypoints_px": None if leg.floor_transition else to_px(lf, wps),
+        })
+    # start-floor walk (older clients draw only this)
+    start_wps = [p for lg in legs if lg["floor"] == floor and not lg["floor_transition"] for p in lg["waypoints"]]
+    if not legs:
+        start_wps = [(float(x), float(y)) for x, y in route.waypoints]
 
     return {
+        "floor": floor,
+        "dest_floor": dest_floor,
+        "start": {"x": user_x, "y": user_y, "moved_m": round(math.hypot(user_x - req.start_x, user_y - req.start_y), 2)},
+        "lane_mode": lane_mode,
+        "lane_offset_m": round(float(lane_off), 2),
+        "legs": legs,
         "waypoints": route.waypoints,
-        "waypoints_px": waypoints_px,
+        "waypoints_px": to_px(floor, start_wps),
         "total_distance": route.total_distance,
     }
 

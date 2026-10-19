@@ -767,3 +767,12 @@ button:disabled {
 .seg-selbar .action-row { margin-top: 6px; flex-wrap: wrap; gap: 6px; }
 .list-item.is-selected { outline: 2px solid #ffd166; outline-offset: -2px; }
 .list-item.seg-row { cursor: pointer; }
+
+/* lift-lobby markers */
+.marker-howto { margin: 0 0 10px; padding-left: 18px; }
+.marker-howto li { margin: 2px 0; }
+.marker-row { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; align-items: center; }
+.marker-row .marker-fields { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.marker-row label { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; }
+.marker-row input { width: 58px; }
+.marker-row .marker-pending { color: #ffd166; font-size: 12px; }

@@ -1258,17 +1258,22 @@ export class WebXrNav {
     else if (!Number.isFinite(ref)) why = "no_gyro_at_fix";
     else if (!this.opts.getDeviceYaw) why = "no_gyro_getter";
     else if (!Number.isFinite(now)) why = "no_gyro_now";
+    // a lobby-marker fix measures the camera heading directly (±1–3°) and you are facing
+    // the MARKER, often 15–30° off the corridor — snapping it onto the corridor axis turned
+    // the whole AR path by that angle (only head-on fixes looked right). Use it as is.
+    const exact = String(fp.source || "").toLowerCase() === "marker";
     if (why) {
-      this.opts.handlers?.onStartHeading?.({ ...base, applied: false, why });
-      return fp;
+      this.opts.handlers?.onStartHeading?.({ ...base, applied: false, why, exact });
+      // headingLive: pathFromWaypoints must not snap an exact heading either
+      return exact ? { ...fp, headingLive: true } : fp;
     }
     const turned = ((now - ref + 540) % 360) - 180; // (-180, 180]
     this.startTurnDeg = turned;
     // you stood still facing along the corridor for the PnP fix: snap THAT heading onto the
     // corridor axis (removes PnP's ±5° noise) — the sweep/turn since comes from the gyro
-    const fixSnapped = this.snapToCorridorAxis(fp.heading);
+    const fixSnapped = exact ? Number(fp.heading) : this.snapToCorridorAxis(fp.heading);
     this.opts.handlers?.onStartHeading?.({
-      ...base, applied: true, turnedDeg: turned, fixSnapped,
+      ...base, applied: true, turnedDeg: turned, fixSnapped, exact,
     });
     return { ...fp, heading: (fixSnapped + turned + 360) % 360, headingLive: true };
   }
@@ -2295,8 +2300,75 @@ function pathFromLegs(legs, origin, initialFwd) {
   return pts;
 }
 
+/**
+ * One-time camera calibration for the NON-AR camera stream (turn-by-turn, camera before AR):
+ * open a bare immersive-ar session for a few frames and read the camera's field of view from
+ * the view's projection matrix (P0 = 1/tan(fovX/2), P5 = 1/tan(fovY/2) — ratios, so no image
+ * size or camera-access needed), then end it.
+ *
+ * The AR view is the camera feed cropped to the screen (tall phone: the short side is cropped)
+ * and a 1280x720 getUserMedia stream is the sensor cropped to 16:9 (also the short side), so
+ * both keep the sensor's full LONG side — the long-side FOV is what transfers between them.
+ * Needs a user gesture (call straight from the tap) and the camera released beforehand.
+ */
+export async function measureCameraFov({ timeoutMs = 7000, message = "Calibrating camera (one time)…" } = {}) {
+  const xr = navigator.xr;
+  if (!window.isSecureContext || !xr?.requestSession) throw new Error("WebXR not available");
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;"
+    + "background:rgba(0,0,0,.55);color:#fff;font:600 17px system-ui,sans-serif;text-align:center;padding:24px;z-index:99999";
+  overlay.textContent = message;
+  document.body.appendChild(overlay);
+  let session = null;
+  try {
+    session = await xr.requestSession("immersive-ar", {
+      optionalFeatures: ["dom-overlay"],
+      domOverlay: { root: overlay },
+    });
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl2", { xrCompatible: true, alpha: true })
+      || canvas.getContext("webgl", { xrCompatible: true, alpha: true });
+    if (!gl) throw new Error("no WebGL");
+    await gl.makeXRCompatible?.();
+    const layer = new XRWebGLLayer(session, gl);
+    session.updateRenderState({ baseLayer: layer });
+    const ref = await session.requestReferenceSpace("viewer");
+    const P = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("no AR frame in time")), timeoutMs);
+      let n = 0;
+      const onFrame = (_t, frame) => {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        const view = frame.getViewerPose(ref)?.views?.[0];
+        // a few frames in: the first projection can still be a placeholder
+        if (view?.projectionMatrix && ++n >= 4) {
+          clearTimeout(timer);
+          resolve(Array.from(view.projectionMatrix));
+          return;
+        }
+        session.requestAnimationFrame(onFrame);
+      };
+      session.requestAnimationFrame(onFrame);
+    });
+    const fovX = (2 * Math.atan(1 / P[0]) * 180) / Math.PI;
+    const fovY = (2 * Math.atan(1 / P[5]) * 180) / Math.PI;
+    if (!(fovX > 10 && fovX < 150 && fovY > 10 && fovY < 150)) throw new Error(`implausible FOV ${fovX}/${fovY}`);
+    return {
+      fovLongDeg: Math.max(fovX, fovY),
+      fovShortDeg: Math.min(fovX, fovY),
+      portrait: fovY >= fovX,
+      at: Date.now(),
+    };
+  } finally {
+    try { await session?.end(); } catch (_) { /* already ended */ }
+    overlay.remove();
+  }
+}
+
 window.ParkingWebXr = {
   canUseWebXr,
+  measureCameraFov,
   WebXrNav,
   legsFromWaypoints,
   pathFromWaypoints,

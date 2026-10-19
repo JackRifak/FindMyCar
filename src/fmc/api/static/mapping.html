@@ -675,7 +675,7 @@
         <canvas id="canvas"></canvas>
         <div id="lobby-overlay" class="lobby-overlay hidden" role="dialog" aria-label="Lobby colour scan">
             <div class="lobby-overlay__top">
-                <div class="lobby-overlay__title">Floor <span id="lobby-floor-label">—</span> lobby</div>
+                <div class="lobby-overlay__title" id="lobby-overlay-title">Floor <span id="lobby-floor-label">—</span> lobby</div>
                 <button type="button" id="lobby-done-btn" class="lobby-chip-btn">Done</button>
             </div>
             <div class="lobby-reticle" id="lobby-reticle"></div>
@@ -764,6 +764,7 @@
                 <div id="lobby-floors" class="lobby-floors" aria-live="polite"></div>
                 <div class="row">
                     <button id="lobby-scan-btn" class="btn-soft">Scan lobby colour</button>
+                    <button id="lobby-cabin-btn" class="btn-soft" title="Stand inside the lift, doors closed, and scan its walls and floor. The parking app then ignores colour that looks like the lift interior.">Scan inside the lift</button>
                 </div>
             </div>
         </details>

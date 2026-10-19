@@ -39,11 +39,7 @@ floors:
   - x1: 11.732
     y1: -20.433
     x2: 11.732
-    y2: -24.581
-  - x1: 22.247
-    y1: -24.602
-    x2: 4.408
-    y2: -24.566
+    y2: -24.987
   - x1: 4.439
     y1: -4.144
     x2: 25.512
@@ -51,6 +47,13 @@ floors:
     width: 6.0
     width_left: 3.0
     width_right: 3.0
+  - x1: 22.248
+    y1: -24.958
+    x2: 4.408
+    y2: -25.008
+    width: 1.5
+    width_left: 1.0
+    width_right: 0.5
   landmarks: []
   vehicle_slots:
   - slot_id: 87-04C
@@ -137,17 +140,20 @@ floors:
     zone: zone_00
     x: 28.211
     y: -28.107
+  markers:
+  - marker_id: 1
+    x: 8.588
+    y: -20.566
+    height_m: 1.4
+    facing_deg: 90.0
+    size_m: 0.28
 - floor: G
   zones: []
   walkable_segments:
-  - x1: 10.449
-    y1: -19.294
-    x2: 15.397
-    y2: -19.08
-  - x1: 10.763
-    y1: -19.453
-    x2: 15.212
-    y2: -22.044
+  - x1: 14.618
+    y1: -20.574
+    x2: 9.353
+    y2: -20.492
   landmarks: []
   vehicle_slots: []
 - floor: B2

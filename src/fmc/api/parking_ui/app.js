@@ -1,5 +1,7 @@
 const ARRIVE_M = 2.0; // along-route remaining / approach-node threshold
-const ARRIVE_SLOT_M = 8.0; // euclidean to slot (bays sit off the walkable line)
+const ARRIVE_SLOT_M = 3.0; // euclidean to the bay itself — you're standing at it
+const ARRIVE_SPUR_MAX_M = 8.0; // last route segment this short = spur from corridor into the bay
+const ARRIVE_ABREAST_M = 1.0; // along the aisle: within this of the bay's line (half a bay width)
 const LEG_ADVANCE_M = 0.7; // snap to next walk leg
 const ENTER_CONNECTOR_M = 3.0; // enter lift/stairs guidance (PDR freezes in elevator)
 /** Floor B: soft prefer this far from lift door before fresh XR */
@@ -114,6 +116,10 @@ const state = {
   cabinHits: 0, // consecutive lift-lobby colour matches for the landing floor
   devicePitch: null, // DeviceOrientation beta — see LOOKING_DOWN_BETA
   headingFix: null, // {heading, gyro, at, source} of the last real fix — AR start direction
+  // "ar" = WebXR floor arrows · "tbt" = turn-by-turn: camera PnP (6-DoF) fixes + motion, no AR
+  navMode: (() => {
+    try { return localStorage.getItem("fmc_nav_mode") === "tbt" ? "tbt" : "ar"; } catch (_) { return "ar"; }
+  })(),
   awaitingLandingLock: false, // true from lift handoff until PnP on dest floor
   floorOrder: [], // site floor labels, bottom→top when available
   lastCompassSample: null,
@@ -178,6 +184,7 @@ const ui = {
   arriveOverlay: document.getElementById("arriveOverlay"),
   arriveSlot: document.getElementById("arriveSlot"),
   arriveDismissBtn: document.getElementById("arriveDismissBtn"),
+  voiceBtn: document.getElementById("voiceBtn"),
   floorContinueBtn: document.getElementById("floorContinueBtn"),
   startArBtn: document.getElementById("startArBtn"),
   arStage: document.getElementById("arStage"),
@@ -203,6 +210,94 @@ let xrHealthTimer = 0;
 let xrTrackLostAt = 0;
 let xrLostHinted = false; // "AR paused" hint shown for the current loss
 let xrSessionStartedAt = 0;
+
+/* ---------------- voice guidance (ported from feature/voice) ----------------
+ * Speaks the turn banner when its prompt changes (AR and turn-by-turn both paint it),
+ * lift instructions and arrival. Only while navigating. On/off remembered. */
+const voice = {
+  on: (() => { try { return localStorage.getItem("fmc_voice") !== "0"; } catch (_) { return true; } })(),
+  lastKey: "",
+  navOn: false, // only speak after Start nav
+};
+
+function voiceLang() {
+  let lang = "en";
+  try { lang = localStorage.getItem("ms_fmc_lang") || "en"; } catch (_) { /* ignore */ }
+  return lang === "ar" ? "ar" : "en";
+}
+
+function stopVoice() {
+  try {
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+  } catch (_) { /* ignore */ }
+}
+
+/** speak `text` unless the same prompt (key) was the last thing said */
+function speak(text, key = text) {
+  if (!voice.on || !voice.navOn || !text || !("speechSynthesis" in window)) return;
+  const msg = String(text).replace(/\s+/g, " ").trim();
+  const k = String(key || msg);
+  if (!msg || k === voice.lastKey) return;
+  voice.lastKey = k;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(msg);
+    const lang = voiceLang();
+    u.lang = lang === "ar" ? "ar-SA" : "en-GB";
+    u.rate = 1;
+    const v = speechSynthesis.getVoices().find((x) => x.lang && x.lang.toLowerCase().startsWith(lang));
+    if (v) u.voice = v;
+    speechSynthesis.speak(u);
+  } catch (_) { /* ignore */ }
+}
+
+/** banner prompt → spoken sentence (with distance for upcoming turns), in the app language */
+function spokenPrompt(next) {
+  const label = String(next?.label || "").trim();
+  if (!label || label.endsWith("…")) return null; // transient states ("Re-aligning AR…")
+  const d = Number(next.distanceM);
+  const soon = Number.isFinite(d) && d >= 3 && !next.isFloorChange && next.kind !== "straight";
+  const metres = soon ? Math.round(d) : null;
+  if (voiceLang() !== "ar") {
+    return metres ? `${label} in ${metres} metres` : label;
+  }
+  const lift = label.match(/(Elevator|Lift|Stairs|Ramp)[^]*?Floor\s+(\S+)/i);
+  let ar;
+  if (lift) {
+    const what = /stairs/i.test(lift[1]) ? "الدرج" : /ramp/i.test(lift[1]) ? "المنحدر" : "المصعد";
+    ar = `خذ ${what} إلى الطابق ${lift[2]}`;
+  } else if (/turn around/i.test(label)) ar = "استدر للخلف";
+  else if (/turn left/i.test(label)) ar = "انعطف يساراً";
+  else if (/turn right/i.test(label)) ar = "انعطف يميناً";
+  else if (/continue straight/i.test(label)) ar = "استمر للأمام";
+  else ar = label; // untranslated prompt: say it as is
+  return metres ? `${ar} بعد ${metres} متر` : ar;
+}
+
+function arrivedVoiceMsg() {
+  return voiceLang() === "ar" ? "لقد وصلت إلى سيارتك." : "You have arrived at your car.";
+}
+
+function setVoiceOn(on, { quiet = false } = {}) {
+  voice.on = Boolean(on);
+  try { localStorage.setItem("fmc_voice", voice.on ? "1" : "0"); } catch (_) { /* ignore */ }
+  if (!voice.on) {
+    stopVoice();
+    voice.lastKey = "";
+  }
+  ui.voiceBtn?.classList.toggle("is-on", voice.on);
+  ui.voiceBtn?.setAttribute("aria-pressed", voice.on ? "true" : "false");
+  // don't overwrite nav status on load — only when the user toggles
+  if (!quiet && ui.statusLine) {
+    ui.statusLine.textContent = voice.on
+      ? (voiceLang() === "ar" ? "الإرشاد الصوتي مفعّل" : "Voice guidance on")
+      : (voiceLang() === "ar" ? "الإرشاد الصوتي متوقف" : "Voice guidance off");
+  }
+}
+
+function toggleVoice() {
+  setVoiceOn(!voice.on, { quiet: false });
+}
 
 function setStatusChip(text, kind = "warn") {
   if (ui.sessionState) ui.sessionState.textContent = text;
@@ -259,6 +354,8 @@ function showArrivalCelebration(slotId) {
   setStatusChip("Arrived", "live");
   setStatusMsg(`You have reached ${label}`);
   setHint(`You have reached ${label}`, true);
+  speak(arrivedVoiceMsg(), "arrived"); // navOn still true here
+  voice.navOn = false;
 }
 
 function hideArrivalCelebration() {
@@ -364,6 +461,33 @@ function setFloorContinueVisible(on, toFloor = "") {
 }
 
 /** floor the current/next lift ride lands on */
+/* ---------------- lift-lobby ArUco markers ----------------
+ * The server reads a printed marker by the lift (method "marker"): exact position, heading
+ * and floor from one frame. Floors that have one get a "point at the marker" prompt. */
+const markerFloors = new Set();
+
+async function loadMarkerFloors() {
+  try {
+    const res = await fetch("/markers");
+    if (!res.ok) return;
+    const data = await res.json();
+    markerFloors.clear();
+    for (const m of data.markers || []) markerFloors.add(normFloor(m.floor));
+  } catch (_) { /* no markers — colour + PnP only */ }
+}
+
+function floorHasMarker(floor) {
+  return floor != null && markerFloors.has(normFloor(floor));
+}
+
+const MARKER_HINT = "Doors open? Point the camera at the black-and-white marker by the lift";
+
+/** camera fix with a full 6-DoF pose (landmark PnP or a lobby marker) */
+function isPoseFix(method) {
+  const m = String(method || "").toLowerCase();
+  return m === "pnp" || m === "marker";
+}
+
 function landingFloorId() {
   const tf = activeRouteLeg()?.floor_transition
     || nextTransitionLeg(state.activeLegIndex || 0)?.floor_transition;
@@ -442,7 +566,7 @@ function maybeSeedLandingFromCabin(fix) {
     tracking: true,
   };
   state.awaitingLandingLock = false;
-  state.pendingXrResume = true;
+  state.pendingXrResume = arMode();
   state.xrResumeReadyAt = performance.now() + RESUME_XR_SETTLE_MS;
   state.walkSinceLand = 0;
   state.xrResumeAttempts = 0;
@@ -460,13 +584,19 @@ function maybeSeedLandingFromCabin(fix) {
   });
   promptStartArAfterLand();
   setStatusChip(`Floor ${land} · lobby colour`, "live");
-  setStatusMsg(`Floor ${land} confirmed by lobby colour — step out, face the corridor, tap Start AR`);
-  setHint("Step out of the lobby facing the corridor, then tap Start AR", true);
+  if (arMode()) {
+    setStatusMsg(`Floor ${land} confirmed by lobby colour — step out, face the corridor, tap Start AR`);
+    setHint("Step out of the lobby facing the corridor, then tap Start AR", true);
+  } else {
+    setStatusMsg(`Floor ${land} confirmed by lobby colour — step out and follow the turn banner`);
+    setHint("Step out of the lobby facing the corridor — follow the banner", true);
+  }
   return true;
 }
 
 /** Chrome immersive-ar needs a tap — show CTA and free the camera ahead of time */
 function promptStartArAfterLand() {
+  if (!arMode()) return; // turn-by-turn: keep camera + PnP running, no AR prompt
   if (!state.landingPose) return;
   if (state.xrResumeBlocked) return;
   if (state.webXrActive || webXrNav) return;
@@ -657,21 +787,37 @@ function hasReachedDestination(progress) {
     ? Math.hypot(pos.x - dest[0], pos.y - dest[1])
     : Infinity;
 
-  // bay coords are often a few meters off the corridor — use looser radius
-  // only when dest point is the real slot (same floor, no connector left)
-  if (distSlot <= ARRIVE_SLOT_M) return true;
-
+  // Straight-line distance alone fired from the previous corridor: an 8 m radius reaches
+  // across a parking row, so "arrived" popped before turning into the bay's aisle. Every
+  // test now also needs you to be at the end of the ROUTE, not just near the bay.
   const rem = progress?.remainingDistance;
-  if (typeof rem === "number" && rem <= ARRIVE_M) return true;
+  if (typeof rem !== "number") return distSlot <= ARRIVE_SLOT_M;
 
-  // corridor approach node (waypoint before the off-path slot spur)
+  // The server ends the route at the aisle point level with the bay (a), then a short spur
+  // into the bay (b). Remaining-distance can't be trusted near there: walking on the bay
+  // side of a wide aisle you're closer to the spur than to the aisle centre line, so the
+  // progress projection jumps onto the spur and "remaining" drops by metres early (bay
+  // 109-06C: spur 6.2 m, aisle half-width 3 m → arrived ~4 m before the bay). So test the
+  // geometry directly: how far along the aisle you are relative to the bay's line.
   const wps = leg?.waypoints?.length ? leg.waypoints : state.route.waypoints;
-  if (wps?.length >= 2) {
-    const approach = wps[wps.length - 2];
-    const distApproach = Math.hypot(pos.x - approach[0], pos.y - approach[1]);
-    if (distApproach <= ARRIVE_M) return true;
+  if (wps?.length >= 3) {
+    const a = wps[wps.length - 2];
+    const b = wps[wps.length - 1];
+    const p0 = wps[wps.length - 3];
+    const spur = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const inL = Math.hypot(a[0] - p0[0], a[1] - p0[1]);
+    if (spur > 0.5 && spur <= ARRIVE_SPUR_MAX_M && inL > 0.5) {
+      // u = metres along the incoming aisle past the bay's line (negative = not there yet)
+      const u = ((pos.x - a[0]) * (a[0] - p0[0]) + (pos.y - a[1]) * (a[1] - p0[1])) / inL;
+      // only on the last stretch of the route, in this aisle (not a parallel one)
+      const nearAisle = distSlot <= spur + 3.5;
+      if (nearAisle && rem <= spur + 8 && u >= -ARRIVE_ABREAST_M) return true;
+      if (!(u >= -ARRIVE_ABREAST_M)) return distSlot <= ARRIVE_SLOT_M && u >= -ARRIVE_SLOT_M;
+    }
   }
-  return false;
+  if (rem <= ARRIVE_M) return true;
+  // at the bay but the position projects a little off the route end
+  return distSlot <= ARRIVE_SLOT_M && rem <= ARRIVE_SPUR_MAX_M;
 }
 
 function elevatorBanner(tf, remM = 0) {
@@ -1045,6 +1191,7 @@ function clearOfLiftForXr() {
 
 /** keep reminding user to tap — never auto requestSession (no user gesture → denied) */
 function scheduleXrResumePoll() {
+  if (!arMode()) return;
   if (xrResumePollTimer) return;
   xrResumePollTimer = setInterval(() => {
     if (
@@ -1074,6 +1221,7 @@ function stopXrResumePoll() {
  * Prefer calling from a click (fromGesture) — Chrome denies immersive-ar without activation.
  */
 async function claimXrSlice({ fromGesture = false } = {}) {
+  if (!arMode()) return false;
   if (xrResumeBusy || liftHandoffBusy) return false;
   if (state.webXrActive || webXrNav) return true;
   if (!state.landingPose) return false;
@@ -1207,6 +1355,15 @@ async function handXrToCamera(reason = "lift") {
       setStatusChip("Camera · XR lost", "warn");
       setStatusMsg("AR lost tracking — relocalizing with camera");
       setHint("Point the camera at pillars or bay numbers to restart AR", true);
+    } else if (reason === "user_tbt") {
+      // user switched to turn-by-turn: plain camera + PnP from here, no AR to come back to
+      state.awaitingLandingLock = hasFloorChangeAhead() && state.inFloorTransition;
+      state.landingPose = null;
+      state.pendingXrResume = false;
+      state.xrResumeBlocked = false;
+      setStatusChip("Turn-by-turn", "live");
+      setStatusMsg("Turn-by-turn · camera PnP fixes + motion");
+      setHint("Hold the phone up so the camera sees pillars and signs — follow the banner", true);
     } else {
       // approaching / in lift — wait for PnP on destination floor
       state.awaitingLandingLock = true;
@@ -1215,7 +1372,9 @@ async function handXrToCamera(reason = "lift") {
       state.xrResumeBlocked = false;
       setStatusChip("Camera · lift", "live");
       setStatusMsg("Camera + PnP through the lift — fresh AR after floor lock");
-      setHint("No XR in the cabin — AR restarts from PnP on the next floor", true);
+      setHint(floorHasMarker(landingFloorId())
+        ? MARKER_HINT
+        : "No XR in the cabin — AR restarts from PnP on the next floor", true);
     }
   } catch (err) {
     console.warn("handXrToCamera", err);
@@ -1229,6 +1388,7 @@ async function handXrToCamera(reason = "lift") {
  * After landing PnP — prompt for a tap. Auto requestSession is always denied on Chrome.
  */
 function maybeResumeXrAfterPnp(pos) {
+  if (!arMode()) return;
   if (!state.pendingXrResume || state.xrResumeBlocked) return;
   if (!state.landingPose) return;
   if (!state.navActive || state.workflowStep !== "navigation") return;
@@ -1774,6 +1934,11 @@ function paintTurnBanner(next) {
   }
   const kind = next.kind || turnKind(next.label) || "straight";
   setTurnIcon(kind);
+  if (voice.navOn && !next.isArrival) {
+    // key = the prompt itself, so distance count-down doesn't repeat it
+    const said = spokenPrompt({ ...next, kind });
+    if (said) speak(said, `${kind}|${next.label}`);
+  }
   if (state.inFloorTransition && next.isFloorChange) {
     const tf = activeRouteLeg()?.floor_transition;
     if (tf) showLiftHud(tf);
@@ -2071,7 +2236,10 @@ async function requestPermissions() {
     }
   }
 
-  window.addEventListener("devicemotion", onDeviceMotion, true);
+  if (!stepSensorsOn) {
+    window.addEventListener("devicemotion", onDeviceMotion, true);
+    stepSensorsOn = true;
+  }
   window.addEventListener("deviceorientation", onDeviceOrientation, true);
   window.addEventListener("deviceorientationabsolute", onDeviceOrientation, true);
 }
@@ -2168,6 +2336,70 @@ function currentHeadingDeg() {
   return (h + (((now - ref + 540) % 360) - 180) + 360) % 360;
 }
 
+/* ---------------- navigation mode: AR arrows ↔ turn-by-turn (PnP, no AR) ---------------- */
+function arMode() {
+  return state.navMode !== "tbt";
+}
+
+function paintNavModeToggle() {
+  document.querySelectorAll(".nav-mode-opt").forEach((b) => {
+    b.setAttribute("aria-checked", String(b.dataset.mode === state.navMode));
+  });
+}
+
+let navModeBusy = false;
+async function setNavMode(mode) {
+  const next = mode === "tbt" ? "tbt" : "ar";
+  if (next === state.navMode || navModeBusy) return;
+  navModeBusy = true;
+  document.querySelectorAll(".nav-mode-opt").forEach((b) => { b.disabled = true; });
+  state.navMode = next;
+  try { localStorage.setItem("fmc_nav_mode", next); } catch (_) {}
+  paintNavModeToggle();
+  window.ParkingHome?.repaint?.(); // landing page start button label follows the mode
+  void logClientDiagnostic({ event: "nav_mode_switch", nav_mode: next, reason: state.navActive ? "during_nav" : "idle" });
+  try {
+    if (!state.navActive) {
+      setStatusMsg(next === "ar"
+        ? "AR mode — floor arrows when you start navigation"
+        : "Turn-by-turn mode — camera PnP + turn banner, no AR");
+      return;
+    }
+    if (next === "tbt") {
+      void ensureStepSensors();
+      // drop any AR (or a pending Start AR prompt) and carry on with camera + PnP
+      setStartArVisible(false);
+      state.pendingXrResume = false;
+      if (state.webXrActive || webXrNav) {
+        await handXrToCamera("user_tbt");
+      } else {
+        startCameraNav();
+        restartLiveVprCapture();
+      }
+    } else if (!state.inFloorTransition) {
+      // this tap is a user gesture — WebXR may start right now
+      state.xrResumeBlocked = false;
+      stopLiveVprCapture({ keepCamera: false });
+      const ok = await startWebXrNav({ fresh: false });
+      if (!ok) {
+        setStatusMsg("AR couldn't start here — staying turn-by-turn until it can");
+        startCameraNav();
+        restartLiveVprCapture();
+      }
+    } else {
+      setStatusMsg("AR mode — AR starts after the lift, once the floor is locked");
+    }
+  } finally {
+    navModeBusy = false;
+    document.querySelectorAll(".nav-mode-opt").forEach((b) => { b.disabled = false; });
+  }
+}
+
+document.querySelectorAll(".nav-mode-opt").forEach((b) => {
+  b.addEventListener("click", () => { void setNavMode(b.dataset.mode); });
+});
+paintNavModeToggle();
+
 /** gyro yaw (deg, clockwise) if fresh, else null */
 function deviceYawDeg() {
   return state.gyroYawAt && performance.now() - state.gyroYawAt < 500 ? state.gyroYaw : null;
@@ -2196,49 +2428,245 @@ function onDeviceMotion(event) {
     }
     motion.lastMagnitude = magnitude;
 
-    if (state.hasLocalizedPosition) {
-      motion.gravityEstimate = motion.gravityEstimate === null
-        ? magnitude
-        : 0.92 * motion.gravityEstimate + 0.08 * magnitude;
-      detectNavigationStep(magnitude - motion.gravityEstimate, performance.now());
-    }
+    if (state.hasLocalizedPosition) detectGaitStep(event, performance.now());
   }
 
 }
 
-function detectNavigationStep(dynamicAcceleration, now) {
-  const motion = state.motion;
-  const threshold = 1.2;
+/* ---------------- gait step detector ----------------
+ * The old detector counted any spike in |acceleration| — a wrist flick, tilting the phone
+ * to look at it, or a quick wave all became steps. Walking is different from handling:
+ *  1. it bounces the body VERTICALLY (acceleration along gravity, whatever the phone's tilt)
+ *  2. the phone barely rotates while held in front of you
+ *  3. steps come in a steady rhythm (0.3–1.2 s apart, each interval close to the last)
+ * So: project linear acceleration onto gravity, need a peak followed by a valley, drop
+ * candidates while the phone is rotating fast, and only start moving after
+ * STEP_CONFIRM regular steps in a row (then credit those steps, nothing is lost). */
+const GAIT_PEAK = 0.9; // m/s² up (smoothed vertical) to start a step
+const GAIT_VALLEY = -0.6; // …and this far down within GAIT_PEAK_WINDOW_MS to finish it
+const GAIT_PEAK_WINDOW_MS = 650;
+const GAIT_MIN_DT_MS = 300; // faster than ~3.3 steps/s is not walking
+const GAIT_MAX_DT_MS = 1200; // slower than this breaks the rhythm
+const GAIT_RHYTHM_RATIO = 1.6; // consecutive intervals within ×1.6 of each other
+const GAIT_ROT_MAX_DPS = 140; // phone being turned/waved: no steps
+const GAIT_ROT_HOLD_MS = 450;
+const STEP_CONFIRM = 3; // regular steps before position moves
 
-  if (dynamicAcceleration > threshold) {
-    if (!motion.stepArmed && now - motion.lastStepTime > 280) {
-      motion.stepArmed = true;
-      motion.peakAcceleration = dynamicAcceleration;
-      motion.valleyAcceleration = 0;
-    } else if (motion.stepArmed && dynamicAcceleration > motion.peakAcceleration) {
-      motion.peakAcceleration = dynamicAcceleration;
+const gait = {
+  g: null, // low-passed gravity vector (device frame)
+  v: 0, // smoothed vertical linear acceleration
+  phase: "idle", // idle → up (peak seen) → candidate on valley
+  upAt: 0,
+  lastCandAt: 0,
+  lastDt: 0,
+  streak: 0, // regular candidates in a row
+  confirmed: false, // rhythm established: each candidate is a step
+  rotUntil: 0,
+  accepted: 0, // stats since the last fix (diagnostics)
+  rejected: 0,
+};
+
+function resetGaitStreak() {
+  gait.streak = 0;
+  gait.confirmed = false;
+  gait.lastDt = 0;
+}
+
+function detectGaitStep(event, now) {
+  const ag = event.accelerationIncludingGravity;
+  if (!ag || ag.x == null) return;
+  const a = [Number(ag.x) || 0, Number(ag.y) || 0, Number(ag.z) || 0];
+  if (!gait.g) gait.g = a.slice();
+  else for (let i = 0; i < 3; i++) gait.g[i] = 0.9 * gait.g[i] + 0.1 * a[i];
+  const gn = Math.hypot(gait.g[0], gait.g[1], gait.g[2]);
+  if (gn < 5) return; // free fall / junk
+
+  // linear acceleration: the browser's own if present, else minus our gravity estimate
+  const la = event.acceleration;
+  const lin = la && la.x != null
+    ? [Number(la.x) || 0, Number(la.y) || 0, Number(la.z) || 0]
+    : [a[0] - gait.g[0], a[1] - gait.g[1], a[2] - gait.g[2]];
+  const vert = (lin[0] * gait.g[0] + lin[1] * gait.g[1] + lin[2] * gait.g[2]) / gn;
+  gait.v = 0.7 * gait.v + 0.3 * vert;
+
+  // handling the phone (turning it to look, waving) — not walking
+  const rr = event.rotationRate;
+  if (rr) {
+    const rot = Math.hypot(Number(rr.alpha) || 0, Number(rr.beta) || 0, Number(rr.gamma) || 0);
+    if (rot > GAIT_ROT_MAX_DPS) {
+      if (gait.phase === "up") gait.rejected++;
+      gait.rotUntil = now + GAIT_ROT_HOLD_MS;
+      gait.phase = "idle";
+      resetGaitStreak();
+      return;
+    }
+  }
+  if (now < gait.rotUntil) return;
+
+  if (gait.phase === "idle") {
+    if (gait.v > GAIT_PEAK) {
+      gait.phase = "up";
+      gait.upAt = now;
     }
     return;
   }
+  // phase "up": wait for the matching dip
+  if (now - gait.upAt > GAIT_PEAK_WINDOW_MS) {
+    gait.phase = "idle"; // a lift without a drop — a jerk, not a step
+    gait.rejected++;
+    return;
+  }
+  if (gait.v > GAIT_VALLEY) return;
+  gait.phase = "idle";
+  onGaitCandidate(now);
+}
 
-  if (!motion.stepArmed) return;
-  motion.valleyAcceleration = Math.min(motion.valleyAcceleration, dynamicAcceleration);
-  if (dynamicAcceleration >= 0.1) return;
+function onGaitCandidate(now) {
+  const dt = gait.lastCandAt ? now - gait.lastCandAt : Infinity;
+  if (dt < GAIT_MIN_DT_MS) {
+    gait.rejected++;
+    return; // double bounce of the same step
+  }
+  gait.lastCandAt = now;
+  if (dt > GAIT_MAX_DT_MS) {
+    // first step after standing still — start a new streak
+    resetGaitStreak();
+    gait.streak = 1;
+    return;
+  }
+  if (gait.lastDt) {
+    const r = dt / gait.lastDt;
+    if (r > GAIT_RHYTHM_RATIO || r < 1 / GAIT_RHYTHM_RATIO) {
+      // irregular: shaking, not walking. Keep this one as a fresh start.
+      gait.rejected += gait.confirmed ? 1 : gait.streak;
+      resetGaitStreak();
+      gait.streak = 1;
+      gait.lastDt = dt;
+      return;
+    }
+  }
+  gait.lastDt = dt;
+  gait.streak++;
+  const stride = 0.7 * state.calibration.strideScaleFactor;
+  if (gait.confirmed) {
+    gait.accepted++;
+    advancePositionByStep(stride);
+  } else if (gait.streak >= STEP_CONFIRM) {
+    // rhythm established — credit the whole streak
+    gait.confirmed = true;
+    for (let i = 0; i < gait.streak; i++) advancePositionByStep(stride);
+    gait.accepted += gait.streak;
+  }
+}
 
-  motion.stepArmed = false;
-  motion.lastStepTime = now;
-  advancePositionByStep(0.7 * state.calibration.strideScaleFactor);
+/* ---------------- step counting between PnP fixes (turn-by-turn) ----------------
+ * No 6-DoF tracking without AR, so between fixes each detected step moves you ALONG the
+ * route (corridors are where people walk), direction from the gyro-carried heading (the
+ * compass is 20–90° off underground). Every PnP fix resets the position. */
+const STEP_ROUTE_MAX_OFF_M = 6; // further than this from the route: plain heading step
+const STEP_ALONG_DEG = 60; // within this of the route direction → forward along it
+const STEP_BACK_DEG = 120; // beyond this → backward along it (walking the wrong way)
+
+/** where (x, y) projects onto the polyline: { s: metres along, off: metres away, total } */
+function routeAlong(wps, x, y) {
+  let best = null;
+  let acc = 0;
+  for (let i = 0; i + 1 < wps.length; i++) {
+    const [ax, ay] = wps[i].map(Number);
+    const [bx, by] = wps[i + 1].map(Number);
+    const dx = bx - ax, dy = by - ay;
+    const L2 = dx * dx + dy * dy;
+    const L = Math.sqrt(L2);
+    const t = L2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / L2)) : 0;
+    const off = Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+    if (!best || off < best.off) best = { s: acc + t * L, off };
+    acc += L;
+  }
+  return best ? { ...best, total: acc } : null;
+}
+
+/** point + direction (compass deg) at s metres along the polyline */
+function routePointAt(wps, s) {
+  let left = Math.max(0, s);
+  for (let i = 0; i + 1 < wps.length; i++) {
+    const [ax, ay] = wps[i].map(Number);
+    const [bx, by] = wps[i + 1].map(Number);
+    const L = Math.hypot(bx - ax, by - ay);
+    if (L < 1e-6) continue;
+    if (left <= L || i + 2 === wps.length) {
+      const t = Math.min(1, left / L);
+      return { x: ax + (bx - ax) * t, y: ay + (by - ay) * t, dir: bearingTo(ax, ay, bx, by) };
+    }
+    left -= L;
+  }
+  const last = wps[wps.length - 1];
+  return { x: Number(last[0]), y: Number(last[1]), dir: null };
+}
+
+/** move one step along the route; false → caller does a plain heading step instead */
+function stepAlongRoute(stepLength, headingDeg) {
+  const wps = guideWaypoints();
+  if (!wps || wps.length < 2) return false;
+  const here = routeAlong(wps, state.position.x, state.position.y);
+  if (!here || here.off > STEP_ROUTE_MAX_OFF_M) return false;
+  const at = routePointAt(wps, here.s);
+  if (at.dir == null) return false;
+  const diff = Math.abs(normHeadingDelta(headingDeg, at.dir));
+  let ds;
+  if (diff <= STEP_ALONG_DEG) ds = stepLength * Math.cos((diff * Math.PI) / 180);
+  else if (diff >= STEP_BACK_DEG) ds = -stepLength * Math.abs(Math.cos((diff * Math.PI) / 180));
+  else return false; // walking across the corridor — not along the route
+  const to = routePointAt(wps, Math.max(0, Math.min(here.total, here.s + ds)));
+  state.position.x = to.x;
+  state.position.y = to.y;
+  return true;
 }
 
 function advancePositionByStep(stepLength) {
-  const heading = state.position.heading * Math.PI / 180;
-  state.position.x += stepLength * Math.sin(heading);
-  state.position.y += stepLength * Math.cos(heading);
+  // AR tracks itself; in the lift there are no meaningful steps
+  if (state.webXrActive || state.inFloorTransition) return;
+  const headingDeg = currentHeadingDeg();
+  if (!Number.isFinite(headingDeg)) return;
+  state.stepsSinceFix = (state.stepsSinceFix || 0) + 1;
+  const onRoute = !arMode() && stepAlongRoute(stepLength, headingDeg);
+  if (!onRoute) {
+    const h = (headingDeg * Math.PI) / 180;
+    state.position.x += stepLength * Math.sin(h);
+    state.position.y += stepLength * Math.cos(h);
+  }
+  state.position.heading = headingDeg;
   state.position.tracking = true;
   state.position.confidence = Math.max(0.08, state.position.confidence * 0.985);
-  setStatusChip("Tracking (PDR)", "live");
-  setStatusMsg("Live position from steps / VIO. Localize again to correct drift.");
+  if (!arMode()) {
+    setStatusChip("Turn-by-turn · steps", "live");
+    setStatusMsg(`Turn-by-turn · ${state.stepsSinceFix} step${state.stepsSinceFix === 1 ? "" : "s"} since the last camera fix`
+      + (onRoute ? " (along the route)" : ""));
+  } else {
+    setStatusChip("Tracking (PDR)", "live");
+    setStatusMsg("Live position from steps. Localize again to correct drift.");
+  }
   updateRouteStatus();
+}
+
+/**
+ * Step detection needs devicemotion. It used to start only with the (skipped) calibration
+ * screen, so steps were never counted. Start it with navigation instead. On iOS the
+ * permission prompt needs a user tap — call from the Start nav / mode-switch tap.
+ */
+let stepSensorsOn = false;
+async function ensureStepSensors() {
+  if (stepSensorsOn) return true;
+  try {
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+      const r = await DeviceMotionEvent.requestPermission();
+      if (r !== "granted") return false;
+    }
+  } catch (_) {
+    return false;
+  }
+  window.addEventListener("devicemotion", onDeviceMotion, true);
+  stepSensorsOn = true;
+  return true;
 }
 
 async function runCalibrationStep(stepKey) {
@@ -2527,7 +2955,10 @@ async function ensureCamera(forceReopen = false) {
 
   try {
     state.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
+      // without a size the browser opens 640x480: a lobby marker 3 m away is then ~30 px
+      // (under the 36 px minimum) and landmark PnP gets few ORB features vs the 1280x720
+      // mapping keyframes. 1280x720 → 720x1280 portrait frames (captureMaxDimension 1280).
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
     });
     ui.cameraView.srcObject = state.stream;
@@ -2729,7 +3160,7 @@ async function runXrAlignLoop(nav) {
 
     const inl = Number(pos.num_inliers) || 0;
     const conf = Number(pos.confidence) || 0;
-    const isPnp = String(pos.method || "").toLowerCase() === "pnp";
+    const isPnp = isPoseFix(pos.method);
     let reason = "";
     let vote = null;
     if (!isPnp) reason = "not_pnp";
@@ -2863,6 +3294,17 @@ async function captureVprPosition({ trigger = "manual", applyBlurGuard = false }
     form.append("prior_floor", String(priorFloor));
   }
   form.append("capture_trigger", String(trigger));
+  if (frame.frameSource === "getUserMedia") {
+    const K = intrinsicsForStreamFrame(frame.width, frame.height);
+    if (K) {
+      form.append("cam_fx", String(K.fx));
+      form.append("cam_fy", String(K.fy));
+      form.append("cam_cx", String(K.cx));
+      form.append("cam_cy", String(K.cy));
+      form.append("cam_width", String(K.width));
+      form.append("cam_height", String(K.height));
+    }
+  }
   if (state.inFloorTransition || state.awaitingLandingLock) form.append("cabin_check", "1");
   form.append("nav_mode", clientNavMode());
   for (const [key, value] of Object.entries(diagnostics)) form.append(key, String(value));
@@ -2907,6 +3349,7 @@ function clientNavMode() {
 function localizeMethodLabel(method) {
   const m = String(method || "").toLowerCase();
   if (m === "pnp") return "PnP";
+  if (m === "marker") return "Lobby marker";
   if (m.includes("vpr") || m === "image_vpr") return "Image VPR";
   return "Localize";
 }
@@ -2930,6 +3373,12 @@ function applyVprFix(pos) {
     confidence: pos.confidence,
     tracking: true,
   };
+  if (!arMode() && (gait.accepted || gait.rejected)) {
+    void logClientDiagnostic({ event: "step_stats", steps: gait.accepted, rejected: gait.rejected });
+  }
+  gait.accepted = 0;
+  gait.rejected = 0;
+  state.stepsSinceFix = 0;
   // AR start direction = this fix's heading + gyro turn since. Kept apart from
   // state.position, which /track (native ARCore VIO) and /position replies overwrite.
   state.headingFix = {
@@ -2951,8 +3400,17 @@ function applyVprFix(pos) {
   }
 
   const via = localizeMethodLabel(pos.method);
+  const isMarker = String(pos.method || "").toLowerCase() === "marker";
   const isPnp = String(pos.method || "").toLowerCase() === "pnp";
-  setStatusChip(isPnp ? "PnP fix" : "VPR fix", "live");
+  setStatusChip(isMarker ? `Marker ${pos.marker_id ?? ""}`.trim() : isPnp ? "PnP fix" : "VPR fix", "live");
+  if (isMarker) {
+    void logClientDiagnostic({
+      event: "marker_fix",
+      reason: `id=${pos.marker_id} floor=${pos.floor} x=${Number(pos.raw_x ?? pos.x).toFixed(2)} `
+        + `y=${Number(pos.raw_y ?? pos.y).toFixed(2)} heading=${Math.round(pos.heading)} conf=${Number(pos.confidence).toFixed(2)}`
+        + ` transition=${state.inFloorTransition}`,
+    });
+  }
   setStatusMsg(
     landed
       ? `Floor ${pos.floor} detected — continuing to your bay`
@@ -3019,15 +3477,15 @@ function applyVprFix(pos) {
       confidence: Number(pos.confidence) || 0,
     };
     state.awaitingLandingLock = false;
-    state.pendingXrResume = true;
+    state.pendingXrResume = arMode();
     // only reset walk clock on the first lock — later PnP must not block clear-of-lobby
     if (firstLock) {
       state.xrResumeReadyAt = performance.now() + RESUME_XR_SETTLE_MS;
       state.walkSinceLand = 0;
       state.xrResumeAttempts = 0;
-      setStatusMsg(
-        `${localizeMethodLabel(pos.method)} locked Floor ${pos.floor} — tap Start AR`,
-      );
+      setStatusMsg(arMode()
+        ? `${localizeMethodLabel(pos.method)} locked Floor ${pos.floor} — tap Start AR`
+        : `${localizeMethodLabel(pos.method)} locked Floor ${pos.floor} — follow the turn banner`);
       scheduleXrResumePoll();
     }
     if (state.inFloorTransition || landed) {
@@ -3037,6 +3495,96 @@ function applyVprFix(pos) {
   }
   maybeResumeXrAfterPnp(pos);
 }
+
+/* ---------------- one-time camera calibration (non-AR frames) ----------------
+ * Turn-by-turn and pre-AR frames come from getUserMedia, which reports no intrinsics, so the
+ * server guessed f = 0.85 × long side — ~10–15 % off on some phones, i.e. 0.5–0.7 m of
+ * distance error to a lobby marker 5–7 m away. Once per phone, a bare AR session gives the
+ * camera's real long-side field of view (ParkingWebXr.measureCameraFov); every getUserMedia
+ * frame then sends real intrinsics. Reset: open the app with ?camcal=reset. */
+const CAMCAL_KEY = "fmc_cam_fov_v1";
+let camCalTried = false; // one attempt per page load (no AR / user declined → keep the guess)
+
+function cameraFov() {
+  try {
+    const v = JSON.parse(localStorage.getItem(CAMCAL_KEY) || "null");
+    return v && v.fovLongDeg > 30 && v.fovLongDeg < 120 ? v : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** intrinsics for a w×h getUserMedia frame from the calibrated long-side FOV */
+function intrinsicsForStreamFrame(w, h) {
+  const cal = cameraFov();
+  if (!cal || !(w > 0) || !(h > 0)) return null;
+  const f = (Math.max(w, h) / 2) / Math.tan((cal.fovLongDeg * Math.PI) / 360);
+  return { fx: f, fy: f, cx: w / 2, cy: h / 2, width: w, height: h };
+}
+
+/** call straight from a tap: needs the user gesture for requestSession */
+async function ensureCameraCalibrated() {
+  if (cameraFov() || camCalTried || state.webXrActive || webXrNav) return;
+  const api = window.ParkingWebXr;
+  if (!api?.measureCameraFov || !navigator.xr) return;
+  camCalTried = true;
+  // the AR session needs the camera — release getUserMedia (sync: keeps user activation)
+  stopLiveVprCapture({ keepCamera: false });
+  state.stream?.getTracks?.().forEach((t) => {
+    try { t.stop(); } catch (_) { /* ignore */ }
+  });
+  state.stream = null;
+  try {
+    if (ui.cameraView) ui.cameraView.srcObject = null;
+  } catch (_) { /* ignore */ }
+  setStatusMsg("Calibrating camera (one time)…");
+  try {
+    const cal = await api.measureCameraFov();
+    try { localStorage.setItem(CAMCAL_KEY, JSON.stringify(cal)); } catch (_) { /* private mode */ }
+    void logClientDiagnostic({
+      event: "camera_calibrated",
+      reason: `fov_long=${cal.fovLongDeg.toFixed(2)} fov_short=${cal.fovShortDeg.toFixed(2)} `
+        + `portrait=${cal.portrait} f_at_1280=${(640 / Math.tan((cal.fovLongDeg * Math.PI) / 360)).toFixed(0)}px `
+        + `(guess ${(0.85 * 1280).toFixed(0)}px)`,
+    });
+    setStatusMsg(`Camera calibrated · ${cal.fovLongDeg.toFixed(1)}° field of view`);
+    paintRecalButton();
+  } catch (err) {
+    void logClientDiagnostic({ event: "camera_calibration_failed", reason: String(err?.message || err).slice(0, 120) });
+    setStatusMsg("Camera calibration skipped — using the default lens guess");
+  }
+  // let the AR session release the camera before getUserMedia reopens it
+  await new Promise((r) => setTimeout(r, 400));
+}
+
+try {
+  if (new URLSearchParams(location.search).get("camcal") === "reset") localStorage.removeItem(CAMCAL_KEY);
+} catch (_) { /* ignore */ }
+
+/** landing-page "Recalibrate camera": forget the stored lens and measure again (this tap
+ * is the user gesture the AR session needs). Falls back to the guess if AR isn't there. */
+function paintRecalButton() {
+  const b = document.getElementById("homeRecalBtn");
+  if (!b) return;
+  const cal = cameraFov();
+  b.classList.toggle("is-set", Boolean(cal));
+  b.title = cal
+    ? `Camera calibrated · ${cal.fovLongDeg.toFixed(1)}° field of view`
+    : "Not calibrated yet — happens on the first Localize";
+}
+
+document.getElementById("homeRecalBtn")?.addEventListener("click", async () => {
+  try { localStorage.removeItem(CAMCAL_KEY); } catch (_) { /* ignore */ }
+  camCalTried = false;
+  await ensureCameraCalibrated();
+  const cal = cameraFov();
+  const ar = (() => { try { return localStorage.getItem("ms_fmc_lang") === "ar"; } catch (_) { return false; } })();
+  window.ParkingHome?.toast?.(cal
+    ? (ar ? `تمت معايرة الكاميرا · ${cal.fovLongDeg.toFixed(1)}°` : `Camera calibrated · ${cal.fovLongDeg.toFixed(1)}° field of view`)
+    : (ar ? "المعايرة غير متاحة — سيتم استخدام القيمة الافتراضية" : "Calibration not available — using the default lens guess"));
+  paintRecalButton();
+});
+paintRecalButton();
 
 async function localizeParkingPosition() {
   if (SKIP_CALIBRATION) markCalibrationSkipped();
@@ -3051,7 +3599,9 @@ async function localizeParkingPosition() {
   state.liveVpr.requestInFlight = true;
   ui.localizeBtn.disabled = true;
   try {
-    const available = await ensureCamera();
+    // first Localize tap on this phone: measure the real lens once (brief AR flash)
+    await ensureCameraCalibrated();
+    const available = await ensureCamera(!state.stream);
     if (!available) return;
 
     const capture = await captureVprPosition({ trigger: "manual" });
@@ -3150,6 +3700,8 @@ function stopWebXrSession({ resumeCamera = false } = {}) {
 }
 
 function stopCameraNav() {
+  voice.navOn = false;
+  stopVoice();
   stopXrLiftWatch();
   stopXrHealthWatch();
   stopXrResumePoll();
@@ -3175,16 +3727,26 @@ function stopCameraNav() {
 
 /** camera + PnP/VPR guidance — no DOM chevrons (those are WebXR-only) */
 function startCameraNav() {
+  void ensureStepSensors();
   state.navActive = true;
   state.webXrActive = false;
   state.camOwner = "camera";
-  void logClientDiagnostic({ event: "nav_mode", nav_mode: "camera", reason: "floor_chevrons_pnp" });
+  void logClientDiagnostic({
+    event: "nav_mode",
+    nav_mode: "camera",
+    reason: arMode() ? "floor_chevrons_pnp" : "turn_by_turn",
+  });
   showFloorArrows(false);
   setRouteBtnMode("stop");
   const via = localizeMethodLabel(state.lastLocalizeMethod);
-  setStatusChip("Navigating", "live");
-  setStatusMsg(`Camera · ${via} + VIO/PDR — AR arrows when WebXR is on`);
-  setHint("Follow the turn banner — floor arrows appear in AR", true);
+  setStatusChip(arMode() ? "Navigating" : "Turn-by-turn", "live");
+  if (arMode()) {
+    setStatusMsg(`Camera · ${via} + VIO/PDR — AR arrows when WebXR is on`);
+    setHint("Follow the turn banner — floor arrows appear in AR", true);
+  } else {
+    setStatusMsg(`Turn-by-turn · ${via} 6-DoF fixes + motion between them`);
+    setHint("Hold the phone up so the camera sees pillars and signs — follow the banner", true);
+  }
   updateRouteProgress();
   startLiveVprCapture();
 }
@@ -3211,6 +3773,7 @@ function waitForParkingWebXr(timeoutMs = 4000) {
 }
 
 async function startWebXrNav(opts = {}) {
+  if (!arMode()) return false; // turn-by-turn mode: never start WebXR
   // no XR only while already in cabin / after XR died this floor
   if (state.inFloorTransition || liftHandoffBusy || state.xrResumeBlocked) return false;
 
@@ -3408,7 +3971,7 @@ async function startWebXrNav(opts = {}) {
           event: "xr_start_heading",
           nav_mode: "webxr",
           reason: info.applied
-            ? `applied fix=${r(info.fixHeading)}deg snapped=${r(info.fixSnapped)}deg `
+            ? `applied fix=${r(info.fixHeading)}deg ${info.exact ? "exact(marker, no snap)" : `snapped=${r(info.fixSnapped)}deg`} `
               + `turned_since=${r(info.turnedDeg)}deg `
               + `-> phone=${r(((info.fixSnapped ?? info.fixHeading) + info.turnedDeg + 360) % 360)}deg | ${ctx}`
             : `SKIPPED ${info.why} fix=${r(info.fixHeading)}deg | ${ctx}`,
@@ -3689,18 +4252,31 @@ async function runLiveVprCaptureLoop() {
           if (state.liveVpr.running) {
         if (!fix.tracking || fix.confidence <= 0) {
               if (maybeSeedLandingFromCabin(fix)) {
-                // promptStartArAfterLand released the camera — wait for the Start AR tap
-                state.liveVpr.requestInFlight = false;
-                state.liveVpr.running = false;
-                return;
+                if (arMode()) {
+                  // promptStartArAfterLand released the camera — wait for the Start AR tap
+                  state.liveVpr.requestInFlight = false;
+                  state.liveVpr.running = false;
+                  return;
+                }
+                // turn-by-turn: keep localizing from the camera on the new floor
               }
               if (!fix.cabin_floor) {
                 setStatusMsg(
                   state.inFloorTransition
-                    ? "Looking for Floor lock (PnP)…"
+                    ? (floorHasMarker(landingFloorId())
+                      ? "Looking for the lobby marker / Floor lock…"
+                      : "Looking for Floor lock (PnP)…")
                     : "VPR miss — continuing with VIO/PDR until next fix",
                 );
+                if (state.inFloorTransition && floorHasMarker(landingFloorId())) setHint(MARKER_HINT, true);
               }
+        } else if (String(fix.method || "").toLowerCase() === "marker"
+          && state.inFloorTransition && landingFloorId() && !sameFloor(fix.floor, landingFloorId())) {
+              // the lift stopped at another floor and its lobby marker is in view — not ours
+              setStatusMsg(`Lift stopped at Floor ${fix.floor} — stay in, your car is on Floor ${landingFloorId()}`);
+              void logClientDiagnostic({
+                event: "marker_other_floor", reason: `id=${fix.marker_id} floor=${fix.floor} want=${landingFloorId()}`,
+              });
         } else {
               const via = localizeMethodLabel(fix.method);
           applyVprFix(fix);
@@ -3898,6 +4474,11 @@ async function navigateToSlot() {
   }
 
   ui.routeBtn.disabled = true;
+  void ensureStepSensors(); // this tap is the user gesture iOS wants for motion access
+  // voice: this tap unlocks speech on iOS; speak from the first banner on
+  stopVoice();
+  voice.navOn = true;
+  voice.lastKey = "";
   try {
     await updateRouteForSlot(slotId);
 
@@ -3907,10 +4488,10 @@ async function navigateToSlot() {
     state.xrResumeBlocked = false;
 
     // XR stays available near the lift — only cabin handoff drops it
-    const xrOk = await startWebXrNav({ fresh: false });
+    const xrOk = arMode() ? await startWebXrNav({ fresh: false }) : false;
     if (xrOk) return;
 
-    setStatusMsg("WebXR unavailable — camera + live localize (no floor arrows)");
+    if (arMode()) setStatusMsg("WebXR unavailable — camera + live localize (no floor arrows)");
     const camOk = state.stream || await ensureCamera();
     if (!camOk) {
       setStatusMsg("Route ready, but camera is unavailable.");
@@ -4278,8 +4859,10 @@ ui.routeBtn.addEventListener("click", () => {
     setRouteBtnMode("start");
   });
 });
+ui.voiceBtn?.addEventListener("click", () => toggleVoice());
 ui.arriveDismissBtn?.addEventListener("click", () => {
   hideArrivalCelebration();
+  stopVoice();
   setHint("Tap Slot to navigate somewhere else", true);
 });
 ui.floorContinueBtn?.addEventListener("click", () => {
@@ -4303,6 +4886,7 @@ ui.slotInput.addEventListener("keydown", (event) => {
 
 window.addEventListener("load", async () => {
   await initSlots();
+  void loadMarkerFloors();
   await ensureFloorOrder();
   updateCalibrationReadiness();
   setWorkflowStep("destination");
@@ -4311,6 +4895,11 @@ window.addEventListener("load", async () => {
   }
   updateRouteStatus();
   setInterval(refreshCurrentPosition, 2000);
+  setVoiceOn(voice.on, { quiet: true });
+  try {
+    speechSynthesis?.getVoices?.();
+    speechSynthesis?.addEventListener?.("voiceschanged", () => { speechSynthesis.getVoices(); });
+  } catch (_) { /* ignore */ }
 });
 
 /** called from home.js after bay is chosen */

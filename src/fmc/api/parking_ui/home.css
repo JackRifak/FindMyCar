@@ -766,3 +766,30 @@ label.lbl {
     animation: none;
   }
 }
+
+/* navigation mode switch on the landing page (same buttons/handler as the nav screen) */
+.home-mode { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 4px 0 12px; flex-wrap: wrap; }
+.home-mode .lbl { margin: 0; }
+.home-mode-toggle.nav-mode-toggle {
+  background: var(--stone-2);
+  border: 1px solid var(--line);
+  backdrop-filter: none;
+}
+.home-mode-toggle .nav-mode-opt { color: var(--muted); font-size: 0.82rem; padding: 7px 12px; opacity: 1; }
+.home-mode-toggle .nav-mode-opt[aria-checked="true"] { background: var(--ol-900); color: var(--lime); }
+
+/* camera calibration: small text action under the navigation mode switch */
+.home-recal {
+  display: block;
+  margin: -4px 0 12px auto;
+  padding: 4px 2px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.home-recal.is-set::before { content: "✓ "; display: inline-block; margin-inline-end: 2px; text-decoration: none; }

@@ -74,8 +74,11 @@
     <button type="button" class="mode-btn" data-mode="capture_locations">
       <span class="mode-num">4</span><span class="mode-txt">Locations</span>
     </button>
+    <button type="button" class="mode-btn" data-mode="markers">
+      <span class="mode-num">5</span><span class="mode-txt">Markers</span>
+    </button>
     <button type="button" class="mode-btn" data-mode="query">
-      <span class="mode-num">5</span><span class="mode-txt">Test</span>
+      <span class="mode-num">6</span><span class="mode-txt">Test</span>
     </button>
   </div>
   <div class="modebar-right">
@@ -120,6 +123,7 @@
         <label class="toggle"><input type="checkbox" id="toggleLocations" checked><span>Capture locations</span></label>
         <label class="toggle"><input type="checkbox" id="toggleSegments" checked><span>Walkable paths</span></label>
         <label class="toggle"><input type="checkbox" id="toggleSlots" checked><span>Parking slots</span></label>
+        <label class="toggle"><input type="checkbox" id="toggleMarkers" checked><span>Lobby markers</span></label>
       </div>
       <h3 class="panel-sub">Selected point</h3>
       <div id="probeCoords" class="probe-coords">
@@ -214,8 +218,23 @@
       </div>
     </section>
 
+    <section id="panel-markers" class="panel" style="display:none">
+      <p class="panel-kicker">Step 5 · Markers</p>
+      <h3>Lift-lobby markers</h3>
+      <p class="hint">One printed ArUco marker per lift lobby lets the phone fix its exact position, direction and floor as soon as it steps out of the lift. Click the point on the wall where the marker hangs, then click a second point <em>in front of it, into the lobby</em> to set the way it faces. Drag nothing — edit numbers below if needed.</p>
+      <ul class="hint marker-howto">
+        <li>Print with <b>Print</b> at <b>100&nbsp;%</b> (no “fit to page”) on matte A3, then measure the black square and enter it as Size.</li>
+        <li>Hang it flat on the wall, centre about 1.4&nbsp;m high, facing the lift doors, well lit, not behind glass.</li>
+        <li>Every marker ID must be unique across all floors.</li>
+      </ul>
+      <div id="markersList" class="list-stack"></div>
+      <div class="action-row sticky-actions">
+        <button type="button" id="saveMarkersBtn" class="btn-accent">Save markers</button>
+      </div>
+    </section>
+
     <section id="panel-query" class="panel" style="display:none">
-      <p class="panel-kicker">Step 5 · Test</p>
+      <p class="panel-kicker">Step 6 · Test</p>
       <h3>Localize a photo</h3>
       <p class="hint">Upload a query image to see where VPR places it on this floor.</p>
       <label class="file-label btn-secondary">Choose image

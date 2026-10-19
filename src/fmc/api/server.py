@@ -83,11 +83,47 @@ _sessions: dict[str, PositionFuser] = {}
 logger.info(f"Server initialized for site={_SITE_ID} (log_level={LOG_LEVEL})")
 
 
+_vpr_pipeline_lock = threading.Lock()
+
+
 def _get_vpr_pipeline() -> VPRPipeline:
     global _vpr_pipeline
     if _vpr_pipeline is None:
-        _vpr_pipeline = VPRPipeline(_site)
+        # locked: a /localize during the startup warm-up waits for it, no second load
+        with _vpr_pipeline_lock:
+            if _vpr_pipeline is None:
+                _vpr_pipeline = VPRPipeline(_site)
     return _vpr_pipeline
+
+
+def _warm_maps(reason: str, editor: bool = True) -> None:
+    """Load the 3D map (all floors) in the background: parking API first, then the
+    floor-plan editor's pipeline. Sequential on purpose — parallel H2GIS loads contend."""
+    t0 = time.perf_counter()
+    try:
+        floors = _get_vpr_pipeline().warm()
+        logger.info(
+            f"[Warm] {reason}: parking API map ready for floors {floors} "
+            f"in {time.perf_counter() - t0:.1f}s"
+        )
+    except Exception as e:
+        logger.warning(f"[Warm] {reason}: parking API map warm-up failed: {e}")
+        return
+    if not editor:
+        return
+    t1 = time.perf_counter()
+    try:
+        from fmc.webtools.server import _pipeline_for
+        _pipeline_for(_site).warm()
+        logger.info(f"[Warm] {reason}: floor-plan editor map ready in {time.perf_counter() - t1:.1f}s")
+    except Exception as e:
+        logger.warning(f"[Warm] {reason}: floor-plan editor warm-up failed: {e}")
+
+
+def _start_warm(reason: str, editor: bool = True) -> None:
+    if os.environ.get("FMC_PREWARM", "1") in ("0", "false", "no"):
+        return
+    threading.Thread(target=_warm_maps, args=(reason, editor), name="fmc-map-warm", daemon=True).start()
 
 def _default_floor() -> str:
     ids = _site.floor_ids()
@@ -142,6 +178,84 @@ class PositionResponse(BaseModel):
     # lift-lobby colour check (only when the client asked for it)
     cabin_floor: str | None = None
     cabin_score: float | None = None
+    # lift-lobby ArUco marker that gave this fix (method == "marker")
+    marker_id: int | None = None
+
+
+@app.get("/markers")
+def list_markers():
+    """Registered lobby markers — the parking app asks the user to point at them after a lift."""
+    from fmc.vpr import aruco_markers
+
+    markers, dictionary = aruco_markers.current_markers(_site)
+    return {
+        "dictionary": dictionary,
+        "markers": [
+            {"marker_id": m.marker_id, "floor": m.floor, "x": m.x, "y": m.y,
+             "facing_deg": m.facing_deg, "size_m": m.size_m}
+            for m in markers
+        ],
+    }
+
+
+def _marker_result(frame, intr, device_id: str):
+    """ArUco lobby marker in the frame → (VPRResult, MarkerFix) or (None, None). Milliseconds;
+    runs before landmark PnP, which can't lock on the bare lobby walls anyway."""
+    from fmc.dataset.schema import CameraInfo, ReferenceImage
+    from fmc.vpr import aruco_markers
+    from fmc.vpr.camera_intrinsics import camera_matrix
+    from fmc.vpr.pipeline import VPRResult
+    from fmc.vpr.pnp_localizer import Pose6Dof
+
+    markers, dictionary = aruco_markers.current_markers(_site)
+    if not markers:
+        return None, None
+    h, w = frame.shape[:2]
+    t0 = time.perf_counter()
+    fix, why = aruco_markers.detect(frame, _site, camera_matrix(w, h, intr), markers, dictionary)
+    ms = (time.perf_counter() - t0) * 1000
+    if fix is None:
+        if why != "none_seen":
+            logger.info(f"[{device_id}] MARKER rejected ({why}) {ms:.0f}ms K={'real' if intr else 'guess'}")
+        return None, None
+    # calibrated phone: what the old lens guess would have said (tape-measure comparisons)
+    guess_note = ""
+    if intr is not None:
+        g_fix, _ = aruco_markers.detect(frame, _site, camera_matrix(w, h, None), markers, dictionary)
+        guess_note = (
+            f" | f={intr.fx * w / intr.width:.0f}px vs guess {0.85 * max(w, h):.0f}px"
+            + (f" → guess dist={g_fix.distance_m:.2f}m pos=({g_fix.x:.2f}, {g_fix.y:.2f})" if g_fix else "")
+        )
+    logger.info(
+        f"[{device_id}] MARKER {fix.marker_id} floor={fix.floor} pos=({fix.x:.2f}, {fix.y:.2f}) "
+        f"h={fix.z:.2f}m heading={fix.heading:.0f}° dist={fix.distance_m:.1f}m "
+        f"angle={fix.view_angle_deg:.0f}° size={fix.side_px:.0f}px reproj={fix.reproj_px:.2f}px "
+        f"conf={fix.confidence:.2f}{' updown-flip-resolved' if fix.ambiguous else ''} "
+        f"K={'real' if intr else 'guess'} {ms:.0f}ms{guess_note}"
+    )
+    pose = Pose6Dof(
+        x=fix.x, y=fix.y, z=fix.z, heading=fix.heading, rvec=fix.rvec, tvec=fix.tvec,
+        num_matches=4, num_inliers=4, inlier_ratio=1.0, confidence=fix.confidence,
+        floor=fix.floor,
+    )
+    from datetime import datetime, timezone
+
+    record = ReferenceImage(
+        image_id=f"marker_{fix.marker_id}",
+        floor=fix.floor,
+        zone=f"floor:{fix.floor}",
+        x=fix.x,
+        y=fix.y,
+        orientation=int(round(fix.heading)) % 360,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        camera_information=CameraInfo(),
+        processed_path="",
+        location_id="marker",
+    )
+    return VPRResult(
+        matched=True, record=record, similarity=fix.confidence, inlier_ratio=1.0,
+        candidates=[], pose_6dof=pose, method="marker",
+    ), fix
 
 
 @app.get("/diagnostics/locations")
@@ -265,11 +379,14 @@ async def localize(
         logger.info(
             f"[{device_id}] CABIN colour floor={cabin.floor or '-'} score={cabin.score:.2f} "
             f"margin={cabin.margin:.2f} coloured={cabin.colour_frac:.0%} "
+            f"{'strong ' if cabin.strong else ''}{cabin.reason} "
             f"(prior={floor_prior}, refs={sorted(refs)})"
         )
         if cabin.floor is not None:
             floor_prior = normalize_floor_id(cabin.floor)
-            restrict_floor = True
+            # weak colour = prior only: hard-restricting PnP to a wrong colour floor (lift
+            # interior read as B1) made every frame on the real floor fail until it cleared
+            restrict_floor = cabin.strong
     intr = parse_intrinsics(cam_fx, cam_fy, cam_cx, cam_cy, cam_width, cam_height)
     if intr is not None:
         logger.info(
@@ -277,9 +394,11 @@ async def localize(
             f"for {intr.width}x{intr.height} (guess would be f={max(w, h) * 0.85:.0f})"
         )
     t_vpr0 = time.perf_counter()
-    result = pipeline.localize(
-        frame, prior_floor=floor_prior, restrict_floor=restrict_floor, intrinsics=intr,
-    )
+    result, marker_fix = _marker_result(frame, intr, device_id)
+    if result is None:
+        result = pipeline.localize(
+            frame, prior_floor=floor_prior, restrict_floor=restrict_floor, intrinsics=intr,
+        )
     t_vpr_ms = (time.perf_counter() - t_vpr0) * 1000
     if cap_trigger == "xr_align":
         _keep_xr_align_frame(frame, result, intr is not None)
@@ -400,7 +519,7 @@ async def localize(
 
     rec_id = result.record.image_id if result.record else "unknown"
     loc_method = result.method or "unknown"
-    loc_kind = "pnp" if str(loc_method).lower() == "pnp" else "vpr"
+    loc_kind = str(loc_method).lower() if str(loc_method).lower() in ("pnp", "marker") else "vpr"
     logger.info(
         f"[{device_id}] LOCALIZE MATCH loc={loc_kind} method={loc_method} photo={rec_id} (floor={fused.floor}) | "
         f"frame_source={frame_src} nav_mode={nav} | "
@@ -429,6 +548,7 @@ async def localize(
         raw_heading=float(pose.heading if pose else fused.heading),
         cabin_floor=cabin.floor if cabin else None,
         cabin_score=round(cabin.score, 3) if cabin else None,
+        marker_id=marker_fix.marker_id if marker_fix else None,
     )
 
 
@@ -470,9 +590,12 @@ def get_cabin_colours():
         info = {k: v for k, v in ref.items() if k != "hist"}
         # nearest other floor — the mapping UI warns when two lobbies look alike
         others = [
-            (cabin_colour.similarity(ref["hist"], o["hist"]), of)
-            for of, o in refs.items() if of != f
+            (cabin_colour.ref_similarity(ref, o), of)
+            for of, o in refs.items() if of != f and of != cabin_colour.CABIN_KEY
         ]
+        info["needs_rescan"] = not ref.get("sat_hist")  # hue-only (pre-saturation) reference
+        if f == cabin_colour.CABIN_KEY:
+            others = []
         if others:
             sim, of = max(others)
             info["closest_floor"] = of
@@ -1407,6 +1530,9 @@ def map_finalize():
         # hot-reload PnP index so /localize can use the new 3D map immediately
         try:
             _get_vpr_pipeline().reload_map_index()
+            # reload clears the per-floor indexes — load them again now, not on the next fix
+            # (the editor notices the new map files itself and rebuilds on its next query)
+            _start_warm("after finalize", editor=False)
         except Exception as e:
             logger.warning("[API /map/finalize] Could not reload PnP map index: %s", e)
         logger.info(
@@ -1622,6 +1748,14 @@ def mapping_redirect():
 # ---------------------------------------------------------------- static test client
 # Mount the more specific app folders before the root catch-all so they are
 # not shadowed by the general static site at "/".
+@app.on_event("startup")
+def _prewarm_on_startup() -> None:
+    """Load the 3D map when the server starts, in the background — the server accepts
+    requests immediately; a /localize that arrives first just waits for the load.
+    Disable with FMC_PREWARM=0."""
+    _start_warm("server start")
+
+
 app.mount("/parking-ui", StaticFiles(directory=str(PARKING_UI_DIR), html=True), name="parking_ui")
 app.mount("/parking", StaticFiles(directory=str(PARKING_UI_DIR), html=True), name="parking_ui_alt")
 

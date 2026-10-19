@@ -18,6 +18,11 @@
       bayLabel: "Parking bay / slot ID",
       ph: "e.g. 87-04C or B045",
       start: "Start AR Guidance",
+      startTbt: "Start Guidance",
+      modeLabel: "Navigation mode",
+      modeAr: "AR arrows",
+      modeTbt: "Turn-by-turn",
+      recal: "Recalibrate camera",
       hint1: "Your camera opens and arrows on the floor guide you to your car.",
       hint2: "Allow camera and motion access when asked.",
       f1: "Scan or type",
@@ -27,6 +32,7 @@
       slots: "Available slots",
       invalid: "Enter a valid slot ID, for example 87-04C.",
       detected: "Bay {{bay}} detected. Starting AR guidance…",
+      detectedTbt: "Bay {{bay}} detected. Starting guidance…",
       langToggle: "عربي",
       altTitle: "اعثر على سيارتك",
     },
@@ -39,6 +45,11 @@
       bayLabel: "رقم الموقف / المعرف",
       ph: "مثال: 87-04C أو B045",
       start: "ابدأ الإرشاد بالواقع المعزز",
+      startTbt: "ابدأ الإرشاد",
+      modeLabel: "وضع الإرشاد",
+      modeAr: "أسهم الواقع المعزز",
+      modeTbt: "خطوة بخطوة",
+      recal: "إعادة معايرة الكاميرا",
       hint1: "تفتح الكاميرا وتظهر أسهم على الأرض ترشدك إلى سيارتك.",
       hint2: "اسمح بالوصول إلى الكاميرا والحركة عند الطلب.",
       f1: "امسح أو اكتب",
@@ -48,6 +59,7 @@
       slots: "المواقف المتاحة",
       invalid: "أدخل رقم موقف صالح، مثل 87-04C.",
       detected: "تم اكتشاف الموقف {{bay}}. جارٍ بدء الإرشاد…",
+      detectedTbt: "تم اكتشاف الموقف {{bay}}. جارٍ بدء الإرشاد…",
       langToggle: "English",
       altTitle: "Find My Car",
     },
@@ -150,7 +162,16 @@
     if (el.or) el.or.textContent = t("or");
     if (el.bayLabel) el.bayLabel.textContent = t("bayLabel");
     if (el.bayInput) el.bayInput.placeholder = t("ph");
-    if (el.startLabel) el.startLabel.textContent = t("start");
+    const tbt = (() => { try { return localStorage.getItem("fmc_nav_mode") === "tbt"; } catch (_) { return false; } })();
+    if (el.startLabel) el.startLabel.textContent = t(tbt ? "startTbt" : "start");
+    const modeLabel = document.getElementById("homeModeLabel");
+    if (modeLabel) modeLabel.textContent = t("modeLabel");
+    const mAr = document.getElementById("homeModeAr");
+    const mTbt = document.getElementById("homeModeTbt");
+    if (mAr) mAr.textContent = t("modeAr");
+    if (mTbt) mTbt.textContent = t("modeTbt");
+    const recal = document.getElementById("homeRecalBtn");
+    if (recal) recal.textContent = t("recal");
     if (el.recentTitle) el.recentTitle.textContent = t("recent");
     if (el.slotsTitle) el.slotsTitle.textContent = t("slots");
     if (el.powered) el.powered.textContent = t("powered");
@@ -266,7 +287,8 @@
       const v = normalizeBay(params.get(k) || "");
       if (v && validBay(v)) {
         if (el.bayInput) el.bayInput.value = v;
-        toast(t("detected", { bay: v }));
+        const tbtNow = (() => { try { return localStorage.getItem("fmc_nav_mode") === "tbt"; } catch (_) { return false; } })();
+        toast(t(tbtNow ? "detectedTbt" : "detected", { bay: v }));
         syncStart();
         break;
       }
@@ -275,6 +297,7 @@
 
   // expose for app.js / scan
   window.ParkingHome = {
+    repaint: paintI18n, // app.js calls this when the navigation mode changes
     go,
     showHome,
     toast,

@@ -21,13 +21,15 @@ const state = {
   segments: [],        // {px1,py1,px2,py2}
   pendingSegmentPt: null,
   slots: [],           // {px,py,slot_id,zone}
+  markers: [],         // {px,py,marker_id,facing_deg,height_m,size_m} — lift-lobby ArUco
+  pendingMarkerFacing: null, // index of the marker waiting for its "faces toward" click
   ingestedLocations: [],
   hasTransform: false,
   transform: null,            // {a,b,c,d,tx,ty} from transform.json
   probe: null,                // {px, py, x, y} selected point in facility metres
   queryResult: null,
   routeResult: null,
-  overlays: { locations: true, segments: true, slots: true },
+  overlays: { locations: true, segments: true, slots: true, markers: true },
   captureLocations: [],       // [{location_id, zone, floor, x, y, px, py, photo_count}]
   selectedLocationId: null,
   selectedLocationPhotos: [], // [{image_id, heading_degrees, photo_url, direction_px}]
@@ -289,6 +291,7 @@ const MODE_HINTS = {
   slots: "Click each parking bay, then set ID / zone",
   capture_locations: "Click empty space for a new location, or a marker to edit",
   query: "Upload a photo to test localization on this floor",
+  markers: "Click where a marker hangs on the wall, then a point in front of it (into the lobby)",
 };
 
 function updateModeContext() {
@@ -355,6 +358,44 @@ function pixelToWorld(px, py) {
     x: t.a * px + t.b * py + t.tx,
     y: t.c * px + t.d * py + t.ty,
   };
+}
+
+/** facility metres → floor-plan pixels (inverse of pixelToWorld) */
+function worldToPixel(x, y) {
+  const t = state.transform;
+  if (!t) return null;
+  const det = t.a * t.d - t.b * t.c;
+  if (!det) return null;
+  const dx = x - t.tx, dy = y - t.ty;
+  return { px: (t.d * dx - t.b * dy) / det, py: (-t.c * dx + t.a * dy) / det };
+}
+
+/** compass direction (0 = +y, 90 = +x) from pixel a to pixel b, in facility coords */
+function facingFromPixels(a, b) {
+  const wa = pixelToWorld(a.px, a.py);
+  const wb = pixelToWorld(b.px, b.py);
+  if (!wa || !wb) return null;
+  return ((Math.atan2(wb.x - wa.x, wb.y - wa.y) * 180) / Math.PI + 360) % 360;
+}
+
+function drawMarkers(highlight) {
+  state.markers.forEach((m, i) => {
+    const s = imageToScreen(m.px, m.py);
+    const col = highlight ? (state.pendingMarkerFacing === i ? "#ffd166" : "#00e5ff") : "#00b8d4";
+    drawSquare(s.x, s.y, col, 8);
+    drawSquare(s.x, s.y, "#000", 4);
+    if (Number.isFinite(m.facing_deg)) {
+      const w = pixelToWorld(m.px, m.py);
+      const f = (m.facing_deg * Math.PI) / 180;
+      const tip = w ? worldToPixel(w.x + 2 * Math.sin(f), w.y + 2 * Math.cos(f)) : null;
+      if (tip) {
+        const e = imageToScreen(tip.px, tip.py);
+        drawLine(s, e, col, 2);
+        drawDot(e.x, e.y, col, 3);
+      }
+    }
+    drawLabel(s.x + 10, s.y - 10, `M${m.marker_id ?? "?"}`, col);
+  });
 }
 
 function setProbe(px, py) {
@@ -513,6 +554,8 @@ function draw() {
     }
   }
 
+  if (state.overlays.markers || state.mode === "markers") drawMarkers(state.mode === "markers");
+
   // In-progress editing state, drawn per mode
   if (state.mode === "control_points") {
     state.controlPoints.forEach((cp, i) => {
@@ -538,11 +581,17 @@ function draw() {
     const s = imageToScreen(state.queryResult.px, state.queryResult.py);
     drawStar(s.x, s.y, "#ff00ff", 10);
   }
-  // Route
-  if (state.routeResult && state.routeResult.waypoints_px) {
-    const pts = state.routeResult.waypoints_px.map(([x, y]) => imageToScreen(x, y));
-    for (let i = 0; i < pts.length - 1; i++) drawLine(pts[i], pts[i + 1], "#ff00ff", 3);
-    pts.forEach((p) => drawDot(p.x, p.y, "#ff00ff", 4));
+  // Route — only the walk legs on the floor being viewed (a cross-floor route has others)
+  if (state.routeResult) {
+    const legs = state.routeResult.legs?.length
+      ? state.routeResult.legs.filter((l) => !l.floor_transition && l.waypoints_px
+        && String(l.floor) === String(state.floor))
+      : (state.routeResult.waypoints_px ? [{ waypoints_px: state.routeResult.waypoints_px }] : []);
+    for (const leg of legs) {
+      const pts = leg.waypoints_px.map(([x, y]) => imageToScreen(x, y));
+      for (let i = 0; i < pts.length - 1; i++) drawLine(pts[i], pts[i + 1], "#ff00ff", 3);
+      pts.forEach((p) => drawDot(p.x, p.y, "#ff00ff", 4));
+    }
   }
 
   // Capture locations mode: all locations as markers, selected one gets
@@ -878,9 +927,100 @@ function handleClick(px, py) {
     renderSlotsPanel();
   } else if (state.mode === "capture_locations") {
     handleCaptureLocationClick(px, py);
+  } else if (state.mode === "markers") {
+    handleMarkerClick(px, py);
   }
   draw();
 }
+
+function nextMarkerId() {
+  const used = new Set(state.markers.map((m) => Number(m.marker_id)));
+  for (const id of state.otherFloorMarkerIds || []) used.add(Number(id));
+  for (let i = 1; i < 50; i++) if (!used.has(i)) return i;
+  return 0;
+}
+
+function handleMarkerClick(px, py) {
+  if (!state.transform) { setStatus("Fit & save the calibration first", true); return; }
+  if (state.pendingMarkerFacing != null) {
+    const m = state.markers[state.pendingMarkerFacing];
+    const f = m ? facingFromPixels(m, { px, py }) : null;
+    if (m && f != null) m.facing_deg = Math.round(f);
+    state.pendingMarkerFacing = null;
+    setStatus("Marker placed — set its size after printing, then Save markers");
+  } else {
+    state.markers.push({ px, py, marker_id: nextMarkerId(), facing_deg: null, height_m: 1.4, size_m: 0.23 });
+    state.pendingMarkerFacing = state.markers.length - 1;
+    setStatus("Now click a point in front of the marker (into the lobby)");
+  }
+  renderMarkersPanel();
+}
+
+function renderMarkersPanel() {
+  const el = document.getElementById("markersList");
+  if (!el) return;
+  el.innerHTML = "";
+  state.markers.forEach((m, i) => {
+    const row = document.createElement("div");
+    row.className = "list-item marker-row";
+    const label = encodeURIComponent(`floor ${state.floor} lift lobby`);
+    const printUrl = url(`/api/sites/${state.siteId}/markers/${m.marker_id}.svg?size_m=${m.size_m}&label=${label}`);
+    row.innerHTML = `
+      <strong>M${m.marker_id}</strong>
+      <div class="marker-fields">
+        <label>ID <input type="number" min="0" max="49" step="1" value="${m.marker_id}" data-i="${i}" data-f="marker_id"></label>
+        <label>Faces° <input type="number" min="0" max="359" step="1" value="${m.facing_deg ?? ""}" data-i="${i}" data-f="facing_deg"></label>
+        <label>Height m <input type="number" min="0.3" max="3" step="0.01" value="${m.height_m}" data-i="${i}" data-f="height_m"></label>
+        <label>Size m <input type="number" min="0.05" max="1" step="0.001" value="${m.size_m}" data-i="${i}" data-f="size_m"></label>
+        ${state.pendingMarkerFacing === i ? '<span class="marker-pending">click where it faces…</span>' : ""}
+        <button type="button" class="btn-secondary" data-act="face" data-i="${i}" title="Click again where it faces">Re-aim</button>
+        <a class="btn-secondary" href="${printUrl}" target="_blank" rel="noopener">Print</a>
+        <button class="del-btn" data-i="${i}">×</button>
+      </div>`;
+    el.appendChild(row);
+  });
+  el.querySelectorAll("input").forEach((inp) => {
+    inp.addEventListener("change", (e) => {
+      const i = +e.target.dataset.i, f = e.target.dataset.f;
+      const v = Number(e.target.value);
+      state.markers[i][f] = f === "marker_id" ? Math.round(v) : v;
+      renderMarkersPanel();
+      draw();
+    });
+  });
+  el.querySelectorAll('[data-act="face"]').forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      state.pendingMarkerFacing = +e.target.dataset.i;
+      setStatus("Click a point in front of the marker (into the lobby)");
+      renderMarkersPanel();
+      draw();
+    });
+  });
+  el.querySelectorAll(".del-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      state.markers.splice(+e.target.dataset.i, 1);
+      state.pendingMarkerFacing = null;
+      renderMarkersPanel();
+      draw();
+    });
+  });
+}
+
+document.getElementById("saveMarkersBtn")?.addEventListener("click", async () => {
+  const missing = state.markers.filter((m) => !Number.isFinite(m.facing_deg));
+  if (missing.length) { setStatus(`Set the facing direction of M${missing[0].marker_id} first`, true); return; }
+  try {
+    const payload = state.markers.map((m) => ({
+      px: m.px, py: m.py, marker_id: Number(m.marker_id), facing_deg: Number(m.facing_deg),
+      height_m: Number(m.height_m), size_m: Number(m.size_m),
+    }));
+    await api("PUT", `/api/sites/${state.siteId}/floors/${encodeURIComponent(state.floor)}/markers`, payload);
+    setStatus(`Markers saved (${payload.length})`);
+    await loadGeometry();
+    draw();
+  } catch (e) { setStatus(e.message, true); }
+});
+document.getElementById("toggleMarkers")?.addEventListener("change", (e) => { state.overlays.markers = e.target.checked; draw(); });
 
 // ---------------------------------------------------------------- mode switching
 
@@ -890,6 +1030,7 @@ document.querySelectorAll(".mode-btn").forEach((btn) => {
     btn.classList.add("active");
     state.mode = btn.dataset.mode;
     state.pendingSegmentPt = null;
+    state.pendingMarkerFacing = null;
     state.selectedSegment = null;
     state.endDrag = null;
     state.pendingNewLocationPoint = null;
@@ -1087,6 +1228,8 @@ async function selectFloor(floor) {
   state.controlPoints = [];
   state.segments = [];
   state.slots = [];
+  state.markers = [];
+  state.pendingMarkerFacing = null;
   state.savedSegments = [];
   state.savedSlots = [];
   state.pendingSegmentPt = null;
@@ -1283,14 +1426,24 @@ async function loadGeometry() {
         slot_id: s.slot_id || "",
         zone: s.zone || "",
       }));
+    state.markers = (geo.markers || [])
+      .filter((m) => m.px != null && m.py != null)
+      .map((m) => ({
+        px: m.px, py: m.py, marker_id: Number(m.marker_id), facing_deg: Number(m.facing_deg),
+        height_m: Number(m.height_m ?? 1.4), size_m: Number(m.size_m ?? 0.23),
+      }));
+    state.otherFloorMarkerIds = geo.other_floor_marker_ids || [];
+    state.pendingMarkerFacing = null;
   } catch (e) {
     state.savedSegments = [];
     state.savedSlots = [];
     state.segments = [];
     state.slots = [];
+    state.markers = [];
   }
   renderSegmentsPanel();
   renderSlotsPanel();
+  renderMarkersPanel();
 }
 
 document.getElementById("saveSegmentsBtn").addEventListener("click", async () => {
@@ -1560,10 +1713,13 @@ document.getElementById("runQueryBtn").addEventListener("click", async () => {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `HTTP ${res.status}`);
     const result = await res.json();
     state.queryResult = result;
-    const size = result.query_size
+    const size = (result.query_size
       ? `\nimage ${result.source_size.join("x")}`
         + (result.source_size[0] !== result.query_size[0] ? ` → ${result.query_size.join("x")}` : "")
-      : "";
+      : "")
+      + (result.focal_px ? `\nfocal ${Math.round(result.focal_px)} px (${result.focal_source})`
+        + (result.focal_tries > 1 ? ` · ${result.focal_tries} tries` : "") : "")
+      + (result.elapsed_ms != null ? `\n${(result.elapsed_ms / 1000).toFixed(1)} s` : "");
     if (result.matched) {
       const inl = result.num_inliers != null ? `\ninliers=${result.num_inliers}/${result.num_matches}` : "";
       el.textContent = `Matched via ${(result.method || "vpr").toUpperCase()}\nfloor=${result.floor}`
@@ -1603,9 +1759,18 @@ document.getElementById("runRouteBtn").addEventListener("click", async () => {
       start_x: state.queryResult.x,
       start_y: state.queryResult.y,
       slot_id: slotId,
+      heading: Number.isFinite(state.queryResult.heading) ? state.queryResult.heading : null,
     });
     state.routeResult = result;
-    document.getElementById("routeResult").textContent = `Route to ${slotId}: ${result.total_distance.toFixed(1)}m, ${result.waypoints.length} waypoints`;
+    const walk = (result.legs || []).filter((l) => !l.floor_transition);
+    const lifts = (result.legs || []).filter((l) => l.floor_transition);
+    document.getElementById("routeResult").textContent =
+      `Route to ${slotId}: ${result.total_distance.toFixed(1)} m · ${walk.length} walk leg(s)`
+      + (lifts.length ? ` · ${lifts.map((l) => l.instruction || "lift").join(", ")}` : "")
+      + (result.dest_floor && String(result.dest_floor) !== String(result.floor)
+        ? `\nFloor ${result.floor} → ${result.dest_floor} — switch floors to see each part` : "")
+      + `\nstart: lane ${result.lane_mode}`
+      + (result.start?.moved_m > 0.05 ? ` · moved ${result.start.moved_m} m into the corridor` : " · inside the corridor band");
     draw();
   } catch (e) { setStatus(e.message, true); }
 });

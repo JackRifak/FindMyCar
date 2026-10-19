@@ -7,6 +7,7 @@ Flow:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -58,6 +59,9 @@ class VPRPipeline:
         self.index = VectorIndex.load(site)
         self.map_index = load_map_index(site)
         self._floor_indexes: dict[int, object] = {}
+        # one loader per floor at a time: a request arriving while warm() is loading B1
+        # waits for that load instead of starting a second one (H2GIS lock contention)
+        self._floor_lock = threading.Lock()
         n_map = 0 if self.map_index is None else len(self.map_index.positions)
         logger.info(
             f"VPRPipeline initialized with {len(self.index.ids)} index records, "
@@ -67,7 +71,10 @@ class VPRPipeline:
     def reload_map_index(self) -> None:
         """Reload H2GIS / NPZ map index after a new mapping finalize."""
         self.map_index = load_map_index(self.site)
-        self._floor_indexes: dict[int, object] = {}
+        lock = getattr(self, "_floor_lock", None) or threading.Lock()
+        self._floor_lock = lock
+        with lock:
+            self._floor_indexes: dict[int, object] = {}
         n = 0 if self.map_index is None else len(self.map_index.positions)
         logger.info("[VPR] Reloaded 3D map index (%s landmarks)", n)
 
@@ -80,9 +87,24 @@ class VPRPipeline:
             cache = self._floor_indexes
         if floor in cache:
             return cache[floor]
-        idx = load_map_index(self.site, floor=floor)
-        cache[floor] = idx
-        return idx
+        lock = getattr(self, "_floor_lock", None)
+        if lock is None:
+            lock = self._floor_lock = threading.Lock()
+        with lock:
+            if floor in cache:  # loaded by another thread while we waited
+                return cache[floor]
+            idx = load_map_index(self.site, floor=floor)
+            cache[floor] = idx
+            return idx
+
+    def warm(self) -> list[str]:
+        """Load every mapped floor's PnP index now (server start / after Finalize), so the
+        first /localize doesn't pay ~20 s of H2GIS loading. Returns the floors loaded."""
+        loaded = []
+        for f in available_map_floors(self.site):
+            if self._index_for_floor(f) is not None:
+                loaded.append(f)
+        return loaded
 
     def _candidate_floors(self, prior_floor, query_image: np.ndarray) -> list[str]:
         from fmc.floors import adjacent_floors, normalize_floor_id

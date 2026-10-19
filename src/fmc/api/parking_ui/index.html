@@ -14,8 +14,8 @@
       rel="stylesheet"
     />
     <link rel="icon" type="image/svg+xml" href="/parking-ui/favicon.svg" />
-    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261009-lane1" />
-    <link rel="stylesheet" href="/parking-ui/home.css?v=20261009-lane1" />
+    <link rel="stylesheet" href="/parking-ui/styles.css?v=20261019-markerhead1" />
+    <link rel="stylesheet" href="/parking-ui/home.css?v=20261019-markerhead1" />
   </head>
   <body class="entry-mode">
     <!-- React-matched splash + home -->
@@ -75,6 +75,14 @@
               <h3 id="homeSlotsTitle">Available slots</h3>
               <div class="chips" id="homeSlotChips"></div>
             </div>
+            <div class="home-mode">
+              <span class="lbl" id="homeModeLabel">Navigation mode</span>
+              <div class="nav-mode-toggle home-mode-toggle" role="radiogroup" aria-labelledby="homeModeLabel">
+                <button type="button" class="nav-mode-opt" data-mode="ar" role="radio" aria-checked="true" id="homeModeAr">AR arrows</button>
+                <button type="button" class="nav-mode-opt" data-mode="tbt" role="radio" aria-checked="false" id="homeModeTbt">Turn-by-turn</button>
+              </div>
+            </div>
+            <button type="button" class="home-recal" id="homeRecalBtn">Recalibrate camera</button>
             <button class="btn btn-dark" id="homeStartBtn" type="button" disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 2 4.5 20.3l.7.7L12 18l6.8 3 .7-.7z" />
@@ -134,7 +142,19 @@
           <span class="mark">F</span>
           <span>Find My Car</span>
         </div>
-        <div id="statusChip" class="status-chip is-warn">Ready</div>
+        <div class="ar-top-right">
+          <div class="nav-mode-toggle" role="radiogroup" aria-label="Navigation mode">
+            <button type="button" class="nav-mode-opt" data-mode="ar" role="radio" aria-checked="true" title="AR floor arrows (WebXR)">AR</button>
+            <button type="button" class="nav-mode-opt" data-mode="tbt" role="radio" aria-checked="false" title="Turn-by-turn: camera PnP (6-DoF) fixes + motion, no AR">Turn-by-turn</button>
+          </div>
+          <button id="voiceBtn" type="button" class="icon-btn voice-btn is-on" aria-label="Voice guidance" title="Voice guidance" aria-pressed="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M11 5 6 9H3v6h3l5 4V5z" fill="currentColor"/>
+              <path class="voice-waves" d="M15.5 8.5a4 4 0 0 1 0 7M18.5 6a7 7 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <div id="statusChip" class="status-chip is-warn">Ready</div>
+        </div>
       </div>
 
       <div id="arriveOverlay" class="arrive-overlay" hidden>
@@ -262,8 +282,8 @@
     </div>
 
     <script src="/ar-vio.js"></script>
-    <script type="module" src="/parking-ui/webxr-nav.js?v=20261009-lane1"></script>
-    <script src="/parking-ui/home.js?v=20261009-lane1"></script>
-    <script src="/parking-ui/app.js?v=20261009-lane1"></script>
+    <script type="module" src="/parking-ui/webxr-nav.js?v=20261019-markerhead1"></script>
+    <script src="/parking-ui/home.js?v=20261019-markerhead1"></script>
+    <script src="/parking-ui/app.js?v=20261019-markerhead1"></script>
   </body>
 </html>
