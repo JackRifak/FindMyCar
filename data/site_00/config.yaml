@@ -146,7 +146,7 @@ floors:
     y: -20.566
     height_m: 1.4
     facing_deg: 90.0
-    size_m: 0.28
+    size_m: 0.47
 - floor: G
   zones: []
   walkable_segments:

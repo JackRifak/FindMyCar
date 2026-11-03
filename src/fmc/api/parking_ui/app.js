@@ -601,6 +601,9 @@ function promptStartArAfterLand() {
   if (state.xrResumeBlocked) return;
   if (state.webXrActive || webXrNav) return;
   if (!state.navActive) return;
+  // already showing (called from every route refresh): don't re-release the camera / re-log
+  if (floorBtnMode === "start_ar" && state.pendingXrResume && !state.stream
+    && ui.startArBtn && !ui.startArBtn.hidden) return;
 
   state.pendingXrResume = true;
 

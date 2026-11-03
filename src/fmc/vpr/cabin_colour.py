@@ -193,7 +193,9 @@ def classify(image_bgr: np.ndarray, refs: dict[str, dict]) -> CabinMatch:
     margin = best - second
     frac = sig.colour_frac
     if floor == CABIN_KEY:
-        return CabinMatch(None, best, margin, frac, reason="lift_interior")
+        # only call it the lift when it actually looks like it (a 0.14 "best" is no match)
+        return CabinMatch(None, best, margin, frac,
+                          reason="lift_interior" if best >= MATCH_MIN else "no_match")
     if best < MATCH_MIN or margin < MATCH_MARGIN:
         return CabinMatch(None, best, margin, frac, reason="ambiguous")
     ref = refs[floor]

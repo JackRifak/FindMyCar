@@ -1739,10 +1739,17 @@ def parking_redirect():
     return RedirectResponse(url="/parking/", status_code=307)
 
 
-@app.get("/mapping")
-def mapping_redirect():
-    """Redirect to the static mapping UI."""
-    return RedirectResponse(url="/mapping.html", status_code=307)
+@app.get("/mapping", include_in_schema=False)
+def mapping_page():
+    """The mapping UI lives at /mapping only (its assets are relative: /mapping.js, /ar-vio.js)."""
+    return FileResponse(STATIC_DIR / "mapping.html", media_type="text/html")
+
+
+@app.get("/mapping.html", include_in_schema=False)
+def mapping_html_blocked():
+    """Not served under its file name — use /mapping. (Registered before the "/" static
+    mount, so it wins over StaticFiles.)"""
+    raise HTTPException(status_code=404, detail="Not Found")
 
 
 # ---------------------------------------------------------------- static test client
