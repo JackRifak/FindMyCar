@@ -156,6 +156,12 @@ floors:
     y2: -20.492
   landmarks: []
   vehicle_slots: []
+  kiosks:
+  - kiosk_id: K1
+    x: 11.181
+    y: -18.416
+    facing_deg: 165.0
+    stand_m: 0.6
 - floor: B2
   zones: []
   walkable_segments:

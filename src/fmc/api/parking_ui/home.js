@@ -293,6 +293,10 @@
         break;
       }
     }
+    // kiosk QR opened with the phone's camera app: app.js starts from this kiosk if the user
+    // taps Start soon (they're still standing at it)
+    const kiosk = (params.get("kiosk") || params.get("k") || "").trim();
+    if (kiosk) window.__fmcLinkKiosk = { kiosk, at: Date.now() };
   }
 
   // expose for app.js / scan
@@ -329,7 +333,11 @@
   });
   el.startBtn?.addEventListener("click", () => go(el.bayInput?.value || ""));
   el.scanBtn?.addEventListener("click", () => {
-    // focus bay entry — full QR scanner can plug in later
+    // in-app scanner (app.js) — reads the bay and, from a kiosk, where you're standing
+    if (typeof window.ParkingUiEntry?.scanQr === "function") {
+      window.ParkingUiEntry.scanQr();
+      return;
+    }
     el.bayInput?.focus();
     toast(lang === "ar" ? "أدخل رقم الموقف أو استخدم رابط QR" : "Enter bay number or open a parking QR link");
   });

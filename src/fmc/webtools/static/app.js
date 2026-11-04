@@ -23,13 +23,15 @@ const state = {
   slots: [],           // {px,py,slot_id,zone}
   markers: [],         // {px,py,marker_id,facing_deg,height_m,size_m} — lift-lobby ArUco
   pendingMarkerFacing: null, // index of the marker waiting for its "faces toward" click
+  kiosks: [],          // {px,py,kiosk_id,facing_deg,stand_m,marker_id} — payment kiosk QR start points
+  pendingKioskFacing: null, // index of the kiosk waiting for its "people stand here" click
   ingestedLocations: [],
   hasTransform: false,
   transform: null,            // {a,b,c,d,tx,ty} from transform.json
   probe: null,                // {px, py, x, y} selected point in facility metres
   queryResult: null,
   routeResult: null,
-  overlays: { locations: true, segments: true, slots: true, markers: true },
+  overlays: { locations: true, segments: true, slots: true, markers: true, kiosks: true },
   captureLocations: [],       // [{location_id, zone, floor, x, y, px, py, photo_count}]
   selectedLocationId: null,
   selectedLocationPhotos: [], // [{image_id, heading_degrees, photo_url, direction_px}]
@@ -292,6 +294,7 @@ const MODE_HINTS = {
   capture_locations: "Click empty space for a new location, or a marker to edit",
   query: "Upload a photo to test localization on this floor",
   markers: "Click where a marker hangs on the wall, then a point in front of it (into the lobby)",
+  kiosks: "Click a kiosk's screen, then where people stand in front of it",
 };
 
 function updateModeContext() {
@@ -376,6 +379,44 @@ function facingFromPixels(a, b) {
   const wb = pixelToWorld(b.px, b.py);
   if (!wa || !wb) return null;
   return ((Math.atan2(wb.x - wa.x, wb.y - wa.y) * 180) / Math.PI + 360) % 360;
+}
+
+/** facility point `dist` m from pixel p in compass direction deg → pixels */
+function pixelAlong(p, deg, dist) {
+  const w = pixelToWorld(p.px, p.py);
+  if (!w) return null;
+  const f = (deg * Math.PI) / 180;
+  return worldToPixel(w.x + dist * Math.sin(f), w.y + dist * Math.cos(f));
+}
+
+function drawKiosks(highlight) {
+  state.kiosks.forEach((k, i) => {
+    const s = imageToScreen(k.px, k.py);
+    const col = highlight ? (state.pendingKioskFacing === i ? "#ffd166" : "#ff9f43") : "#f39c12";
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(s.x - 9, s.y - 9, 18, 18, 4);
+    else ctx.rect(s.x - 9, s.y - 9, 18, 18);
+    ctx.fill();
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+    ctx.fillStyle = "#1b1b1b";
+    ctx.font = "bold 11px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("K", s.x, s.y + 0.5);
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+    if (Number.isFinite(k.facing_deg)) {
+      const stand = pixelAlong(k, k.facing_deg, Number(k.stand_m) || 0.6);
+      if (stand) {
+        const e = imageToScreen(stand.px, stand.py);
+        drawLine(s, e, col, 2);
+        drawDot(e.x, e.y, "#2ecc71", 5); // where the route starts
+      }
+    }
+    drawLabel(s.x + 12, s.y - 12, k.kiosk_id || "?", col);
+  });
 }
 
 function drawMarkers(highlight) {
@@ -555,6 +596,7 @@ function draw() {
   }
 
   if (state.overlays.markers || state.mode === "markers") drawMarkers(state.mode === "markers");
+  if (state.overlays.kiosks || state.mode === "kiosks") drawKiosks(state.mode === "kiosks");
 
   // In-progress editing state, drawn per mode
   if (state.mode === "control_points") {
@@ -929,6 +971,8 @@ function handleClick(px, py) {
     handleCaptureLocationClick(px, py);
   } else if (state.mode === "markers") {
     handleMarkerClick(px, py);
+  } else if (state.mode === "kiosks") {
+    handleKioskClick(px, py);
   }
   draw();
 }
@@ -1022,6 +1066,124 @@ document.getElementById("saveMarkersBtn")?.addEventListener("click", async () =>
 });
 document.getElementById("toggleMarkers")?.addEventListener("change", (e) => { state.overlays.markers = e.target.checked; draw(); });
 
+// ---------------------------------------------------------------- payment kiosks
+
+function nextKioskId() {
+  const used = new Set([...state.kiosks.map((k) => String(k.kiosk_id).toUpperCase()),
+    ...(state.otherFloorKioskIds || [])]);
+  for (let i = 1; i < 1000; i++) if (!used.has(`K${i}`)) return `K${i}`;
+  return "";
+}
+
+function handleKioskClick(px, py) {
+  if (!state.transform) { setStatus("Fit & save the calibration first", true); return; }
+  if (state.pendingKioskFacing != null) {
+    const k = state.kiosks[state.pendingKioskFacing];
+    const f = k ? facingFromPixels(k, { px, py }) : null;
+    if (k && f != null) {
+      k.facing_deg = Math.round(f);
+      // the second click is where people stand: use its distance (sensible range only)
+      const a = pixelToWorld(k.px, k.py);
+      const b = pixelToWorld(px, py);
+      const d = a && b ? Math.hypot(b.x - a.x, b.y - a.y) : null;
+      if (d != null && d >= 0.2 && d <= 3) k.stand_m = Math.round(d * 10) / 10;
+    }
+    state.pendingKioskFacing = null;
+    setStatus("Kiosk placed — check its ID, then Save kiosks");
+  } else {
+    state.kiosks.push({ px, py, kiosk_id: nextKioskId(), facing_deg: null, stand_m: 0.6, marker_id: null });
+    state.pendingKioskFacing = state.kiosks.length - 1;
+    setStatus("Now click where people stand in front of the screen");
+  }
+  renderKiosksPanel();
+}
+
+function kioskQrUrl(k) {
+  const slot = (document.getElementById("kioskTestSlot")?.value || "").trim();
+  if (!slot || !k.kiosk_id) return null;
+  const q = new URLSearchParams({ slot, base: window.location.origin });
+  return url(`/api/sites/${state.siteId}/kiosks/${encodeURIComponent(k.kiosk_id)}/qr.svg?${q}`);
+}
+
+function renderKiosksPanel() {
+  const el = document.getElementById("kiosksList");
+  if (!el) return;
+  const dl = document.getElementById("kioskTestSlots");
+  if (dl) dl.innerHTML = (state.savedSlots || []).map((s) => `<option value="${s.slot_id}"></option>`).join("");
+  const markerIds = state.markers.map((m) => Number(m.marker_id));
+  el.innerHTML = "";
+  state.kiosks.forEach((k, i) => {
+    const row = document.createElement("div");
+    row.className = "list-item marker-row kiosk-row";
+    const qr = kioskQrUrl(k);
+    const start = Number.isFinite(k.facing_deg) ? pixelAlong(k, k.facing_deg, Number(k.stand_m) || 0.6) : null;
+    const startW = start ? pixelToWorld(start.px, start.py) : null;
+    row.innerHTML = `
+      <strong>${k.kiosk_id || "?"}</strong>
+      <div class="marker-fields">
+        <label>ID <input type="text" maxlength="32" value="${k.kiosk_id}" data-i="${i}" data-f="kiosk_id"></label>
+        <label>Faces° <input type="number" min="0" max="359" step="1" value="${k.facing_deg ?? ""}" data-i="${i}" data-f="facing_deg"></label>
+        <label>Stand m <input type="number" min="0.2" max="3" step="0.1" value="${k.stand_m}" data-i="${i}" data-f="stand_m"></label>
+        <label>Marker <select data-i="${i}" data-f="marker_id">
+          <option value="">none</option>
+          ${markerIds.map((id) => `<option value="${id}" ${Number(k.marker_id) === id ? "selected" : ""}>M${id}</option>`).join("")}
+        </select></label>
+        ${state.pendingKioskFacing === i ? '<span class="marker-pending">click where people stand…</span>' : ""}
+        <button type="button" class="btn-secondary" data-act="face" data-i="${i}" title="Click again where people stand">Re-aim</button>
+        ${qr ? `<a class="btn-secondary" href="${qr}" target="_blank" rel="noopener" title="Test QR — scan it with the parking app">Test QR</a>`
+    : '<span class="kiosk-start">enter a bay above for a test QR</span>'}
+        <button class="del-btn" data-i="${i}">×</button>
+        ${startW ? `<span class="kiosk-start">route starts at (${startW.x.toFixed(2)}, ${startW.y.toFixed(2)})</span>` : ""}
+      </div>`;
+    el.appendChild(row);
+  });
+  el.querySelectorAll("input, select").forEach((inp) => {
+    inp.addEventListener("change", (e) => {
+      const i = +e.target.dataset.i, f = e.target.dataset.f;
+      const raw = e.target.value;
+      if (f === "kiosk_id") state.kiosks[i][f] = raw.trim().toUpperCase();
+      else if (f === "marker_id") state.kiosks[i][f] = raw === "" ? null : Number(raw);
+      else state.kiosks[i][f] = Number(raw);
+      renderKiosksPanel();
+      draw();
+    });
+  });
+  el.querySelectorAll('[data-act="face"]').forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      state.pendingKioskFacing = +e.target.dataset.i;
+      setStatus("Click where people stand in front of the screen");
+      renderKiosksPanel();
+      draw();
+    });
+  });
+  el.querySelectorAll(".del-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      state.kiosks.splice(+e.target.dataset.i, 1);
+      state.pendingKioskFacing = null;
+      renderKiosksPanel();
+      draw();
+    });
+  });
+}
+
+document.getElementById("kioskTestSlot")?.addEventListener("input", () => renderKiosksPanel());
+document.getElementById("saveKiosksBtn")?.addEventListener("click", async () => {
+  const missing = state.kiosks.filter((k) => !Number.isFinite(k.facing_deg));
+  if (missing.length) { setStatus(`Set where people stand for ${missing[0].kiosk_id || "the kiosk"} first`, true); return; }
+  try {
+    const payload = state.kiosks.map((k) => ({
+      px: k.px, py: k.py, kiosk_id: String(k.kiosk_id).trim().toUpperCase(),
+      facing_deg: Number(k.facing_deg), stand_m: Number(k.stand_m) || 0.6,
+      marker_id: k.marker_id == null ? null : Number(k.marker_id),
+    }));
+    await api("PUT", `/api/sites/${state.siteId}/floors/${encodeURIComponent(state.floor)}/kiosks`, payload);
+    setStatus(`Kiosks saved (${payload.length})`);
+    await loadGeometry();
+    draw();
+  } catch (e) { setStatus(e.message, true); }
+});
+document.getElementById("toggleKiosks")?.addEventListener("change", (e) => { state.overlays.kiosks = e.target.checked; draw(); });
+
 // ---------------------------------------------------------------- mode switching
 
 document.querySelectorAll(".mode-btn").forEach((btn) => {
@@ -1031,6 +1193,7 @@ document.querySelectorAll(".mode-btn").forEach((btn) => {
     state.mode = btn.dataset.mode;
     state.pendingSegmentPt = null;
     state.pendingMarkerFacing = null;
+    state.pendingKioskFacing = null;
     state.selectedSegment = null;
     state.endDrag = null;
     state.pendingNewLocationPoint = null;
@@ -1230,6 +1393,8 @@ async function selectFloor(floor) {
   state.slots = [];
   state.markers = [];
   state.pendingMarkerFacing = null;
+  state.kiosks = [];
+  state.pendingKioskFacing = null;
   state.savedSegments = [];
   state.savedSlots = [];
   state.pendingSegmentPt = null;
@@ -1434,16 +1599,26 @@ async function loadGeometry() {
       }));
     state.otherFloorMarkerIds = geo.other_floor_marker_ids || [];
     state.pendingMarkerFacing = null;
+    state.kiosks = (geo.kiosks || [])
+      .filter((k) => k.px != null && k.py != null)
+      .map((k) => ({
+        px: k.px, py: k.py, kiosk_id: String(k.kiosk_id || "").toUpperCase(), facing_deg: Number(k.facing_deg),
+        stand_m: Number(k.stand_m ?? 0.6), marker_id: k.marker_id == null ? null : Number(k.marker_id),
+      }));
+    state.otherFloorKioskIds = geo.other_floor_kiosk_ids || [];
+    state.pendingKioskFacing = null;
   } catch (e) {
     state.savedSegments = [];
     state.savedSlots = [];
     state.segments = [];
     state.slots = [];
     state.markers = [];
+    state.kiosks = [];
   }
   renderSegmentsPanel();
   renderSlotsPanel();
   renderMarkersPanel();
+  renderKiosksPanel();
 }
 
 document.getElementById("saveSegmentsBtn").addEventListener("click", async () => {

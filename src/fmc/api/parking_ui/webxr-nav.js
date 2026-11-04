@@ -1261,7 +1261,8 @@ export class WebXrNav {
     // a lobby-marker fix measures the camera heading directly (±1–3°) and you are facing
     // the MARKER, often 15–30° off the corridor — snapping it onto the corridor axis turned
     // the whole AR path by that angle (only head-on fixes looked right). Use it as is.
-    const exact = String(fp.source || "").toLowerCase() === "marker";
+    // same for a kiosk start: you face the kiosk screen, whose direction is surveyed
+    const exact = ["marker", "kiosk"].includes(String(fp.source || "").toLowerCase());
     if (why) {
       this.opts.handlers?.onStartHeading?.({ ...base, applied: false, why, exact });
       // headingLive: pathFromWaypoints must not snap an exact heading either

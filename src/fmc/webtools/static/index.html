@@ -77,8 +77,11 @@
     <button type="button" class="mode-btn" data-mode="markers">
       <span class="mode-num">5</span><span class="mode-txt">Markers</span>
     </button>
+    <button type="button" class="mode-btn" data-mode="kiosks">
+      <span class="mode-num">6</span><span class="mode-txt">Kiosks</span>
+    </button>
     <button type="button" class="mode-btn" data-mode="query">
-      <span class="mode-num">6</span><span class="mode-txt">Test</span>
+      <span class="mode-num">7</span><span class="mode-txt">Test</span>
     </button>
   </div>
   <div class="modebar-right">
@@ -124,6 +127,7 @@
         <label class="toggle"><input type="checkbox" id="toggleSegments" checked><span>Walkable paths</span></label>
         <label class="toggle"><input type="checkbox" id="toggleSlots" checked><span>Parking slots</span></label>
         <label class="toggle"><input type="checkbox" id="toggleMarkers" checked><span>Lobby markers</span></label>
+        <label class="toggle"><input type="checkbox" id="toggleKiosks" checked><span>Payment kiosks</span></label>
       </div>
       <h3 class="panel-sub">Selected point</h3>
       <div id="probeCoords" class="probe-coords">
@@ -233,8 +237,26 @@
       </div>
     </section>
 
+    <section id="panel-kiosks" class="panel" style="display:none">
+      <p class="panel-kicker">Step 6 · Kiosks</p>
+      <h3>Payment kiosks</h3>
+      <p class="hint">After paying, a kiosk shows a QR code with the bay and the kiosk's ID. Scanning it in the parking app starts navigation <em>from this kiosk</em> — no Localize needed. Click the kiosk's screen on the plan, then click a point <em>in front of the screen</em>, where people stand to pay.</p>
+      <ul class="hint marker-howto">
+        <li><b>Kiosk ID</b> — the exact ID the kiosk puts in its QR link. Unique across all floors.</li>
+        <li><b>Stand m</b> — how far in front of the screen people stand (default 0.6&nbsp;m).</li>
+        <li><b>Marker</b> (optional) — ID of an ArUco marker stuck on the kiosk (register it in the Markers tab first). Gives a ±5&nbsp;cm start instead of ±0.5–1&nbsp;m.</li>
+        <li>QR link format for the kiosk vendor: <code>&lt;server&gt;/parking/?slot=&lt;bay&gt;&amp;kiosk=&lt;kiosk ID&gt;</code></li>
+      </ul>
+      <label class="stack-label">Bay for the test QR <input type="text" id="kioskTestSlot" placeholder="e.g. 86-03C" list="kioskTestSlots" autocomplete="off"></label>
+      <datalist id="kioskTestSlots"></datalist>
+      <div id="kiosksList" class="list-stack"></div>
+      <div class="action-row sticky-actions">
+        <button type="button" id="saveKiosksBtn" class="btn-accent">Save kiosks</button>
+      </div>
+    </section>
+
     <section id="panel-query" class="panel" style="display:none">
-      <p class="panel-kicker">Step 6 · Test</p>
+      <p class="panel-kicker">Step 7 · Test</p>
       <h3>Localize a photo</h3>
       <p class="hint">Upload a query image to see where VPR places it on this floor.</p>
       <label class="file-label btn-secondary">Choose image

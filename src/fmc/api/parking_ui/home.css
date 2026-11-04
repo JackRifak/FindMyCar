@@ -793,3 +793,33 @@ label.lbl {
   cursor: pointer;
 }
 .home-recal.is-set::before { content: "✓ "; display: inline-block; margin-inline-end: 2px; text-decoration: none; }
+
+/* in-app QR scanner */
+.qr-scan { position: fixed; inset: 0; z-index: 9000; background: #000; }
+.qr-scan[hidden] { display: none; }
+.qr-scan video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.qr-frame {
+  position: absolute; left: 50%; top: 45%; width: min(68vw, 300px); aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 18px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45);
+  outline: 3px solid rgba(255, 255, 255, 0.9);
+}
+.qr-frame i {
+  position: absolute; left: 8%; right: 8%; top: 50%; height: 2px;
+  background: var(--lime, #c9d64f); box-shadow: 0 0 10px var(--lime, #c9d64f);
+  animation: qr-sweep 1.8s ease-in-out infinite;
+}
+.qr-scan.is-found .qr-frame { outline-color: var(--lime, #c9d64f); }
+@keyframes qr-sweep { 0%, 100% { top: 12%; } 50% { top: 88%; } }
+@media (prefers-reduced-motion: reduce) { .qr-frame i { animation: none; } }
+.qr-close {
+  position: absolute; top: max(16px, env(safe-area-inset-top)); right: 16px;
+  width: 44px; height: 44px; border-radius: 999px; border: 0;
+  background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 20px; cursor: pointer;
+}
+.qr-msg {
+  position: absolute; left: 16px; right: 16px; bottom: max(28px, env(safe-area-inset-bottom));
+  padding: 12px 14px; border-radius: 14px; background: rgba(0, 0, 0, 0.6); color: #fff;
+  text-align: center; font-size: 0.95rem; line-height: 1.35;
+}

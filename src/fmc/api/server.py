@@ -581,6 +581,55 @@ def seed_position(device_id: str, body: SeedPoseBody):
     return {"status": "ok", "floor": floor, "x": body.x, "y": body.y}
 
 
+class KioskStartBody(BaseModel):
+    kiosk_id: str
+
+
+@app.get("/kiosks")
+def list_kiosks():
+    """Payment kiosks — known start points the parking app can start from after a QR scan."""
+    from fmc.navigation import kiosks as kiosk_mod
+
+    return {"kiosks": [
+        {"kiosk_id": k.kiosk_id, "floor": k.floor, "x": k.x, "y": k.y,
+         "facing_deg": k.facing_deg, "stand_m": k.stand_m, "marker_id": k.marker_id}
+        for k in kiosk_mod.current_kiosks(_site)
+    ]}
+
+
+@app.post("/position/{device_id}/kiosk")
+def kiosk_start(device_id: str, body: KioskStartBody):
+    """Start from a payment kiosk (QR scanned there): place the device in front of the
+    kiosk screen, facing it — the server routes from there like after a fix."""
+    from fmc.navigation import kiosks as kiosk_mod
+
+    k = kiosk_mod.find_kiosk(_site, body.kiosk_id)
+    if k is None:
+        raise HTTPException(status_code=404, detail=f"Unknown kiosk: {body.kiosk_id}")
+    pose = k.start_pose()
+    seed_position(device_id, SeedPoseBody(
+        floor=pose["floor"], x=pose["x"], y=pose["y"], heading=pose["heading"],
+        reason=f"kiosk_{k.kiosk_id}",
+    ))
+    logger.info(
+        f"[{device_id}] KIOSK START {k.kiosk_id} floor={k.floor} "
+        f"stand=({pose['x']:.2f}, {pose['y']:.2f}) heading={pose['heading']:.0f}° "
+        f"marker={k.marker_id if k.marker_id is not None else '-'}"
+    )
+    return {**pose, "kiosk_id": k.kiosk_id, "marker_id": k.marker_id, "stand_m": k.stand_m}
+
+
+@app.post("/qr/decode")
+async def qr_decode(image: UploadFile = File(...)):
+    """QR reader for browsers without BarcodeDetector (iOS Safari, some Android browsers)."""
+    from fmc.navigation import kiosks as kiosk_mod
+
+    frame = cv2.imdecode(np.frombuffer(await image.read(), np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Failed to decode image")
+    return {"text": kiosk_mod.decode_qr(frame)}
+
+
 @app.get("/map/cabin-colours")
 def get_cabin_colours():
     """Per-floor lift-lobby colour references (for the mapping app)."""

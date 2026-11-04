@@ -3353,6 +3353,7 @@ function localizeMethodLabel(method) {
   const m = String(method || "").toLowerCase();
   if (m === "pnp") return "PnP";
   if (m === "marker") return "Lobby marker";
+  if (m === "kiosk") return "Kiosk";
   if (m.includes("vpr") || m === "image_vpr") return "Image VPR";
   return "Localize";
 }
@@ -3405,7 +3406,9 @@ function applyVprFix(pos) {
   const via = localizeMethodLabel(pos.method);
   const isMarker = String(pos.method || "").toLowerCase() === "marker";
   const isPnp = String(pos.method || "").toLowerCase() === "pnp";
-  setStatusChip(isMarker ? `Marker ${pos.marker_id ?? ""}`.trim() : isPnp ? "PnP fix" : "VPR fix", "live");
+  const isKiosk = String(pos.method || "").toLowerCase() === "kiosk";
+  setStatusChip(isMarker ? `Marker ${pos.marker_id ?? ""}`.trim() : isKiosk ? "Kiosk start"
+    : isPnp ? "PnP fix" : "VPR fix", "live");
   if (isMarker) {
     void logClientDiagnostic({
       event: "marker_fix",
@@ -3974,7 +3977,7 @@ async function startWebXrNav(opts = {}) {
           event: "xr_start_heading",
           nav_mode: "webxr",
           reason: info.applied
-            ? `applied fix=${r(info.fixHeading)}deg ${info.exact ? "exact(marker, no snap)" : `snapped=${r(info.fixSnapped)}deg`} `
+            ? `applied fix=${r(info.fixHeading)}deg ${info.exact ? `exact(${info.source || "fix"}, no snap)` : `snapped=${r(info.fixSnapped)}deg`} `
               + `turned_since=${r(info.turnedDeg)}deg `
               + `-> phone=${r(((info.fixSnapped ?? info.fixHeading) + info.turnedDeg + 360) % 360)}deg | ${ctx}`
             : `SKIPPED ${info.why} fix=${r(info.fixHeading)}deg | ${ctx}`,
@@ -4475,6 +4478,16 @@ async function navigateToSlot() {
     setHint("Point the camera and tap Localize", true);
     return;
   }
+  if (state.lastLocalizeMethod === "kiosk" && state.kioskStart
+    && performance.now() - state.kioskStart.at > KIOSK_START_MAX_MS) {
+    // you've probably walked away from the kiosk since the scan
+    state.hasLocalizedPosition = false;
+    state.kioskStart = null;
+    setRouteBtnMode("start");
+    setStatusMsg("It's been a while since the kiosk scan — point the camera and tap Localize");
+    setHint("Point the camera and tap Localize", true);
+    return;
+  }
 
   ui.routeBtn.disabled = true;
   void ensureStepSensors(); // this tap is the user gesture iOS wants for motion access
@@ -4906,6 +4919,267 @@ window.addEventListener("load", async () => {
 });
 
 /** called from home.js after bay is chosen */
+/* ---------------- payment kiosk start + in-app QR scanner ----------------
+ * A payment kiosk shows a QR: <server>/parking/?slot=<bay>&kiosk=<id>. Scanned in the app,
+ * it gives the destination AND the start: you're standing in front of that kiosk, facing
+ * its screen (fmc/navigation/kiosks.py). With an ArUco marker on the kiosk the scan frame
+ * gives an exact fix instead. The start is trusted for KIOSK_START_MAX_MS — after that you
+ * may have walked off, so Start nav asks for a Localize. */
+const KIOSK_START_MAX_MS = 90000;
+const KIOSK_LINK_MAX_MS = 60000; // link opened from the phone's camera app
+const QR_SLOT_KEYS = ["slot", "bay", "parking", "p", "spot", "plate"];
+const QR_KIOSK_KEYS = ["kiosk", "k", "kiosk_id"];
+let kioskList = null;
+
+function qrLang() {
+  try { return localStorage.getItem("ms_fmc_lang") === "ar" ? "ar" : "en"; } catch (_) { return "en"; }
+}
+const QR_MSG = {
+  en: {
+    point: "Point the camera at the QR code on the kiosk screen",
+    notParking: "That's not a parking QR code — try the one on the kiosk screen",
+    noCamera: "Camera not available — type your bay number instead",
+    found: "QR code read ✓",
+  },
+  ar: {
+    point: "وجّه الكاميرا نحو رمز QR على شاشة الجهاز",
+    notParking: "هذا ليس رمز QR للموقف — جرّب الرمز على شاشة الجهاز",
+    noCamera: "الكاميرا غير متاحة — أدخل رقم الموقف",
+    found: "تمت قراءة الرمز ✓",
+  },
+};
+const qrT = (k) => QR_MSG[qrLang()][k] || QR_MSG.en[k];
+
+/** "https://…/parking/?slot=86-03C&kiosk=K2" or a bare "86-03C" → { slot, kiosk } | null */
+function parseParkingQr(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  const clean = (v) => String(v || "").toUpperCase().trim().replace(/\s+/g, "-").replace(/[^A-Z0-9-]/g, "");
+  let params = null;
+  try {
+    params = new URL(raw, window.location.origin).searchParams;
+  } catch (_) { params = null; }
+  if (params && /[?&]/.test(raw)) {
+    const slot = clean(QR_SLOT_KEYS.map((k) => params.get(k)).find(Boolean));
+    const kiosk = String(QR_KIOSK_KEYS.map((k) => params.get(k)).find(Boolean) || "").trim().toUpperCase();
+    return slot.length >= 2 ? { slot, kiosk: kiosk || null } : null;
+  }
+  const slot = clean(raw);
+  return slot.length >= 2 && slot.length <= 16 && /\d/.test(slot) ? { slot, kiosk: null } : null;
+}
+
+async function loadKiosks(force = false) {
+  if (kioskList && !force) return kioskList;
+  try {
+    const res = await fetch("/kiosks");
+    if (res.ok) kioskList = (await res.json()).kiosks || [];
+  } catch (_) { /* offline — kiosk start unavailable */ }
+  return kioskList || [];
+}
+
+/** one in-app scan session: { stream, timer, done } */
+let qrScan = null;
+
+function closeQrScanner() {
+  const s = qrScan;
+  qrScan = null;
+  if (s) {
+    s.done = true;
+    if (s.timer) clearTimeout(s.timer);
+    s.stream?.getTracks().forEach((t) => { try { t.stop(); } catch (_) { /* ignore */ } });
+  }
+  const box = document.getElementById("qrScan");
+  const v = document.getElementById("qrVideo");
+  if (v) v.srcObject = null;
+  if (box) { box.hidden = true; box.classList.remove("is-found"); }
+}
+
+/** current scanner frame as JPEG (+ intrinsics for the marker check) */
+async function grabQrFrame(video, maxDim = 1280, quality = 0.9) {
+  const w0 = video.videoWidth;
+  const h0 = video.videoHeight;
+  if (!(w0 > 1 && h0 > 1)) return null;
+  const sc = Math.min(1, maxDim / Math.max(w0, h0));
+  const w = Math.round(w0 * sc);
+  const h = Math.round(h0 * sc);
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  c.getContext("2d").drawImage(video, 0, 0, w, h);
+  const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", quality));
+  return blob ? { blob, width: w, height: h } : null;
+}
+
+async function openQrScanner() {
+  if (qrScan) return;
+  const box = document.getElementById("qrScan");
+  const video = document.getElementById("qrVideo");
+  const msg = document.getElementById("qrMsg");
+  if (!box || !video) return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    window.ParkingHome?.toast?.(qrT("noCamera"));
+    return;
+  }
+  // the scanner needs the camera to itself
+  state.stream?.getTracks?.().forEach((t) => { try { t.stop(); } catch (_) { /* ignore */ } });
+  state.stream = null;
+  const session = { stream: null, timer: null, done: false };
+  qrScan = session;
+  box.hidden = false;
+  if (msg) msg.textContent = qrT("point");
+  try {
+    session.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+  } catch (err) {
+    closeQrScanner();
+    window.ParkingHome?.toast?.(qrT("noCamera"));
+    return;
+  }
+  if (session.done) { session.stream.getTracks().forEach((t) => t.stop()); return; }
+  video.srcObject = session.stream;
+  await video.play().catch(() => {});
+  void loadKiosks(true);
+
+  // reader: the browser's own (Chrome Android) — else the server's (iOS Safari etc.)
+  let detector = null;
+  try {
+    if ("BarcodeDetector" in window) {
+      const fmts = await window.BarcodeDetector.getSupportedFormats?.();
+      if (!fmts || fmts.includes("qr_code")) detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+    }
+  } catch (_) { detector = null; }
+  let lastBadAt = 0;
+  const tick = async () => {
+    if (session.done) return;
+    let text = null;
+    try {
+      if (video.readyState >= 2) {
+        if (detector) {
+          const codes = await detector.detect(video);
+          text = codes?.[0]?.rawValue || null;
+        } else {
+          const f = await grabQrFrame(video, 960, 0.85);
+          if (f) {
+            const form = new FormData();
+            form.append("image", f.blob, "qr.jpg");
+            const res = await fetch("/qr/decode", { method: "POST", body: form });
+            if (res.ok) text = (await res.json()).text || null;
+          }
+        }
+      }
+    } catch (_) { text = null; }
+    if (session.done) return;
+    if (text) {
+      const parsed = parseParkingQr(text);
+      if (!parsed) {
+        if (performance.now() - lastBadAt > 2500 && msg) msg.textContent = qrT("notParking");
+        lastBadAt = performance.now();
+      } else {
+        // the moment of the scan: phone points at the kiosk screen
+        const yaw = deviceYawDeg();
+        const frame = parsed.kiosk ? await grabQrFrame(video) : null;
+        box.classList.add("is-found");
+        if (msg) msg.textContent = qrT("found");
+        navigator.vibrate?.(40);
+        void logClientDiagnostic({
+          event: "qr_scanned",
+          reason: `slot=${parsed.slot} kiosk=${parsed.kiosk || "-"} reader=${detector ? "browser" : "server"}`,
+        });
+        closeQrScanner();
+        await onParkingQr(parsed, { yaw, frame, video: { w: frame?.width, h: frame?.height } });
+        return;
+      }
+    }
+    session.timer = setTimeout(tick, detector ? 150 : 700);
+  };
+  session.timer = setTimeout(tick, 300);
+}
+
+document.getElementById("qrCloseBtn")?.addEventListener("click", closeQrScanner);
+
+async function onParkingQr({ slot, kiosk }, scan = {}) {
+  window.__fmcLinkKiosk = null; // the scan supersedes a kiosk link
+  window.ParkingHome?.go?.(slot); // destination + guidance screen (validates the bay)
+  if (state.workflowStep !== "navigation") return; // invalid bay — home shows the error
+  if (!kiosk) return; // plain bay QR: localize as usual
+  const list = await loadKiosks(true);
+  const k = list.find((x) => String(x.kiosk_id).toUpperCase() === String(kiosk).toUpperCase());
+  if (!k) {
+    setStatusMsg(`Kiosk ${kiosk} isn't registered — point the camera and tap Localize`);
+    void logClientDiagnostic({ event: "kiosk_unknown", reason: `kiosk=${kiosk} slot=${slot}` });
+    return;
+  }
+  await startFromKiosk(k, slot, scan);
+}
+
+/** place the user at the kiosk (or at its marker fix) and fetch the route from there */
+async function startFromKiosk(k, slot, { yaw = null, frame = null } = {}) {
+  setStatusChip("Kiosk start", "live");
+  setStatusMsg(`Starting from kiosk ${k.kiosk_id}…`);
+  let pos = null;
+  let method = "kiosk";
+  // 1) the kiosk has a marker: the scan frame may show it → exact pose
+  if (frame?.blob && k.marker_id != null) {
+    try {
+      const form = new FormData();
+      form.append("image", frame.blob, "kiosk-scan.jpg");
+      form.append("prior_floor", String(k.floor));
+      form.append("capture_trigger", "kiosk_scan");
+      form.append("frame_source", "getUserMedia");
+      form.append("nav_mode", clientNavMode());
+      const K = intrinsicsForStreamFrame(frame.width, frame.height);
+      if (K) {
+        for (const [f, v] of Object.entries({ cam_fx: K.fx, cam_fy: K.fy, cam_cx: K.cx, cam_cy: K.cy,
+          cam_width: K.width, cam_height: K.height })) form.append(f, String(v));
+      }
+      const res = await fetch(`/localize?device_id=${encodeURIComponent(state.deviceId)}`, { method: "POST", body: form });
+      const fix = res.ok ? await res.json() : null;
+      if (fix?.tracking && String(fix.method).toLowerCase() === "marker" && Number(fix.marker_id) === Number(k.marker_id)) {
+        pos = { ...fix, gyro_at_capture: yaw };
+        method = "marker";
+      }
+    } catch (_) { /* fall back to the kiosk position */ }
+  }
+  // 2) the kiosk itself: in front of the screen, facing it
+  if (!pos) {
+    try {
+      const res = await fetch(`/position/${encodeURIComponent(state.deviceId)}/kiosk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kiosk_id: k.kiosk_id }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const p = await res.json();
+      pos = {
+        floor: p.floor, x: p.x, y: p.y, raw_x: p.x, raw_y: p.y, heading: p.heading,
+        raw_heading: p.heading, confidence: 0.5, tracking: true, method: "kiosk",
+        kiosk_id: p.kiosk_id, gyro_at_capture: yaw,
+      };
+    } catch (err) {
+      setStatusMsg(`Kiosk start failed (${err.message}) — point the camera and tap Localize`);
+      return;
+    }
+  }
+  applyVprFix(pos);
+  state.kioskStart = { kioskId: k.kiosk_id, at: performance.now(), method };
+  void logClientDiagnostic({
+    event: "kiosk_start",
+    reason: `kiosk=${k.kiosk_id} via=${method} floor=${pos.floor} x=${Number(pos.x).toFixed(2)} `
+      + `y=${Number(pos.y).toFixed(2)} heading=${Math.round(pos.heading)} gyro=${yaw == null ? "-" : Math.round(yaw)}`,
+  });
+  try {
+    await updateRouteForSlot(slot);
+  } catch (err) {
+    setStatusMsg(`Started at kiosk ${k.kiosk_id}, but the route failed: ${err.message}`);
+    return;
+  }
+  setStatusChip(method === "marker" ? "Kiosk marker" : "Kiosk start", "live");
+  setStatusMsg(`You're at kiosk ${k.kiosk_id} — tap Start nav`);
+  setHint("Tap Start nav now — the route starts at the kiosk", true);
+}
+
 function startGuidanceFromHome(bay) {
   const id = String(bay || "").trim().toUpperCase();
   if (!id) return;
@@ -4919,10 +5193,20 @@ function startGuidanceFromHome(bay) {
   setWorkflowStep("navigation", true);
   setStatusMsg(`Bay ${id} — point camera and tap Localize`);
   setHint("Point the camera and tap Localize", true);
+  const link = window.__fmcLinkKiosk;
+  window.__fmcLinkKiosk = null;
+  if (link && Date.now() - link.at < KIOSK_LINK_MAX_MS) {
+    void loadKiosks(true).then((list) => {
+      const k = list.find((x) => String(x.kiosk_id).toUpperCase() === String(link.kiosk).toUpperCase());
+      if (k) void startFromKiosk(k, id, {});
+      else setStatusMsg(`Kiosk ${link.kiosk} isn't registered — point the camera and tap Localize`);
+    });
+  }
 }
 
 window.ParkingUiEntry = {
   startGuidance: startGuidanceFromHome,
+  scanQr: () => { void openQrScanner(); },
   showHome: () => {
     if (typeof window.ParkingHome?.showHome === "function") {
       window.ParkingHome.showHome();

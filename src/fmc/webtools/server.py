@@ -143,6 +143,15 @@ class SlotIn(BaseModel):
     zone: str
 
 
+class KioskIn(BaseModel):
+    px: float
+    py: float
+    kiosk_id: str
+    facing_deg: float
+    stand_m: float = 0.6
+    marker_id: int | None = None
+
+
 class MarkerIn(BaseModel):
     px: float
     py: float
@@ -660,7 +669,21 @@ def get_geometry(site_id: str, floor: str):
         for f in site.raw.get("floors", []) if normalize_floor_id(f.get("floor")) != fid
         for m in f.get("markers") or []
     })
-    return {"segments": seg_out, "slots": slot_out, "markers": marker_out, "other_floor_marker_ids": other_ids}
+    kiosk_out = []
+    for k in (floor_entry.get("kiosks", []) if floor_entry else []):
+        entry = dict(k)
+        if transform is not None:
+            entry["px"], entry["py"] = transform.world_to_pixel(k["x"], k["y"])
+        kiosk_out.append(entry)
+    other_kiosk_ids = sorted({
+        str(k.get("kiosk_id", "")).strip().upper()
+        for f in site.raw.get("floors", []) if normalize_floor_id(f.get("floor")) != fid
+        for k in f.get("kiosks") or []
+    })
+    return {
+        "segments": seg_out, "slots": slot_out, "markers": marker_out, "other_floor_marker_ids": other_ids,
+        "kiosks": kiosk_out, "other_floor_kiosk_ids": other_kiosk_ids,
+    }
 
 
 @app.put("/api/sites/{site_id}/floors/{floor}/segments")
@@ -729,6 +752,76 @@ def put_markers(site_id: str, floor: str, markers: list[MarkerIn]):
         floor_entry.pop("markers", None)
     save_site_config(site)
     return {"saved": len(out)}
+
+
+@app.put("/api/sites/{site_id}/floors/{floor}/kiosks")
+def put_kiosks(site_id: str, floor: str, kiosks: list[KioskIn]):
+    """Payment kiosks of this floor (fmc.navigation.kiosks): QR start points. IDs are unique
+    site-wide; an optional ArUco marker on the kiosk must be registered on this floor."""
+    from fmc.navigation.kiosks import KIOSK_ID_RE, norm_id
+
+    site = get_site_or_404(site_id)
+    fid = _prep_floor_assets(site, floor)
+    transform = _load_transform_or_none(site, fid)
+    if transform is None:
+        raise HTTPException(400, f"No transform saved yet for floor '{fid}' — fit & save control points first")
+    ids = [norm_id(k.kiosk_id) for k in kiosks]
+    for kid in ids:
+        if not KIOSK_ID_RE.match(kid):
+            raise HTTPException(400, f"Kiosk ID '{kid}': 1–32 letters, digits, - or _ (it goes into the QR link)")
+    if len(set(ids)) != len(ids):
+        raise HTTPException(400, f"Duplicate kiosk IDs on floor {fid}: {ids}")
+    floor_entry = get_or_create_floor(site, fid)
+    for f in site.raw.get("floors", []):
+        if normalize_floor_id(f.get("floor")) == fid:
+            continue
+        clash = sorted(set(ids) & {norm_id(k.get("kiosk_id")) for k in f.get("kiosks") or []})
+        if clash:
+            raise HTTPException(400, f"Kiosk ID(s) {clash} already used on floor {f.get('floor')} — IDs must be unique site-wide")
+    floor_markers = {int(m.get("marker_id", -1)) for m in floor_entry.get("markers") or []}
+    out = []
+    for k, kid in zip(kiosks, ids):
+        if not (0.2 <= k.stand_m <= 3.0):
+            raise HTTPException(400, f"Kiosk {kid}: stand distance 0.2–3 m")
+        if k.marker_id is not None and k.marker_id not in floor_markers:
+            raise HTTPException(400, f"Kiosk {kid}: marker {k.marker_id} isn't registered on floor {fid} (Markers tab)")
+        x, y = transform.pixel_to_world(k.px, k.py)
+        entry = {
+            "kiosk_id": kid, "x": round(x, 3), "y": round(y, 3),
+            "facing_deg": round(float(k.facing_deg) % 360.0, 1), "stand_m": round(float(k.stand_m), 2),
+        }
+        if k.marker_id is not None:
+            entry["marker_id"] = int(k.marker_id)
+        out.append(entry)
+    if out:
+        floor_entry["kiosks"] = out
+    else:
+        floor_entry.pop("kiosks", None)
+    save_site_config(site)
+    return {"saved": len(out)}
+
+
+@app.get("/api/sites/{site_id}/kiosks/{kiosk_id}/qr.svg")
+def kiosk_qr_svg(site_id: str, kiosk_id: str, slot: str, base: str):
+    """Test QR exactly like the kiosk should show it: <base>/parking/?slot=<slot>&kiosk=<id>.
+    base = the address phones use (e.g. https://xyz.ngrok-free.dev)."""
+    from urllib.parse import quote, urlsplit
+
+    from fastapi.responses import Response
+
+    from fmc.navigation.kiosks import KIOSK_ID_RE, norm_id, qr_svg
+
+    get_site_or_404(site_id)
+    kid = norm_id(kiosk_id)
+    parts = urlsplit(base)
+    if not KIOSK_ID_RE.match(kid) or parts.scheme not in ("http", "https") or not parts.netloc:
+        raise HTTPException(400, "kiosk_id and an http(s) base address are required")
+    slot = slot.strip()
+    if not slot or len(slot) > 32:
+        raise HTTPException(400, "slot is required")
+    link = f"{parts.scheme}://{parts.netloc}/parking/?slot={quote(slot)}&kiosk={quote(kid)}"
+    svg = qr_svg(link, caption=f"Kiosk {kid} · bay {slot}", sub=link)
+    return Response(svg, media_type="image/svg+xml")
 
 
 @app.get("/api/sites/{site_id}/markers/{marker_id}.svg")

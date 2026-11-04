@@ -776,3 +776,7 @@ button:disabled {
 .marker-row label { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; }
 .marker-row input { width: 58px; }
 .marker-row .marker-pending { color: #ffd166; font-size: 12px; }
+
+/* payment kiosks */
+.kiosk-row input[type="text"] { width: 70px; text-transform: uppercase; }
+.kiosk-row .kiosk-start { color: var(--muted, #999); font-size: 11px; }
