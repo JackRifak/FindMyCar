@@ -1405,3 +1405,7 @@
 {"site_id":"site_00","received_at":1793773822.2960033,"device_id":"parking-mobile-la8uqi","event":"xr_reloc_start","nav_mode":"webxr","reason":"jump_2.9m lost=367ms jump=2.9m anchors=1/6"}
 {"site_id":"site_00","received_at":1793773822.421227,"device_id":"parking-mobile-la8uqi","event":"xr_align_stale","nav_mode":"webxr","reason":"jump_2.9m lost=367ms jump=2.9m"}
 {"site_id":"site_00","received_at":1793773824.149579,"device_id":"parking-mobile-la8uqi","event":"webxr_end","nav_mode":"camera","reason":"session_end"}
+{"site_id":"site_00","received_at":1793776998.3890445,"device_id":"parking-mobile-w6hfpd","event":"qr_scanned","reason":"slot=87-04C kiosk=K1 reader=browser"}
+{"site_id":"site_00","received_at":1793776998.651655,"device_id":"parking-mobile-w6hfpd","event":"kiosk_start","reason":"kiosk=K1 via=kiosk floor=G x=11.34 y=-19.00 heading=345 gyro=-"}
+{"site_id":"site_00","received_at":1793777738.2104878,"device_id":"parking-mobile-d2y3bg","event":"qr_scanned","reason":"slot=87-04C kiosk=K1 reader=browser"}
+{"site_id":"site_00","received_at":1793777738.6674378,"device_id":"parking-mobile-d2y3bg","event":"kiosk_start","reason":"kiosk=K1 via=kiosk floor=G x=11.34 y=-19.00 heading=345 gyro=273"}

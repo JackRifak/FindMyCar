@@ -4,6 +4,7 @@
  * Exposes window.ParkingWebXr for classic app.js.
  */
 import * as THREE from "./three.module.js";
+import { DriftDetector } from "./drift-detector.js?v=20261104-drift1";
 
 const LIME = 0xc9d64f;
 const LIME_SOFT = 0xd4e070;
@@ -89,6 +90,15 @@ const ANCHOR_SNAP_M = 1.0; // bigger correction -> snap instead of ease
 const CAL_FALLBACK_MS = 3000;
 const PHONE_HEIGHT_M = 1.4; // floor ≈ this far below the phone when the space isn't floor-level
 const FLOOR_REFIT_M = 0.15; // a real floor hit this far from the estimate → redraw at its height
+
+/* --- drift / re-route visuals (detection: drift-detector.js) --- */
+const DRIFT_ORANGE = 0xffa630;
+const FOCUS_MS = 7000; // the new route's first stretch stays emphasised this long
+const FOCUS_W0 = 0.95; // its width right after the re-route (m)…
+const FOCUS_W1 = 0.45; // …settling to this
+const FOCUS_OFF_W = 0.55; // stretch to rejoin while off route
+const STRING_W = 0.13; // dashed line from your feet to the rejoin point
+const DRIFT_REDRAW_MS = 90;
 
 /** AR start: PnP heading within this of the first corridor's axis snaps onto it */
 const START_AXIS_SNAP = (25 * Math.PI) / 180;
@@ -771,6 +781,59 @@ function smoothPolylineXZ(pts, radius = CORNER_RADIUS_M, segs = CORNER_SEGS) {
   return out;
 }
 
+/**
+ * flat floor strip along XR points [{x, z}] at height y. dashOn > 0 → dashed; phase scrolls
+ * the dashes (animated "flow" toward the path).
+ */
+function stripGeometry(pts, width, y, dashOn = 0, dashOff = 0, phase = 0) {
+  const pos = [];
+  const hw = width / 2;
+  const period = dashOn + dashOff;
+  let acc = phase;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const L = Math.hypot(dx, dz);
+    if (L < 1e-4) continue;
+    const ux = dx / L;
+    const uz = dz / L;
+    const nx = -uz * hw;
+    const nz = ux * hw;
+    const pieces = [];
+    if (period > 0) {
+      let u = 0;
+      while (u < L - 1e-4) {
+        const ph = (((acc + u) % period) + period) % period;
+        if (ph < dashOn) {
+          const e = Math.min(L, u + dashOn - ph);
+          pieces.push([u, e]);
+          u = e + 1e-4;
+        } else {
+          u = Math.min(L, u + period - ph + 1e-4);
+        }
+      }
+    } else {
+      pieces.push([0, L]);
+    }
+    for (const [u0, u1] of pieces) {
+      const x0 = a.x + ux * u0;
+      const z0 = a.z + uz * u0;
+      const x1 = a.x + ux * u1;
+      const z1 = a.z + uz * u1;
+      pos.push(
+        x0 + nx, y, z0 + nz, x0 - nx, y, z0 - nz, x1 + nx, y, z1 + nz,
+        x1 + nx, y, z1 + nz, x0 - nx, y, z0 - nz, x1 - nx, y, z1 - nz,
+      );
+    }
+    acc += L;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  return g;
+}
+
 function closestOnPath(pts, x, z) {
   if (pts.length < 2) {
     return {
@@ -945,6 +1008,21 @@ export class WebXrNav {
     this._capCanvas = null;
     this._capSrcCanvas = null;
     this.hasCameraAccess = false;
+    // route drift → re-route (facility frame; see drift-detector.js)
+    this.drift = null;
+    this.driftViz = null;
+    this.lastDriftNote = null;
+    this.focusStart = 0;
+    this.focusUntil = 0;
+  }
+
+  /** off route / walking the wrong way / re-route in flight (banner owned by the drift UI) */
+  get driftActive() {
+    return Boolean(this.drift && this.drift.status?.state !== "on");
+  }
+
+  get driftStatus() {
+    return this.drift?.status || null;
   }
 
   async start() {
@@ -1738,6 +1816,173 @@ export class WebXrNav {
       this.opts.handlers?.onStep?.(0);
     }
     this.drawPathRibbon();
+    // drift detection follows the drawn path (incl. the merge from your feet) in map metres
+    this.drift = this.facWps?.length >= 2 ? new DriftDetector(this.facWps) : null;
+    this.drift?.setRoute(this.facWps, performance.now());
+  }
+
+  /**
+   * new route after a re-route (or any route refresh while AR runs). Keeps the map→AR
+   * alignment — only the path changes — so nothing jumps; the new route's first stretch is
+   * emphasised for FOCUS_MS.
+   */
+  setRoute(waypoints, { routeJoined = false, destXY = undefined, focus = true } = {}) {
+    const now = performance.now();
+    if (!this.calibrated || !this.xf || !(waypoints?.length >= 2)) {
+      this.drift?.rerouteFailed(now);
+      return false;
+    }
+    this.opts.waypoints = waypoints;
+    this.opts.routeJoined = Boolean(routeJoined);
+    if (destXY !== undefined) this.opts.destXY = destXY;
+    const me = xfInverse(this.xf, this.tmp.x, this.tmp.z);
+    let wps = remainingWaypoints(waypoints, me.fx, me.fy);
+    if (this.opts.destXY) wps = clampPathToDest(wps, this.opts.destXY);
+    this.corridorWps = routeJoined && waypoints.length >= 3
+      ? waypoints.slice(1).map((w) => [Number(w[0]), Number(w[1])])
+      : wps;
+    this.facWps = mergeFromPosition(wps, me.fx, me.fy);
+    this.rebuildPath();
+    this.legs = legsFromWaypoints(wps);
+    this.progressM = 0;
+    this.maxProgressM = 0;
+    this.stepIdx = 0;
+    this.arrived = false;
+    this.walkObs = []; // corridor comparison starts over on the new route
+    if (this.drift) this.drift.setRoute(this.facWps, now);
+    else this.drift = new DriftDetector(this.facWps);
+    this.lastDriftNote = null;
+    this.focusStart = now;
+    this.focusUntil = focus ? now + FOCUS_MS : 0;
+    this.opts.handlers?.onStep?.(0);
+    return true;
+  }
+
+  /** the app couldn't get a new route: stay in "off route", retry after the cooldown */
+  rerouteFailed() {
+    this.drift?.rerouteFailed(performance.now());
+  }
+
+  /** one detector step per frame + visuals */
+  updateDrift(degraded) {
+    const d = this.drift;
+    if (!d || !this.xf) return;
+    const now = performance.now();
+    if (degraded || this.alignStale || this.relocNeeded || this.xfEase) {
+      // limited tracking, or the map→AR alignment is moving under you: your map position is
+      // shifting for reasons other than walking — don't judge (or re-route) from it
+      d.hold(now, 1500);
+    } else {
+      const f = xfInverse(this.xf, this.tmp.x, this.tmp.z);
+      const { status, event } = d.update({ x: f.fx, y: f.fy, t: now });
+      if (event?.type === "reroute") this.requestReroute(event);
+      this.noteDrift(status, now);
+    }
+    this.drawDrift(now);
+  }
+
+  requestReroute(ev) {
+    navigator.vibrate?.([40, 50, 40]);
+    const h = this.opts.handlers?.onReroute;
+    if (!h) {
+      this.drift.rerouteFailed(performance.now());
+      return;
+    }
+    try {
+      h(ev);
+    } catch (_) {
+      this.drift.rerouteFailed(performance.now());
+    }
+  }
+
+  /** tell the app when the state / kind changes, or the measured distance moves >= 0.5 m */
+  noteDrift(st, now) {
+    const key = `${st.state}|${st.kind}`;
+    const prev = this.lastDriftNote;
+    const moved = prev && Math.abs(st.distanceM - prev.distanceM) >= 0.5 && now - prev.at > 250;
+    if (prev && prev.key === key && !moved) return;
+    const was = prev?.key || null;
+    this.lastDriftNote = { key, distanceM: st.distanceM, at: now };
+    if (!prev && st.state === "on") return;
+    this.opts.handlers?.onDrift?.({ ...st, prevKey: was });
+  }
+
+  makeDriftViz() {
+    const mat = (color, opacity) => new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide,
+    });
+    const feet = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.4, 48).rotateX(-Math.PI / 2), mat(DRIFT_ORANGE, 0.9));
+    const pulse = new THREE.Mesh(new THREE.RingGeometry(0.46, 0.52, 48).rotateX(-Math.PI / 2), mat(DRIFT_ORANGE, 0.6));
+    const string = new THREE.Mesh(new THREE.BufferGeometry(), mat(DRIFT_ORANGE, 0.92));
+    const focus = new THREE.Mesh(new THREE.BufferGeometry(), mat(LIME_HOT, 0.55));
+    for (const m of [focus, string, pulse, feet]) {
+      m.visible = false;
+      m.renderOrder = 5;
+      this.scene.add(m);
+    }
+    return { feet, pulse, string, focus, at: 0 };
+  }
+
+  /**
+   * off route: pulsing ring at your feet + dashed line to where you'd rejoin + that stretch
+   * of the path emphasised. After a re-route: the new route's first stretch drawn wide (the
+   * new starting point), narrowing and fading over FOCUS_MS; arrows carry on as usual.
+   */
+  drawDrift(now) {
+    const st = this.drift?.status;
+    if (!st || !this.xf) return;
+    const v = this.driftViz || (this.driftViz = this.makeDriftViz());
+    const y = (this.floorY ?? this.groundY ?? 0) + 0.035;
+    const off = st.state !== "on";
+    const sinceFocus = now - this.focusStart;
+    const focusOn = now < this.focusUntil;
+
+    const ringOn = off || (focusOn && sinceFocus < 3000);
+    v.feet.visible = ringOn;
+    v.pulse.visible = ringOn;
+    if (ringOn) {
+      const col = off ? DRIFT_ORANGE : LIME_HOT;
+      v.feet.material.color.setHex(col);
+      v.pulse.material.color.setHex(col);
+      v.feet.position.set(this.tmp.x, y + 0.002, this.tmp.z);
+      v.pulse.position.copy(v.feet.position);
+      const k = (this.pulseT * (st.state === "rerouting" ? 2.2 : 1.1)) % 1;
+      v.pulse.scale.setScalar(1 + k * 1.8);
+      v.pulse.material.opacity = 0.75 * (1 - k);
+    }
+
+    if (now - v.at < DRIFT_REDRAW_MS) return; // geometry below: ~11 Hz is plenty
+    v.at = now;
+
+    const rj = off ? st.focus?.rejoin : null;
+    if (rj) {
+      const to = xfApply(this.xf, rj.x, rj.y, y);
+      v.string.geometry.dispose();
+      v.string.geometry = stripGeometry(
+        [{ x: this.tmp.x, z: this.tmp.z }, { x: to.x, z: to.z }],
+        STRING_W, y + 0.004, 0.32, 0.2, -(this.pulseT * 0.9) % 0.52,
+      );
+      v.string.visible = true;
+    } else {
+      v.string.visible = false;
+    }
+
+    if ((off || focusOn) && st.focus && st.focus.s1 > st.focus.s0 + 0.2) {
+      const pts = this.drift.slice(st.focus.s0, st.focus.s1).map(([fx, fy]) => xfApply(this.xf, fx, fy, y));
+      let w = FOCUS_OFF_W;
+      let op = 0.45;
+      if (!off) {
+        const k = Math.min(1, sinceFocus / (FOCUS_MS * 0.5));
+        w = FOCUS_W0 + (FOCUS_W1 - FOCUS_W0) * k * (2 - k);
+        op = 0.6 * Math.min(1, (this.focusUntil - now) / 1500);
+      }
+      v.focus.geometry.dispose();
+      v.focus.geometry = stripGeometry(pts, w, y);
+      v.focus.material.opacity = op;
+      v.focus.visible = pts.length >= 2;
+    } else {
+      v.focus.visible = false;
+    }
   }
 
   drawPathRibbon() {
@@ -1870,6 +2115,7 @@ export class WebXrNav {
 
     const remain = Math.max(0, this.pathLen - this.progressM);
     this.updateFacing(pose);
+    this.updateDrift(degraded);
     this.opts.handlers?.onWalk?.(this.progressM, remain);
     this.bumpSteps(this.maxProgressM);
     this.placeArrows(remain);

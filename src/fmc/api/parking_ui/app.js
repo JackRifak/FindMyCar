@@ -1922,6 +1922,123 @@ function facingOverride(next) {
   return null;
 }
 
+/* --- route drift (AR): banner + re-route. Detection runs in drift-detector.js, frame by
+ * frame inside the AR session; the app paints what it reports and fetches the new route. --- */
+const DRIFT_NEW_ROUTE_MS = 2500; // "New route" banner before normal turn prompts resume
+let driftBannerUntil = 0;
+let rerouteBusy = false;
+
+function driftCopy(st) {
+  const d = Math.max(0, Math.round(st.distanceM || 0));
+  const off = Math.max(0, Math.round(st.offM || 0));
+  const ar = voiceLang() === "ar";
+  switch (st.kind) {
+    case "overshoot":
+      return { label: "Passed the turn", dist: `${d} m past`, icon: "uturn", say: ar ? "لقد تجاوزت المنعطف" : "You passed the turn" };
+    case "early_turn":
+      return { label: "Turned too early", dist: `${d} m early`, icon: "straight", say: ar ? "انعطفت مبكراً" : "You turned too early" };
+    case "parallel":
+      return { label: "Wrong aisle", dist: `${off} m off`, icon: "straight", say: ar ? "أنت في الممر الخطأ" : "You're in the wrong aisle" };
+    case "passed_destination":
+      return { label: "Passed your bay", dist: `${d} m past`, icon: "uturn", say: ar ? "لقد تجاوزت موقف سيارتك" : "You passed your bay" };
+    case "wrong_way":
+      return { label: "Turn around", dist: `${d} m back`, icon: "uturn", say: ar ? "اتجاه خاطئ، استدر للخلف" : "Wrong way, turn around" };
+    default:
+      return { label: "Off route", dist: `${off} m off`, icon: "straight", say: ar ? "أنت خارج المسار" : "You're off the route" };
+  }
+}
+
+/** drift status from the AR session (changes, or the distance grew/shrank by >= 0.5 m) */
+function paintDriftBanner(st) {
+  if (!ui.turnBanner || !st) return;
+  if (st.state === "on") {
+    ui.turnBanner.classList.remove("drift");
+    // came back onto the path without a re-route
+    if (st.prevKey && st.prevKey.startsWith("suspect|")) {
+      void logClientDiagnostic({ event: "drift_returned", nav_mode: "webxr", reason: `was=${st.prevKey.split("|")[1]}` });
+    }
+    return; // onWalk paints the normal prompt again
+  }
+  const c = driftCopy(st);
+  const rerouting = st.state === "rerouting";
+  ui.turnBanner.hidden = false;
+  ui.turnBanner.classList.add("drift");
+  if (ui.turnLabel) ui.turnLabel.textContent = rerouting ? "Re-routing from here…" : c.label;
+  if (ui.turnDistance) ui.turnDistance.textContent = c.dist;
+  setTurnIcon(c.icon);
+  if (!rerouting) speak(c.say, `drift|${st.kind}`);
+  if (st.state === "suspect" && !(st.prevKey || "").startsWith("suspect|")) {
+    void logClientDiagnostic({
+      event: "drift_suspect",
+      nav_mode: "webxr",
+      reason: `kind=${st.kind} d=${(st.distanceM || 0).toFixed(1)}m off=${(st.offM || 0).toFixed(1)}m s=${st.s.toFixed(1)}/${st.total.toFixed(1)}m`,
+    });
+  }
+}
+
+/**
+ * AR confirmed a deviation: place the server's position where AR says you are, fetch a new
+ * route from there and swap it into the running AR session (same alignment — no restart).
+ */
+async function rerouteFromAr(ev) {
+  const nav = webXrNav;
+  if (!nav) return;
+  const slotId = ui.slotInput?.value?.trim();
+  if (rerouteBusy || !slotId || state.inFloorTransition) {
+    nav.rerouteFailed();
+    return;
+  }
+  rerouteBusy = true;
+  const t0 = performance.now();
+  const floor = state.position.floor;
+  const heading = Number.isFinite(ev.heading) ? ev.heading : (Number(state.position.heading) || 0);
+  const where = `kind=${ev.kind} d=${ev.distanceM.toFixed(1)}m off=${ev.offM.toFixed(1)}m `
+    + `walked_off=${(ev.walkedOffM || 0).toFixed(1)}m at=(${ev.x.toFixed(2)},${ev.y.toFixed(2)}) heading=${Math.round(heading)}`
+    + (ev.turn ? ` turn=(${ev.turn.x.toFixed(1)},${ev.turn.y.toFixed(1)})` : "")
+    + (ev.suggestRelocalize ? " repeated" : "");
+  void logClientDiagnostic({ event: "drift_reroute", nav_mode: "webxr", reason: where });
+  try {
+    const r = await fetch(`/position/${encodeURIComponent(state.deviceId)}/seed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ floor, x: ev.x, y: ev.y, heading, reason: "reroute" }),
+    });
+    if (!r.ok) throw new Error(`seed HTTP ${r.status}`);
+    state.position = { ...state.position, x: ev.x, y: ev.y, rawX: ev.x, rawY: ev.y, heading };
+    await updateRouteForSlot(slotId);
+    if (webXrNav !== nav) return; // AR session ended meanwhile
+    const ok = nav.setRoute(guideWaypoints(), {
+      routeJoined: Boolean(activeRouteLeg()?.joined),
+      destXY: (!hasFloorChangeAhead() && onDestFloor()) ? routeDestPoint() : null,
+    });
+    if (!ok) throw new Error("ar_not_ready");
+    driftBannerUntil = performance.now() + DRIFT_NEW_ROUTE_MS;
+    if (ui.turnBanner) {
+      ui.turnBanner.classList.remove("drift");
+      ui.turnBanner.hidden = false;
+      if (ui.turnLabel) ui.turnLabel.textContent = "New route";
+      if (ui.turnDistance) ui.turnDistance.textContent = `${Math.round(nav.pathLen)} m`;
+      setTurnIcon("straight");
+    }
+    speak(voiceLang() === "ar" ? "تم تحديث المسار" : "New route from here", `drift|rerouted|${Math.round(t0)}`);
+    if (ev.suggestRelocalize) {
+      // re-routed again and again: the AR position itself is probably off
+      setHint("Several re-routes — aim the camera at the walls or signs so we can re-check your position", true);
+    }
+    void logClientDiagnostic({
+      event: "drift_rerouted",
+      nav_mode: "webxr",
+      reason: `kind=${ev.kind} ms=${Math.round(performance.now() - t0)} new_len=${nav.pathLen.toFixed(1)}m`,
+    });
+  } catch (err) {
+    nav.rerouteFailed();
+    if (ui.turnLabel) ui.turnLabel.textContent = "Head back to the path";
+    void logClientDiagnostic({ event: "drift_reroute_fail", nav_mode: "webxr", reason: String(err?.message || err) });
+  } finally {
+    rerouteBusy = false;
+  }
+}
+
 function paintTurnBanner(next) {
   if (!ui.turnBanner || !next) return;
   const face = facingOverride(next);
@@ -3866,9 +3983,14 @@ async function startWebXrNav(opts = {}) {
     destLabel: ui.slotInput?.value?.trim() || "",
     handlers: {
       onStep: (idx) => {
-        const along = legs.slice(0, idx).reduce((s, l) => s + l.dist, 0);
-        paintTurnBanner(nextTurnFromLegs(legs, along));
+        // legs change on a re-route (webXrNav.setRoute) — read them from the session
+        const arLegs = webXrNav?.legs || legs;
+        if (webXrNav?.driftActive || performance.now() < driftBannerUntil) return;
+        const along = arLegs.slice(0, idx).reduce((s, l) => s + l.dist, 0);
+        paintTurnBanner(nextTurnFromLegs(arLegs, along));
       },
+      onDrift: (st) => paintDriftBanner(st),
+      onReroute: (ev) => { void rerouteFromAr(ev); },
       onWalk: (progress, remain) => {
         xrTrackLostAt = 0;
         if (ui.metricDistance) {
@@ -3885,7 +4007,10 @@ async function startWebXrNav(opts = {}) {
           paintTurnBanner({ label: "Re-aligning AR…", kind: "straight", distanceM: 0, isFloorChange: true });
           return;
         }
-        const next = nextTurnFromLegs(legs, progress);
+        // off route / re-routing: the drift banner (onDrift) owns the prompt
+        if (webXrNav?.driftActive || performance.now() < driftBannerUntil) return;
+        ui.turnBanner?.classList.remove("drift");
+        const next = nextTurnFromLegs(webXrNav?.legs || legs, progress);
         paintTurnBanner({
           ...next,
           distanceM: Math.min(next.distanceM, remain),

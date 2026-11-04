@@ -123,6 +123,18 @@ body:not(.entry-mode) input {
 }
 
 .turn-banner[hidden] { display: none !important; }
+/* off route / re-routing (AR drift detection) */
+.turn-banner.drift {
+  background: linear-gradient(135deg, rgba(255, 166, 48, 0.95), rgba(255, 112, 67, 0.9));
+  animation: bannerIn 0.35s ease, driftPulse 1.6s ease-in-out infinite;
+}
+@keyframes driftPulse {
+  0%, 100% { box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35); }
+  50% { box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35), 0 0 0 4px rgba(255, 166, 48, 0.45); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn-banner.drift { animation: none; }
+}
 
 .turn-arrow-wrap {
   width: 56px;
