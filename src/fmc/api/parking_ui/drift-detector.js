@@ -25,26 +25,27 @@
  */
 
 export const DRIFT_DEFAULTS = {
-  // corridors are 6–7 m wide and the path is their centre line: off route = outside the
-  // corridor's half-width plus a margin for tracking error
-  offM: 4.0,
-  clearM: 2.5, // back within this → on route again (hysteresis band clearM..offM)
-  confirmWalkM: 1.5, // walk this far while off route (and moving away) before re-routing
-  confirmMs: 1000,
-  hardOffM: 7.0, // this far off → re-route after only hardWalkM
-  hardWalkM: 0.6,
-  returnEpsM: 0.4, // distance to the path shrank this much over the last ~1.5 m → coming back
+  // catch missed/early turns while still inside the aisle (path = centre line).
+  // ~1.8 m off is mid-corridor past a bend — don't wait until outside the 6–7 m bay.
+  offM: 1.8,
+  clearM: 1.0, // back within this → on route again (hysteresis band clearM..offM)
+  confirmWalkM: 0.8, // short walk while off (and moving away) before re-routing
+  confirmMs: 700,
+  hardOffM: 3.5, // clearly wrong aisle / big miss → re-route after only hardWalkM
+  hardWalkM: 0.4,
+  returnEpsM: 0.35, // distance to the path shrank this much over the last ~1.5 m → coming back
   jumpMps: 3.0, // faster than a run between samples → tracking jump, not walking
   jumpMinM: 0.8,
-  settleMs: 2000, // after a jump / new route / hold: watch, don't act
-  cooldownMs: 5000, // min time between re-routes
+  settleMs: 1500, // after a jump / new route / hold: watch, don't act
+  cooldownMs: 4000, // min time between re-routes
   sampleM: 0.2, // trail spacing
   headingWindowM: 2.0, // walked distance used for the walking direction
   turnMinDeg: 30, // smaller bends aren't turns
-  earlyMinM: 1.0, // left the path at least this far before the corner → early turn
-  parallelDeg: 30, // walking within this of the corridor axis while off it → parallel aisle
-  wrongWayM: 6.0, // walked back down the path this far → "turn around"
-  wrongWayRerouteM: 15.0, // …and still going → re-route (the other way may be shorter now)
+  earlyMinM: 0.6, // left the path this far before the corner → early turn
+  overshootMinM: 0.8, // past the corner along the old corridor by this → overshoot
+  parallelDeg: 35, // walking within this of the corridor axis while off it → parallel aisle
+  wrongWayM: 4.0, // walked back down the path this far → "turn around"
+  wrongWayRerouteM: 10.0, // …and still going → re-route (the other way may be shorter now)
   windowBackM: 6, // progress search window around the current position on the path
   windowAheadM: 12,
   repeatWindowMs: 90000, // this many re-routes in this window → suggest re-localizing
@@ -378,7 +379,7 @@ export class DriftDetector {
       const ry = y - tn.y;
       const a = rx * ux + ry * uy; // along the incoming corridor, past the corner
       const lat = Math.abs(rx * uy - ry * ux);
-      if (a > 0.5 && a >= lat) {
+      if (a > c.overshootMinM && a >= lat * 0.85) {
         return { kind: tn.isEnd ? "passed_destination" : "overshoot", distanceM: a, turn: tn };
       }
     }

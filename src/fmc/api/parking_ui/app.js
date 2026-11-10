@@ -918,6 +918,171 @@ function kickCameraPreview() {
   document.body.classList.add("cam-live");
 }
 
+const REAR_MAIN_CAM_KEY = "fmc_rear_main_device_id_v1";
+const CAMERA_SIZE = { width: { ideal: 1280 }, height: { ideal: 720 } };
+
+function _stopMediaStream(stream) {
+  stream?.getTracks?.().forEach((t) => {
+    try { t.stop(); } catch (_) { /* ignore */ }
+  });
+}
+
+function _trackCamInfo(track) {
+  const settings = track?.getSettings?.() || {};
+  const caps = track?.getCapabilities?.() || {};
+  return {
+    label: track?.label || "",
+    deviceId: settings.deviceId || "",
+    zoom: settings.zoom,
+    zmin: caps.zoom?.min,
+    zmax: caps.zoom?.max,
+    settings,
+  };
+}
+
+function _isLikelyFrontCamera(label) {
+  const l = (label || "").toLowerCase();
+  return /front|facing front|\buser\b|selfie/.test(l);
+}
+
+function _isLikelyRearDevice(device) {
+  const l = (device.label || "").toLowerCase();
+  if (_isLikelyFrontCamera(l)) return false;
+  return true;
+}
+
+function _looksUltraWide(info) {
+  const l = (info.label || "").toLowerCase();
+  if (/ultra\s*-?\s*wide|ultrawide|0\.5x/.test(l)) return true;
+  if (typeof info.zoom === "number" && info.zoom < 0.85) return true;
+  if (typeof info.zmin === "number" && info.zmin < 0.8 && typeof info.zmax === "number" && info.zmax <= 1.25) {
+    return true;
+  }
+  return false;
+}
+
+function _mainRearScore(info, rearIndex, rearCount) {
+  let s = 0;
+  const l = (info.label || "").toLowerCase();
+  if (_isLikelyFrontCamera(l)) return -1000;
+  if (/ultra\s*-?\s*wide|ultrawide|0\.5x/.test(l)) s -= 100;
+  if (/wide\s*angle|wide-angle/.test(l)) s -= 50;
+  if (/tele|periscope|macro|depth|tof/.test(l)) s -= 80;
+  if (/\bmain\b|primary|standard|1x|^back camera$/.test(l)) s += 60;
+  if (typeof info.zoom === "number") s -= Math.abs(info.zoom - 1) * 40;
+  if (typeof info.zmin === "number") {
+    if (info.zmin < 0.8) s -= 25;
+    else if (info.zmin <= 1.15) s += 30;
+    else s -= 20;
+  }
+  // OnePlus / Samsung Chrome: first enumerated rear camera is often ultra-wide
+  if (rearCount > 1 && rearIndex === 0) s -= 10;
+  if (rearCount > 1 && rearIndex === 1) s += 15;
+  return s;
+}
+
+async function _applyMainZoom(track) {
+  try {
+    const caps = track?.getCapabilities?.();
+    if (!caps?.zoom) return;
+    const z = Math.min(caps.zoom.max, Math.max(caps.zoom.min, 1));
+    const cur = track.getSettings?.().zoom;
+    if (typeof cur === "number" && Math.abs(cur - z) < 0.05) return;
+    await track.applyConstraints({ advanced: [{ zoom: z }] });
+  } catch (_) { /* zoom not constrainable */ }
+}
+
+async function _gumRear(videoExtra) {
+  const base = { ...CAMERA_SIZE, ...videoExtra };
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { ...base, zoom: { ideal: 1 }, advanced: [{ zoom: 1 }] },
+      audio: false,
+    });
+  } catch (_) {
+    stream = await navigator.mediaDevices.getUserMedia({ video: base, audio: false });
+  }
+  const track = stream.getVideoTracks()[0];
+  if (track) await _applyMainZoom(track);
+  return stream;
+}
+
+/**
+ * Rear 1x (main) camera. Chrome on OnePlus/Samsung often gives ultra-wide for
+ * facingMode:environment; zoom≈1 plus deviceId selection picks the main lens.
+ */
+async function openRearMainCamera() {
+  let cached = "";
+  try { cached = sessionStorage.getItem(REAR_MAIN_CAM_KEY) || ""; } catch (_) { /* private mode */ }
+
+  const tryCached = async () => {
+    if (!cached) return null;
+    try {
+      return await _gumRear({ deviceId: { exact: cached } });
+    } catch (_) {
+      return null;
+    }
+  };
+
+  let stream = await tryCached();
+  if (!stream) {
+    stream = await _gumRear({ facingMode: { ideal: "environment" } });
+  }
+
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  let devices = [];
+  try { devices = await navigator.mediaDevices.enumerateDevices(); } catch (_) { /* ignore */ }
+  const rear = devices.filter((d) => d.kind === "videoinput" && _isLikelyRearDevice(d));
+  let info = _trackCamInfo(stream.getVideoTracks()[0]);
+  const needPick = _looksUltraWide(info) || (isAndroid && rear.length > 1 && !cached);
+
+  if (needPick && rear.length) {
+    const currentId = info.deviceId;
+    const candidates = [{
+      deviceId: currentId,
+      info,
+      stream,
+      rearIndex: Math.max(0, rear.findIndex((d) => d.deviceId === currentId)),
+    }];
+    for (let i = 0; i < rear.length; i++) {
+      const d = rear[i];
+      if (d.deviceId && d.deviceId === currentId) continue;
+      try {
+        const s2 = await _gumRear({ deviceId: { exact: d.deviceId } });
+        candidates.push({
+          deviceId: d.deviceId,
+          info: _trackCamInfo(s2.getVideoTracks()[0]),
+          stream: s2,
+          rearIndex: i,
+        });
+      } catch (_) { /* depth / IR / busy */ }
+    }
+    let best = candidates[0];
+    let bestScore = -Infinity;
+    for (const c of candidates) {
+      const sc = _mainRearScore(c.info, c.rearIndex, rear.length);
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = c;
+      }
+    }
+    for (const c of candidates) {
+      if (c !== best) _stopMediaStream(c.stream);
+    }
+    stream = best.stream;
+    info = best.info;
+  }
+
+  const id = _trackCamInfo(stream.getVideoTracks()[0]).deviceId;
+  if (id) {
+    try { sessionStorage.setItem(REAR_MAIN_CAM_KEY, id); } catch (_) { /* ignore */ }
+  }
+  const t = stream.getVideoTracks()[0];
+  console.info("[camera] rear main", t?.label, t?.getSettings?.());
+  return stream;
+}
+
 /**
  * After WebXR, tracks often stay "live" but frozen.
  * Always tear down and reopen getUserMedia.
@@ -929,23 +1094,14 @@ async function reopenCameraHard({ delayMs = 400 } = {}) {
     try { v.srcObject = null; } catch (_) { /* ignore */ }
   }
   if (state.stream) {
-    state.stream.getTracks().forEach((t) => {
-      try { t.stop(); } catch (_) { /* ignore */ }
-    });
+    _stopMediaStream(state.stream);
     state.stream = null;
   }
   document.body.classList.remove("cam-live");
   if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
   if (!navigator.mediaDevices?.getUserMedia) return false;
   try {
-    state.stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-      audio: false,
-    });
+    state.stream = await openRearMainCamera();
     if (v) {
       v.srcObject = state.stream;
       v.muted = true;
@@ -3074,13 +3230,9 @@ async function ensureCamera(forceReopen = false) {
   } catch (_) { /* ignore */ }
 
   try {
-    state.stream = await navigator.mediaDevices.getUserMedia({
-      // without a size the browser opens 640x480: a lobby marker 3 m away is then ~30 px
-      // (under the 36 px minimum) and landmark PnP gets few ORB features vs the 1280x720
-      // mapping keyframes. 1280x720 → 720x1280 portrait frames (captureMaxDimension 1280).
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    });
+    // 1280x720 → 720x1280 portrait frames (captureMaxDimension 1280). Prefer rear 1x,
+    // not ultra-wide (Chrome on OnePlus/Samsung often defaults facingMode to 0.5x).
+    state.stream = await openRearMainCamera();
     ui.cameraView.srcObject = state.stream;
     ui.cameraView.muted = true;
     ui.cameraView.setAttribute("playsinline", "");
@@ -5153,10 +5305,7 @@ async function openQrScanner() {
   box.hidden = false;
   if (msg) msg.textContent = qrT("point");
   try {
-    session.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    });
+    session.stream = await openRearMainCamera();
   } catch (err) {
     closeQrScanner();
     window.ParkingHome?.toast?.(qrT("noCamera"));

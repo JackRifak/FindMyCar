@@ -4,7 +4,7 @@
  * Exposes window.ParkingWebXr for classic app.js.
  */
 import * as THREE from "./three.module.js";
-import { DriftDetector } from "./drift-detector.js?v=20261104-drift1";
+import { DriftDetector } from "./drift-detector.js?v=20261110-drift2";
 
 const LIME = 0xc9d64f;
 const LIME_SOFT = 0xd4e070;
@@ -96,8 +96,6 @@ const DRIFT_ORANGE = 0xffa630;
 const FOCUS_MS = 7000; // the new route's first stretch stays emphasised this long
 const FOCUS_W0 = 0.95; // its width right after the re-route (m)…
 const FOCUS_W1 = 0.45; // …settling to this
-const FOCUS_OFF_W = 0.55; // stretch to rejoin while off route
-const STRING_W = 0.13; // dashed line from your feet to the rejoin point
 const DRIFT_REDRAW_MS = 90;
 
 /** AR start: PnP heading within this of the first corridor's axis snaps onto it */
@@ -575,6 +573,41 @@ function mergeFromPosition(wps, x, y) {
   return [[x, y], [ax + (bx - ax) * k, ay + (by - ay) * k], ...wps.slice(1)];
 }
 
+function wpsLen(wps) {
+  let n = 0;
+  for (let i = 0; i < wps.length - 1; i++) {
+    n += Math.hypot(wps[i + 1][0] - wps[i][0], wps[i + 1][1] - wps[i][1]);
+  }
+  return n;
+}
+
+const REJOIN_NEXT_GAIN_M = 1; // next stretch must save this much walking to win over the nearest
+const REJOIN_NEXT_RATIO = 1.5; // …and be about as close as the nearest one (no cutting through bays)
+
+/**
+ * off route: [you] → nearest stretch of the route, joined a little way ahead → rest of it.
+ * Past a corner (nearest point is the corner itself) → that corner, then the next stretch.
+ * Inside a bend, where going via the corner would be a detour → straight onto the next stretch.
+ */
+function rejoinWaypoints(wps, x, y) {
+  const rem = remainingWaypoints(wps, x, y);
+  if (rem.length < 2) return null;
+  const gap = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  // nearest point on a vertex comes back twice
+  if (gap(rem[0], rem[1]) < 0.05) rem.shift();
+  // diagonal merge only along a stretch — never across a corner (bays / pillars in the way)
+  const atCorner = wps.slice(1).some((w) => gap(w, rem[0]) < 0.05);
+  if (atCorner) return [[x, y], ...rem];
+  const near = mergeFromPosition(rem, x, y);
+  if (rem.length < 3) return near;
+  // level with the stretch after the corner (not before / beyond it)?
+  const foot = remainingWaypoints(rem.slice(1, 3), x, y)[0];
+  if (gap(foot, rem[1]) < 0.05 || gap(foot, rem[2]) < 0.05) return near;
+  if (gap(foot, [x, y]) > gap(rem[0], [x, y]) * REJOIN_NEXT_RATIO) return near;
+  const next = mergeFromPosition([foot, ...rem.slice(2)], x, y);
+  return wpsLen(next) < wpsLen(near) - REJOIN_NEXT_GAIN_M ? next : near;
+}
+
 /** facility point → XR world (floor height y) */
 function xfApply(xf, fx, fy, y = 0) {
   const c = Math.cos(xf.rot);
@@ -1011,6 +1044,7 @@ export class WebXrNav {
     // route drift → re-route (facility frame; see drift-detector.js)
     this.drift = null;
     this.driftViz = null;
+    this.rejoin = null; // off route: live path from your feet back onto the route
     this.lastDriftNote = null;
     this.focusStart = 0;
     this.focusUntil = 0;
@@ -1851,6 +1885,7 @@ export class WebXrNav {
     this.walkObs = []; // corridor comparison starts over on the new route
     if (this.drift) this.drift.setRoute(this.facWps, now);
     else this.drift = new DriftDetector(this.facWps);
+    this.rejoin = null;
     this.lastDriftNote = null;
     this.focusStart = now;
     this.focusUntil = focus ? now + FOCUS_MS : 0;
@@ -1878,7 +1913,32 @@ export class WebXrNav {
       if (event?.type === "reroute") this.requestReroute(event);
       this.noteDrift(status, now);
     }
+    this.updateRejoin(now);
     this.drawDrift(now);
+  }
+
+  /**
+   * off route: guidance starts where you are NOW and leads onto the nearest stretch of the
+   * route (or the next one, past a corner) — rebuilt as you move, so it never points back
+   * at the spot where you left the path or where the last re-route started.
+   */
+  updateRejoin(now) {
+    const st = this.drift?.status;
+    const base = this.corridorWps || this.facWps;
+    if (!st || st.state === "on" || !(st.offM > 0) || !this.xf || !base) {
+      this.rejoin = null;
+      return;
+    }
+    if (this.rejoin && now - this.rejoin.at < DRIFT_REDRAW_MS) return;
+    const me = xfInverse(this.xf, this.tmp.x, this.tmp.z);
+    const wps = rejoinWaypoints(base, me.fx, me.fy);
+    if (!wps) {
+      this.rejoin = null;
+      return;
+    }
+    const y = this.floorY ?? this.groundY ?? 0;
+    const path = smoothPolylineXZ(wps.map(([fx, fy]) => xfApply(this.xf, fx, fy, y)));
+    this.rejoin = { path, len: polyLen(path), at: now };
   }
 
   requestReroute(ev) {
@@ -1913,20 +1973,19 @@ export class WebXrNav {
     });
     const feet = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.4, 48).rotateX(-Math.PI / 2), mat(DRIFT_ORANGE, 0.9));
     const pulse = new THREE.Mesh(new THREE.RingGeometry(0.46, 0.52, 48).rotateX(-Math.PI / 2), mat(DRIFT_ORANGE, 0.6));
-    const string = new THREE.Mesh(new THREE.BufferGeometry(), mat(DRIFT_ORANGE, 0.92));
     const focus = new THREE.Mesh(new THREE.BufferGeometry(), mat(LIME_HOT, 0.55));
-    for (const m of [focus, string, pulse, feet]) {
+    for (const m of [focus, pulse, feet]) {
       m.visible = false;
       m.renderOrder = 5;
       this.scene.add(m);
     }
-    return { feet, pulse, string, focus, at: 0 };
+    return { feet, pulse, focus, at: 0 };
   }
 
   /**
-   * off route: pulsing ring at your feet + dashed line to where you'd rejoin + that stretch
-   * of the path emphasised. After a re-route: the new route's first stretch drawn wide (the
-   * new starting point), narrowing and fading over FOCUS_MS; arrows carry on as usual.
+   * off route: pulsing ring at your feet (the arrows lead back to the route from there —
+   * see updateRejoin). After a re-route: the new route's first stretch drawn wide,
+   * narrowing and fading over FOCUS_MS.
    */
   drawDrift(now) {
     const st = this.drift?.status;
@@ -1954,31 +2013,13 @@ export class WebXrNav {
     if (now - v.at < DRIFT_REDRAW_MS) return; // geometry below: ~11 Hz is plenty
     v.at = now;
 
-    const rj = off ? st.focus?.rejoin : null;
-    if (rj) {
-      const to = xfApply(this.xf, rj.x, rj.y, y);
-      v.string.geometry.dispose();
-      v.string.geometry = stripGeometry(
-        [{ x: this.tmp.x, z: this.tmp.z }, { x: to.x, z: to.z }],
-        STRING_W, y + 0.004, 0.32, 0.2, -(this.pulseT * 0.9) % 0.52,
-      );
-      v.string.visible = true;
-    } else {
-      v.string.visible = false;
-    }
-
-    if ((off || focusOn) && st.focus && st.focus.s1 > st.focus.s0 + 0.2) {
+    // off route: no strip — the old path's stretch starts where you left it / last re-routed
+    if (!off && focusOn && st.focus && st.focus.s1 > st.focus.s0 + 0.2) {
       const pts = this.drift.slice(st.focus.s0, st.focus.s1).map(([fx, fy]) => xfApply(this.xf, fx, fy, y));
-      let w = FOCUS_OFF_W;
-      let op = 0.45;
-      if (!off) {
-        const k = Math.min(1, sinceFocus / (FOCUS_MS * 0.5));
-        w = FOCUS_W0 + (FOCUS_W1 - FOCUS_W0) * k * (2 - k);
-        op = 0.6 * Math.min(1, (this.focusUntil - now) / 1500);
-      }
+      const k = Math.min(1, sinceFocus / (FOCUS_MS * 0.5));
       v.focus.geometry.dispose();
-      v.focus.geometry = stripGeometry(pts, w, y);
-      v.focus.material.opacity = op;
+      v.focus.geometry = stripGeometry(pts, FOCUS_W0 + (FOCUS_W1 - FOCUS_W0) * k * (2 - k), y);
+      v.focus.material.opacity = 0.6 * Math.min(1, (this.focusUntil - now) / 1500);
       v.focus.visible = pts.length >= 2;
     } else {
       v.focus.visible = false;
@@ -2457,9 +2498,16 @@ export class WebXrNav {
    * Chevrons only — follow path tangent through bends (no turn glyph overlays).
    */
   placeArrows(remain) {
-    const y = (this.floorY ?? this.path[0]?.y ?? 0) + 0.028;
-    const samples = sampleAhead(this.path, this.progressM, ARROW_N, ARROW_GAP, FIRST_GAP);
+    // off route: arrows run from your feet along the live rejoin path, not the old one
+    const rj = this.rejoin;
+    const path = rj ? rj.path : this.path;
+    const len = rj ? rj.len : this.pathLen;
+    const from = rj ? closestOnPath(path, this.tmp.x, this.tmp.z).progressM : this.progressM;
+    if (rj) remain = Math.max(0, len - from);
+    const y = (this.floorY ?? path[0]?.y ?? 0) + 0.028;
+    const samples = sampleAhead(path, from, ARROW_N, ARROW_GAP, FIRST_GAP);
     const pulse = 1 + Math.sin(this.pulseT * 3.6) * 0.06;
+    const end = pointAt(path, len);
 
     for (const m of Object.values(this.cornerMark)) m.visible = false;
 
@@ -2471,7 +2519,6 @@ export class WebXrNav {
         this.hideSlot(slot);
         continue;
       }
-      const end = pointAt(this.path, this.pathLen);
       const distToEnd = Math.hypot(s.pos.x - end.pos.x, s.pos.z - end.pos.z);
       if (distToEnd < 0.25 && i > 0) {
         this.hideSlot(slot);
